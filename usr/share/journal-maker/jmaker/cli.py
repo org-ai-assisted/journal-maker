@@ -23,7 +23,8 @@ from jmaker import generate
 def _cmd_build(args):
     try:
         count, out = generate.build(args.articles, args.journal, args.out,
-                                    skip_pdf=args.skip_pdf)
+                                    skip_pdf=args.skip_pdf,
+                                    no_index=args.no_index)
     except generate.BuildError as exc:
         print("build error: %s" % exc, file=sys.stderr)
         return 1
@@ -77,6 +78,9 @@ def build_parser():
     pbuild.add_argument("--out", default="_site")
     pbuild.add_argument("--skip-pdf", action="store_true",
                         help="skip PDF generation (fast HTML-only iteration)")
+    pbuild.add_argument("--no-index", action="store_true",
+                        help="interim/non-canonical host: emit robots Disallow "
+                             "+ noindex meta so nothing gets crawled")
     pbuild.set_defaults(func=_cmd_build)
 
     pcheck = sub.add_parser("check", help="gate a built site")

@@ -83,7 +83,12 @@ def main(site, client="vtai.py", out=None, upload=True):
               "(required by supply-chain policy)" % client, file=sys.stderr)
         return 2
 
-    out = out or os.path.join(site, "vt-results.json")
+    # Write reports OUTSIDE the site tree, so the published journal never ships
+    # an asset inventory (paths, sizes, sha256, VT permalinks).
+    reports_dir = os.path.dirname(os.path.abspath(site.rstrip("/")))
+    out = out or os.path.join(reports_dir, "vt-results.json")
+    checklist = os.path.join(os.path.dirname(os.path.abspath(out)),
+                             "VT-CHECKLIST.md")
     results = []
     failures = 0
     for path in _assets(site):
@@ -113,7 +118,7 @@ def main(site, client="vtai.py", out=None, upload=True):
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=2, sort_keys=True)
         fh.write("\n")
-    _write_checklist(site, report)
+    _write_checklist(report, checklist)
 
     for e in results:
         mark = "ok" if e["status"] == "scanned" else e["status"]
@@ -123,7 +128,7 @@ def main(site, client="vtai.py", out=None, upload=True):
     return 1 if failures else 0
 
 
-def _write_checklist(site, report):
+def _write_checklist(report, path):
     lines = [
         "# VirusTotal pre-publish checklist",
         "",
@@ -143,6 +148,5 @@ def _write_checklist(site, report):
     verdict = "PASS" if report["failures"] == 0 else "FAIL"
     lines += ["", "Result: **%s** (%d failure(s))" % (verdict, report["failures"]),
               ""]
-    with open(os.path.join(site, "VT-CHECKLIST.md"), "w",
-              encoding="utf-8") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))

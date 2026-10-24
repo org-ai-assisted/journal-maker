@@ -29,8 +29,12 @@ import sys
 MAX_PDF_BYTES = 5 * 1024 * 1024
 MIN_PDF_TEXT_CHARS = 500
 
+# Executable / exfiltration primitives -- the real supply-chain risk. NOT
+# included: /OpenAction and /AA, which are benign action TRIGGERS (hyperref
+# emits an /OpenAction "fit page" view in every LaTeX PDF); they are dangerous
+# only when they invoke one of these, which is then caught here independently.
 ACTIVE_TOKENS = [
-    b"/JavaScript", b"/JS", b"/OpenAction", b"/AA", b"/Launch",
+    b"/JavaScript", b"/JS", b"/Launch",
     b"/EmbeddedFile", b"/RichMedia", b"/XFA", b"/SubmitForm",
     b"/ImportData", b"/GoToR",
 ]
@@ -43,6 +47,10 @@ _ABSTRACT_RE = re.compile(
 _WIKI_LINK_RE = re.compile(r'\[\[[^\]]+\]\]')
 _WIKI_TMPL_RE = re.compile(r'\{\{[^}]+\}\}')
 _TAG_RE = re.compile(r'<[^>]+>')
+# Code/preformatted spans legitimately contain [[ ]] (bash tests, C++ attrs)
+# and {{ }} (CI expressions, templating) -- strip them before the wiki scan.
+_CODE_RE = re.compile(r'<(pre|code)\b[^>]*>.*?</\1>', re.I | re.S)
+_DATE_RE = re.compile(r'^\d{4}(/\d{1,2}(/\d{1,2})?)?$')
 
 
 class Findings:
@@ -58,6 +66,18 @@ class Findings:
     @property
     def errors(self):
         return [i for i in self.items if i[0] == "ERROR"]
+
+
+def _valid_date(s):
+    """Scholar YYYY, YYYY/MM, or YYYY/MM/DD with in-range month/day."""
+    if not _DATE_RE.match(s):
+        return False
+    parts = s.split("/")
+    if len(parts) >= 2 and not 1 <= int(parts[1]) <= 12:
+        return False
+    if len(parts) == 3 and not 1 <= int(parts[2]) <= 31:
+        return False
+    return True
 
 
 def _unescape(s):
@@ -93,8 +113,11 @@ def check_article(page_path, f):
         f.err(page_path, "missing citation_title")
     if not meta.get("citation_author"):
         f.err(page_path, "missing citation_author (>=1 required)")
-    if not meta.get("citation_publication_date"):
+    pub = meta.get("citation_publication_date")
+    if not pub:
         f.err(page_path, "missing citation_publication_date")
+    elif not _valid_date(pub):
+        f.err(page_path, "citation_publication_date not valid YYYY/MM/DD: %r" % pub)
     pdf_url = meta.get("citation_pdf_url")
     if not pdf_url:
         f.err(page_path, "missing citation_pdf_url")
@@ -125,8 +148,8 @@ def check_article(page_path, f):
         else:
             check_pdf(pdf_local, f)
 
-    # no leftover wiki markup in the rendered body
-    body_text = _text_only(page)
+    # no leftover wiki markup in the rendered body (ignoring code/pre spans)
+    body_text = _text_only(_CODE_RE.sub(" ", page))
     if _WIKI_LINK_RE.search(body_text):
         f.err(page_path, "leftover wiki internal link [[...]] in output")
     if _WIKI_TMPL_RE.search(body_text):
@@ -184,8 +207,13 @@ def check_site(out_dir):
         f.err(out_dir, "missing homepage index.html")
     if not os.path.isfile(os.path.join(out_dir, "robots.txt")):
         f.err(out_dir, "missing robots.txt")
-    if not os.path.isfile(os.path.join(out_dir, "sitemap.xml")):
+    sitemap = os.path.join(out_dir, "sitemap.xml")
+    if not os.path.isfile(sitemap):
         f.err(out_dir, "missing sitemap.xml")
+    else:
+        with open(sitemap, "r", encoding="utf-8") as fh:
+            if "<loc>" not in fh.read():
+                f.err(sitemap, "sitemap.xml lists no URLs")
 
     found = 0
     for root, _dirs, files in os.walk(out_dir):

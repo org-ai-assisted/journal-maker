@@ -1,4 +1,6 @@
 #!/usr/bin/python3 -Bsu
+import os
+import tempfile
 import unittest
 
 from jmaker import check as c
@@ -63,11 +65,102 @@ class TestChecker(unittest.TestCase):
 
     def test_active_tokens_present(self):
         self.assertIn(b"/JavaScript", c.ACTIVE_TOKENS)
-        self.assertIn(b"/OpenAction", c.ACTIVE_TOKENS)
+        self.assertIn(b"/Launch", c.ACTIVE_TOKENS)
+        # /OpenAction is a benign trigger, deliberately NOT blocked
+        self.assertNotIn(b"/OpenAction", c.ACTIVE_TOKENS)
 
     def test_dirname_url(self):
         self.assertEqual(
             c._dirname_url("https://h/v1/i1/x/x.pdf"), "https://h/v1/i1/x")
+
+    def test_parse_paper_ignores_fenced_headings(self):
+        md = ("```bash\n# not the title\n## Not Abstract\n```\n"
+              "# Real Title\n\n## Abstract\n\nThe real abstract.\n\n"
+              "## 1. Introduction\n\nBody text.\n")
+        title, abstract, body = g._parse_paper(md, "x")
+        self.assertEqual(title, "Real Title")
+        self.assertEqual(abstract, "The real abstract.")
+        self.assertTrue(body.startswith("## 1. Introduction"))
+
+
+def _article_page(meta=None, h1="A Title", abstract="word " * 30,
+                  body="Introduction body."):
+    tags = {
+        "citation_title": "A Title",
+        "citation_author": "Jane Doe",
+        "citation_publication_date": "2026/10/24",
+        "citation_abstract_html_url": "https://h/v1/i1/x/",
+        "citation_pdf_url": "https://h/v1/i1/x/x.pdf",
+    }
+    if meta:
+        tags.update(meta)
+    head = "\n".join('<meta name="%s" content="%s">' % (k, v)
+                     for k, v in tags.items() if v is not None)
+    return (
+        "<!doctype html><html><head>%s</head><body>"
+        '<h1 class="title">%s</h1>'
+        '<section class="abstract"><h2>Abstract</h2><p>%s</p></section>'
+        '<article class="body"><p>%s</p></article>'
+        "</body></html>" % (head, h1, abstract, body))
+
+
+class TestCheckerCanary(unittest.TestCase):
+    """Prove the checker FAILS on bad input (guards against a neutered gate)."""
+
+    def _run(self, page):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "index.html")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(page)
+            f = c.Findings()
+            c.check_article(path, f)
+            return [m for _lvl, _p, m in f.errors]
+
+    def test_missing_pdf_url_errors(self):
+        msgs = self._run(_article_page(meta={"citation_pdf_url": None}))
+        self.assertTrue(any("citation_pdf_url" in m for m in msgs))
+
+    def test_title_mismatch_errors(self):
+        msgs = self._run(_article_page(h1="Different Title"))
+        self.assertTrue(any("!= visible" in m for m in msgs))
+
+    def test_short_abstract_errors(self):
+        msgs = self._run(_article_page(abstract="tiny"))
+        self.assertTrue(any("abstract" in m for m in msgs))
+
+    def test_wiki_markup_errors(self):
+        msgs = self._run(_article_page(body="see [[SomePage]] here"))
+        self.assertTrue(any("wiki internal link" in m for m in msgs))
+
+    def test_bad_date_errors(self):
+        msgs = self._run(_article_page(
+            meta={"citation_publication_date": "2026/13/99"}))
+        self.assertTrue(any("publication_date" in m for m in msgs))
+
+    def test_wiki_markup_in_code_is_allowed(self):
+        page = _article_page(
+            body="example <code>[[ -f x ]]</code> and "
+                 "<code>${{ secrets.X }}</code>")
+        msgs = self._run(page)
+        self.assertFalse(any("wiki" in m for m in msgs))
+
+
+class TestPdfCanary(unittest.TestCase):
+    def _check(self, data):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "x.pdf")
+            with open(path, "wb") as fh:
+                fh.write(data)
+            f = c.Findings()
+            c.check_pdf(path, f)
+            return [m for _lvl, _p, m in f.errors]
+
+    def test_not_a_pdf_errors(self):
+        self.assertTrue(any("valid PDF" in m for m in self._check(b"hello")))
+
+    def test_active_content_errors(self):
+        data = b"%PDF-1.5\n" + b"x" * 1000 + b"/OpenAction /JavaScript\n"
+        self.assertTrue(any("active content" in m for m in self._check(data)))
 
 
 if __name__ == "__main__":

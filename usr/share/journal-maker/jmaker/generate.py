@@ -1,12 +1,14 @@
 #!/usr/bin/python3 -Bsu
 """Build a static, Google-Scholar-indexable journal site from Markdown.
 
-Contract (single source of truth per article, so Scholar invariants hold):
-  articles/<slug>/meta.toml  -- bibliographic metadata (title, authors, dates,
-                                 volume/issue, abstract, doi, ...)
-  articles/<slug>/paper.md   -- the article BODY in Markdown, starting at the
-                                 first section ("## 1. Introduction"); no title
-                                 line, no abstract (those live in meta.toml).
+Contract per article:
+  articles/<slug>/paper.md   -- the paper in Markdown: the H1 ('# Title') and a
+                                 '## Abstract' section are the SINGLE SOURCE for
+                                 title + abstract; the body is everything from
+                                 the first section heading after the abstract.
+                                 (title/abstract are parsed here, NOT meta.toml.)
+  articles/<slug>/meta.toml  -- the remaining bibliographic metadata (authors,
+                                 dates, volume/issue, doi, keywords, license).
   articles/<slug>/source.mw  -- optional pristine wiki fork (ignored by build)
   articles/<slug>/figures/   -- optional images, copied verbatim
 
@@ -21,6 +23,7 @@ PDF and HTML both derive from meta.toml + paper.md, so citation_title always
 matches the visible title and the abstract is always both visible and in meta.
 """
 
+import datetime
 import html
 import os
 import re
@@ -51,37 +54,71 @@ def load_journal(path):
     return j
 
 
+def _nonfence_lines(lines):
+    """Yield (index, line) for lines OUTSIDE fenced code blocks.
+
+    Fenced ``` / ~~~ delimiter lines are skipped too. This keeps a '# comment'
+    or '## ...' inside a code sample from being mistaken for the title or the
+    Abstract heading (common in a computer-security paper).
+    """
+    in_fence = False
+    fence = None
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        tok = None
+        if stripped.startswith("```"):
+            tok = "```"
+        elif stripped.startswith("~~~"):
+            tok = "~~~"
+        if tok is not None:
+            if not in_fence:
+                in_fence, fence = True, tok
+            elif stripped.startswith(fence):
+                in_fence, fence = False, None
+            continue
+        if not in_fence:
+            yield i, line
+
+
 def _parse_paper(md, adir):
     """paper.md is the single source for title + abstract + body.
 
-    title   = first H1 ('# ...')
+    title   = first H1 ('# ...')       (ignoring fenced code)
     abstract= the '## Abstract' section body (until the next '## ')
-    body     = everything from the first section heading after the abstract
+    body    = everything from the first section heading after the abstract
     """
     lines = md.splitlines()
+    nonfence = list(_nonfence_lines(lines))
+
     title = None
-    for ln in lines:
-        s = ln.rstrip()
-        if s.startswith("# ") and not s.startswith("## "):
-            title = s[2:].strip()
+    for _i, line in nonfence:
+        stripped = line.rstrip()
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            title = stripped[2:].strip()
             break
     if not title:
         raise BuildError("%s/paper.md: no H1 title (# ...) found" % adir)
 
-    abstract = None
-    body_start = None
-    for i, ln in enumerate(lines):
-        if re.match(r"^##\s+Abstract\s*$", ln.strip(), re.I):
-            j = i + 1
-            buf = []
-            while j < len(lines) and not lines[j].lstrip().startswith("## "):
-                buf.append(lines[j])
-                j += 1
-            abstract = "\n".join(buf).strip()
-            body_start = j
+    abs_pos = None
+    for pos, (_i, line) in enumerate(nonfence):
+        if re.match(r"^##\s+Abstract\s*$", line.strip(), re.I):
+            abs_pos = pos
             break
-    if not abstract:
+    if abs_pos is None:
         raise BuildError("%s/paper.md: no '## Abstract' section found" % adir)
+
+    buf = []
+    body_start = None
+    for _i, line in nonfence[abs_pos + 1:]:
+        if line.lstrip().startswith("## "):
+            body_start = _i
+            break
+        buf.append(line)
+    abstract = "\n".join(buf).strip()
+    if not abstract:
+        raise BuildError("%s/paper.md: empty '## Abstract' section" % adir)
+    if body_start is None:
+        raise BuildError("%s/paper.md: no section after the abstract" % adir)
 
     body = "\n".join(lines[body_start:]).strip()
     if not body:
@@ -110,6 +147,19 @@ def load_article(adir):
             raise BuildError("%s/meta.toml missing required key: %s" % (adir, req))
     if not isinstance(m["authors"], list) or not m["authors"]:
         raise BuildError("%s/meta.toml: authors must be a non-empty list" % adir)
+    # Coerce dates to ISO strings: unquoted TOML dates parse as datetime.date,
+    # which would crash _scholar_date. Validate the shape here, loudly.
+    for key in ("date", "online_date"):
+        val = m.get(key)
+        if val is None:
+            continue
+        if isinstance(val, (datetime.date, datetime.datetime)):
+            m[key] = val.isoformat()[:10]
+        else:
+            m[key] = str(val)
+        if not re.match(r"^\d{4}(-\d{2}-\d{2})?$", m[key]):
+            raise BuildError("%s/meta.toml: %s must be YYYY-MM-DD or YYYY, got %r"
+                             % (adir, key, m[key]))
     m["_dir"] = adir
     m["_body_md"] = body
     return m
@@ -219,11 +269,14 @@ def citation_meta(m, journal, landing_url, pdf_url):
 def _page(lang, head_title, description, canonical, extra_head, body,
           journal, root_rel):
     from jmaker.templates import STYLE_CSS, site_header, site_footer  # noqa
+    robots = ('<meta name="robots" content="noindex">\n'
+              if journal.get("_no_index") else "")
     return (
         "<!doctype html>\n"
         '<html lang="%s">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "%s"
         "<title>%s</title>\n"
         '<meta name="description" content="%s">\n'
         '<link rel="canonical" href="%s">\n'
@@ -231,7 +284,8 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         '<link rel="stylesheet" href="%sassets/style.css">\n'
         "</head>\n<body>\n%s\n%s\n%s\n</body>\n</html>\n"
     ) % (
-        html.escape(lang), html.escape(head_title), html.escape(description),
+        html.escape(lang), robots, html.escape(head_title),
+        html.escape(description),
         html.escape(canonical, quote=True), extra_head, root_rel,
         site_header(root_rel, journal["title"]), body,
         site_footer(journal["title"], journal.get("issn", "")),
@@ -290,7 +344,27 @@ def render_article(m, journal):
     return rel_dir, pdf_name, page
 
 
-def render_homepage(articles, journal):
+def render_page(slug, md_text, journal):
+    """Render a standalone static page (about, policies, license) from Markdown."""
+    lines = md_text.splitlines()
+    title = slug.replace("-", " ").title()
+    body_lines = lines
+    for i, ln in enumerate(lines):
+        s = ln.rstrip()
+        if s.startswith("# ") and not s.startswith("## "):
+            title = s[2:].strip()
+            body_lines = lines[:i] + lines[i + 1:]
+            break
+    body_html = md_to_html_fragment("\n".join(body_lines))
+    canonical = "%s/%s/" % (journal["base_url"], slug)
+    main = ('<main class="page">\n<h1>%s</h1>\n%s\n</main>'
+            % (html.escape(title), body_html))
+    page = _page(journal["language"], "%s -- %s" % (title, journal["title"]),
+                 title, canonical, "", main, journal, "../")
+    return title, page
+
+
+def render_homepage(articles, journal, pages):
     items = []
     by_vol = {}
     for m in articles:
@@ -300,11 +374,16 @@ def render_homepage(articles, journal):
                      '(%d article%s)</li>'
                      % (vol, vol, len(by_vol[vol]),
                         "" if len(by_vol[vol]) == 1 else "s"))
+    page_nav = ""
+    if pages:
+        links = "\n".join('<li><a href="%s/index.html">%s</a></li>'
+                          % (slug, html.escape(title)) for slug, title in pages)
+        page_nav = "<h2>About</h2>\n<ul>\n%s\n</ul>\n" % links
     body = (
         '<main>\n<h1>%s</h1>\n'
         "<p>An open-access journal of computer-security research.</p>\n"
-        "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n</main>"
-    ) % (html.escape(journal["title"]), "\n".join(items))
+        "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n%s</main>"
+    ) % (html.escape(journal["title"]), "\n".join(items), page_nav)
     return _page(journal["language"], journal["title"],
                  "Open-access computer-security research journal.",
                  journal["base_url"] + "/", "", body, journal, "")
@@ -317,10 +396,13 @@ def render_volume(vol, metas, journal):
     for m in metas:
         rel = _rel_dir(m)
         authors = ", ".join(html.escape(a["name"]) for a in m["authors"])
+        # From /v<N>/index.html the article is at i<M>/<slug>/ (same volume dir),
+        # so the relative link drops the leading volume segment and NO '../'.
+        rel_from_volume = "/".join(rel.split("/")[1:])
         lis.append(
-            '<li><div class="atitle"><a href="../%s/index.html">%s</a></div>'
+            '<li><div class="atitle"><a href="%s/index.html">%s</a></div>'
             '<div class="ameta">%s &middot; Issue %s</div></li>'
-            % ("/".join(rel.split("/")[1:]), html.escape(m["title"]),
+            % (rel_from_volume, html.escape(m["title"]),
                authors, html.escape(str(m["issue"]))))
     body = (
         '<main>\n<h1>Volume %d</h1>\n<ol class="articles">\n%s\n</ol>\n</main>'
@@ -341,16 +423,22 @@ def write_sitemap(urls, journal, out_dir):
 
 
 def write_robots(journal, out_dir):
-    txt = ("User-agent: *\nAllow: /\nSitemap: %s/sitemap.xml\n"
-           % journal["base_url"])
+    if journal.get("_no_index"):
+        # Interim / non-canonical host: keep every URL out of all indexes, so
+        # no non-permanent address is ever crawled (Scholar forbids URL changes).
+        txt = "User-agent: *\nDisallow: /\n"
+    else:
+        txt = ("User-agent: *\nAllow: /\nSitemap: %s/sitemap.xml\n"
+               % journal["base_url"])
     with open(os.path.join(out_dir, "robots.txt"), "w", encoding="utf-8") as fh:
         fh.write(txt)
 
 
 # ---------------------------------------------------------------- driver
 
-def build(articles_dir, journal_toml, out_dir, skip_pdf=False):
+def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     journal = load_journal(journal_toml)
+    journal["_no_index"] = no_index
     adirs = sorted(
         os.path.join(articles_dir, d) for d in os.listdir(articles_dir)
         if os.path.isdir(os.path.join(articles_dir, d))
@@ -374,9 +462,10 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False):
         figdir = os.path.join(m["_dir"], "figures")
         if os.path.isdir(figdir):
             shutil.copytree(figdir, os.path.join(dest, "figures"))
+        urls.append("%s/%s/" % (journal["base_url"], rel_dir))
         if not skip_pdf:
             md_to_pdf(m, journal, os.path.join(dest, pdf_name))
-        urls.append("%s/%s/" % (journal["base_url"], rel_dir))
+            urls.append("%s/%s/%s" % (journal["base_url"], rel_dir, pdf_name))
 
     by_vol = {}
     for m in articles:
@@ -388,8 +477,27 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False):
             fh.write(render_volume(vol, metas, journal))
         urls.append("%s/v%d/" % (journal["base_url"], vol))
 
+    # Standalone pages (about, policies, license) from <content>/pages/*.md.
+    pages = []
+    pages_dir = os.path.join(os.path.dirname(os.path.abspath(journal_toml)),
+                             "pages")
+    if os.path.isdir(pages_dir):
+        for fn in sorted(os.listdir(pages_dir)):
+            if not fn.endswith(".md"):
+                continue
+            slug = fn[:-3]
+            with open(os.path.join(pages_dir, fn), "r", encoding="utf-8") as fh:
+                title, page = render_page(slug, fh.read(), journal)
+            pdir = os.path.join(out_dir, slug)
+            os.makedirs(pdir, exist_ok=True)
+            with open(os.path.join(pdir, "index.html"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(page)
+            pages.append((slug, title))
+            urls.append("%s/%s/" % (journal["base_url"], slug))
+
     with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as fh:
-        fh.write(render_homepage(articles, journal))
+        fh.write(render_homepage(articles, journal, pages))
 
     os.makedirs(os.path.join(out_dir, "assets"), exist_ok=True)
     from jmaker.templates import STYLE_CSS
