@@ -1,0 +1,33 @@
+Source: journal-maker
+Section: web
+Priority: optional
+Maintainer: Patrick Schleizer <adrelanos@kicksecure.com>
+Build-Depends: debhelper-compat (= 13)
+Homepage: https://github.com/org-ai-assisted/journal-maker
+Vcs-Browser: https://github.com/org-ai-assisted/journal-maker
+Vcs-Git: https://github.com/org-ai-assisted/journal-maker.git
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+
+Package: journal-maker
+Architecture: all
+Depends: ${misc:Depends},
+ python3 (>= 3.11),
+ pandoc (>= 3.0),
+ texlive-xetex,
+ texlive-latex-recommended,
+ texlive-fonts-recommended,
+ lmodern,
+ poppler-utils,
+ qpdf,
+Description: build a Google-Scholar-indexable static journal from Markdown
+ Turns per-article Markdown plus TOML bibliographic metadata into a fully
+ static academic journal website: one HTML landing page per article carrying
+ Highwire Press citation_* meta tags and a visible abstract, a camera-ready
+ PDF built via pandoc and XeLaTeX in the same directory (as Google Scholar
+ requires), a homepage, per-volume browse pages, sitemap.xml and robots.txt.
+ Ships a Scholar-compliance checker that fails the build on any violation
+ (missing required meta, oversized or non-searchable PDF, mislocated
+ citation_pdf_url, leftover wiki markup) and a de-wiki drafting aid that turns
+ MediaWiki source into a Markdown starting point. No server-side logic at
+ serve time; deterministic and reproducible.

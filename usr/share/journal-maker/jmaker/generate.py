@@ -1,0 +1,404 @@
+#!/usr/bin/python3 -Bsu
+"""Build a static, Google-Scholar-indexable journal site from Markdown.
+
+Contract (single source of truth per article, so Scholar invariants hold):
+  articles/<slug>/meta.toml  -- bibliographic metadata (title, authors, dates,
+                                 volume/issue, abstract, doi, ...)
+  articles/<slug>/paper.md   -- the article BODY in Markdown, starting at the
+                                 first section ("## 1. Introduction"); no title
+                                 line, no abstract (those live in meta.toml).
+  articles/<slug>/source.mw  -- optional pristine wiki fork (ignored by build)
+  articles/<slug>/figures/   -- optional images, copied verbatim
+
+Output tree (served at the site root):
+  index.html                 -- journal homepage
+  v<N>/index.html            -- per-volume browse (every article <=2 links from home)
+  v<N>/i<M>/<slug>/index.html-- article landing page == full HTML article + meta
+  v<N>/i<M>/<slug>/<slug>.pdf-- camera-ready PDF in the SAME directory
+  assets/style.css, robots.txt, sitemap.xml, .nojekyll
+
+PDF and HTML both derive from meta.toml + paper.md, so citation_title always
+matches the visible title and the abstract is always both visible and in meta.
+"""
+
+import html
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+
+
+class BuildError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- loading
+
+def load_journal(path):
+    with open(path, "rb") as fh:
+        j = tomllib.load(fh)
+    for req in ("title", "base_url"):
+        if not j.get(req):
+            raise BuildError("journal.toml missing required key: %s" % req)
+    j["base_url"] = j["base_url"].rstrip("/")
+    j.setdefault("issn", "")
+    j.setdefault("language", "en")
+    j.setdefault("publisher", j["title"])
+    j.setdefault("license", "")
+    j.setdefault("license_url", "")
+    return j
+
+
+def _parse_paper(md, adir):
+    """paper.md is the single source for title + abstract + body.
+
+    title   = first H1 ('# ...')
+    abstract= the '## Abstract' section body (until the next '## ')
+    body     = everything from the first section heading after the abstract
+    """
+    lines = md.splitlines()
+    title = None
+    for ln in lines:
+        s = ln.rstrip()
+        if s.startswith("# ") and not s.startswith("## "):
+            title = s[2:].strip()
+            break
+    if not title:
+        raise BuildError("%s/paper.md: no H1 title (# ...) found" % adir)
+
+    abstract = None
+    body_start = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^##\s+Abstract\s*$", ln.strip(), re.I):
+            j = i + 1
+            buf = []
+            while j < len(lines) and not lines[j].lstrip().startswith("## "):
+                buf.append(lines[j])
+                j += 1
+            abstract = "\n".join(buf).strip()
+            body_start = j
+            break
+    if not abstract:
+        raise BuildError("%s/paper.md: no '## Abstract' section found" % adir)
+
+    body = "\n".join(lines[body_start:]).strip()
+    if not body:
+        raise BuildError("%s/paper.md: no body after the abstract" % adir)
+    return title, abstract, body
+
+
+def load_article(adir):
+    slug_default = os.path.basename(adir.rstrip("/"))
+    meta_path = os.path.join(adir, "meta.toml")
+    body_path = os.path.join(adir, "paper.md")
+    if not os.path.isfile(meta_path):
+        raise BuildError("%s: missing meta.toml" % adir)
+    if not os.path.isfile(body_path):
+        raise BuildError("%s: missing paper.md" % adir)
+    with open(meta_path, "rb") as fh:
+        m = tomllib.load(fh)
+    with open(body_path, "r", encoding="utf-8") as fh:
+        paper = fh.read()
+    title, abstract, body = _parse_paper(paper, adir)
+    m.setdefault("slug", slug_default)
+    m["title"] = title
+    m["abstract"] = abstract
+    for req in ("authors", "date", "volume", "issue"):
+        if not m.get(req):
+            raise BuildError("%s/meta.toml missing required key: %s" % (adir, req))
+    if not isinstance(m["authors"], list) or not m["authors"]:
+        raise BuildError("%s/meta.toml: authors must be a non-empty list" % adir)
+    m["_dir"] = adir
+    m["_body_md"] = body
+    return m
+
+
+# ---------------------------------------------------------------- helpers
+
+def _run(cmd, **kw):
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
+    except FileNotFoundError:
+        raise BuildError("required tool not found: %s" % cmd[0])
+    except subprocess.CalledProcessError as exc:
+        raise BuildError("%s failed:\n%s" % (" ".join(cmd), exc.stderr or exc.stdout))
+
+
+def _scholar_date(iso):
+    """ISO YYYY-MM-DD -> Scholar's YYYY/MM/DD; a bare year passes through."""
+    return iso.replace("-", "/")
+
+
+def _rel_dir(m):
+    return "v%s/i%s/%s" % (m["volume"], m["issue"], m["slug"])
+
+
+def _root_rel(rel_dir):
+    """'../' repeated to climb from an article dir back to the site root."""
+    depth = rel_dir.count("/") + 1
+    return "../" * depth
+
+
+def md_to_html_fragment(md_text):
+    r = _run(["pandoc", "-f", "markdown", "-t", "html5", "--wrap=none"],
+             input=md_text)
+    return r.stdout
+
+
+def _yaml_dq(s):
+    """Double-quoted YAML scalar, safely escaped."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def md_to_pdf(m, journal, out_pdf):
+    """Render a camera-ready PDF via pandoc + pdflatex (content is ASCII)."""
+    authors_yaml = "\n".join("  - " + _yaml_dq(a["name"]) for a in m["authors"])
+    abstract = " ".join(m["abstract"].split())
+    date_human = m["date"]
+    meta_block = (
+        "---\n"
+        "title: %s\n"
+        "author:\n%s\n"
+        "date: %s\n"
+        "abstract: %s\n"
+        "documentclass: article\n"
+        "---\n\n"
+    ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
+         _yaml_dq(abstract))
+    doc = meta_block + m["_body_md"]
+    _run([
+        "pandoc", "-f", "markdown", "-o", out_pdf,
+        "--pdf-engine=pdflatex",
+        "-V", "geometry:margin=1in",
+        "-V", "fontsize=11pt",
+        "-V", "linkcolor=blue",
+        "-V", "urlcolor=blue",
+    ], input=doc)
+
+
+# ---------------------------------------------------------------- meta tags
+
+def citation_meta(m, journal, landing_url, pdf_url):
+    tags = []
+
+    def add(name, content):
+        tags.append('<meta name="%s" content="%s">'
+                    % (name, html.escape(str(content), quote=True)))
+
+    add("citation_title", m["title"])
+    for a in m["authors"]:
+        add("citation_author", a["name"])
+        if a.get("institution"):
+            add("citation_author_institution", a["institution"])
+    add("citation_publication_date", _scholar_date(m["date"]))
+    if m.get("online_date"):
+        add("citation_online_date", _scholar_date(m["online_date"]))
+    add("citation_journal_title", journal["title"])
+    if journal.get("issn"):
+        add("citation_issn", journal["issn"])
+    add("citation_volume", m["volume"])
+    add("citation_issue", m["issue"])
+    if m.get("firstpage"):
+        add("citation_firstpage", m["firstpage"])
+    if m.get("lastpage"):
+        add("citation_lastpage", m["lastpage"])
+    if m.get("doi"):
+        add("citation_doi", m["doi"])
+    add("citation_language", m.get("language", journal["language"]))
+    for kw in m.get("keywords", []):
+        add("citation_keywords", kw)
+    add("citation_abstract_html_url", landing_url)
+    add("citation_pdf_url", pdf_url)
+    return "\n".join(tags)
+
+
+# ---------------------------------------------------------------- rendering
+
+def _page(lang, head_title, description, canonical, extra_head, body,
+          journal, root_rel):
+    from jmaker.templates import STYLE_CSS, site_header, site_footer  # noqa
+    return (
+        "<!doctype html>\n"
+        '<html lang="%s">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>%s</title>\n"
+        '<meta name="description" content="%s">\n'
+        '<link rel="canonical" href="%s">\n'
+        "%s\n"
+        '<link rel="stylesheet" href="%sassets/style.css">\n'
+        "</head>\n<body>\n%s\n%s\n%s\n</body>\n</html>\n"
+    ) % (
+        html.escape(lang), html.escape(head_title), html.escape(description),
+        html.escape(canonical, quote=True), extra_head, root_rel,
+        site_header(root_rel, journal["title"]), body,
+        site_footer(journal["title"], journal.get("issn", "")),
+    )
+
+
+def render_article(m, journal):
+    rel_dir = _rel_dir(m)
+    root_rel = _root_rel(rel_dir)
+    landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
+    pdf_name = "%s.pdf" % m["slug"]
+    pdf_url = landing_url + pdf_name
+
+    meta = citation_meta(m, journal, landing_url, pdf_url)
+    body_html = md_to_html_fragment(m["_body_md"])
+    abstract_html = md_to_html_fragment(m["abstract"])
+
+    authors_line = ", ".join(html.escape(a["name"]) for a in m["authors"])
+    year = m["date"][:4]
+    venue = "%s, Volume %s, Issue %s (%s)" % (
+        html.escape(journal["title"]), html.escape(str(m["volume"])),
+        html.escape(str(m["issue"])), html.escape(year))
+    doi_bit = ""
+    if m.get("doi"):
+        doi_bit = ' &middot; DOI: <a href="https://doi.org/%s">%s</a>' % (
+            html.escape(m["doi"], quote=True), html.escape(m["doi"]))
+    license_bit = ""
+    lic = m.get("license", journal.get("license", ""))
+    lic_url = journal.get("license_url", "")
+    if lic:
+        if lic_url:
+            license_bit = ('<footer class="license">Licensed under '
+                           '<a href="%s">%s</a>.</footer>'
+                           % (html.escape(lic_url, quote=True), html.escape(lic)))
+        else:
+            license_bit = ('<footer class="license">Licensed under %s.</footer>'
+                           % html.escape(lic))
+
+    main = (
+        '<main class="article">\n'
+        '<h1 class="title">%s</h1>\n'
+        '<p class="authors">%s</p>\n'
+        '<p class="venue">%s%s</p>\n'
+        '<p class="actions"><a href="%s">Download PDF</a></p>\n'
+        '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
+        '<article class="body">\n%s\n</article>\n'
+        "%s\n</main>"
+    ) % (html.escape(m["title"]), authors_line, venue, doi_bit, pdf_name,
+         abstract_html, body_html, license_bit)
+
+    description = " ".join(m["abstract"].split())[:300]
+    page = _page(
+        m.get("language", journal["language"]),
+        "%s -- %s" % (m["title"], journal["title"]),
+        description, landing_url, meta, main, journal, root_rel)
+    return rel_dir, pdf_name, page
+
+
+def render_homepage(articles, journal):
+    items = []
+    by_vol = {}
+    for m in articles:
+        by_vol.setdefault(int(m["volume"]), []).append(m)
+    for vol in sorted(by_vol, reverse=True):
+        items.append('<li><a href="v%d/index.html">Volume %d</a> '
+                     '(%d article%s)</li>'
+                     % (vol, vol, len(by_vol[vol]),
+                        "" if len(by_vol[vol]) == 1 else "s"))
+    body = (
+        '<main>\n<h1>%s</h1>\n'
+        "<p>An open-access journal of computer-security research.</p>\n"
+        "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n</main>"
+    ) % (html.escape(journal["title"]), "\n".join(items))
+    return _page(journal["language"], journal["title"],
+                 "Open-access computer-security research journal.",
+                 journal["base_url"] + "/", "", body, journal, "")
+
+
+def render_volume(vol, metas, journal):
+    metas = sorted(metas, key=lambda m: (int(m["issue"]),
+                                         int(m.get("firstpage", 0) or 0)))
+    lis = []
+    for m in metas:
+        rel = _rel_dir(m)
+        authors = ", ".join(html.escape(a["name"]) for a in m["authors"])
+        lis.append(
+            '<li><div class="atitle"><a href="../%s/index.html">%s</a></div>'
+            '<div class="ameta">%s &middot; Issue %s</div></li>'
+            % ("/".join(rel.split("/")[1:]), html.escape(m["title"]),
+               authors, html.escape(str(m["issue"]))))
+    body = (
+        '<main>\n<h1>Volume %d</h1>\n<ol class="articles">\n%s\n</ol>\n</main>'
+    ) % (vol, "\n".join(lis))
+    return _page(journal["language"], "Volume %d -- %s" % (vol, journal["title"]),
+                 "Volume %d." % vol, "%s/v%d/" % (journal["base_url"], vol),
+                 "", body, journal, "../")
+
+
+def write_sitemap(urls, journal, out_dir):
+    entries = "\n".join(
+        "  <url><loc>%s</loc></url>" % html.escape(u, quote=True) for u in urls)
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+           "%s\n</urlset>\n") % entries
+    with open(os.path.join(out_dir, "sitemap.xml"), "w", encoding="utf-8") as fh:
+        fh.write(xml)
+
+
+def write_robots(journal, out_dir):
+    txt = ("User-agent: *\nAllow: /\nSitemap: %s/sitemap.xml\n"
+           % journal["base_url"])
+    with open(os.path.join(out_dir, "robots.txt"), "w", encoding="utf-8") as fh:
+        fh.write(txt)
+
+
+# ---------------------------------------------------------------- driver
+
+def build(articles_dir, journal_toml, out_dir, skip_pdf=False):
+    journal = load_journal(journal_toml)
+    adirs = sorted(
+        os.path.join(articles_dir, d) for d in os.listdir(articles_dir)
+        if os.path.isdir(os.path.join(articles_dir, d))
+        and os.path.isfile(os.path.join(articles_dir, d, "meta.toml")))
+    if not adirs:
+        raise BuildError("no articles with meta.toml under %s" % articles_dir)
+
+    articles = [load_article(d) for d in adirs]
+
+    if os.path.isdir(out_dir):
+        shutil.rmtree(out_dir)
+    os.makedirs(out_dir)
+
+    urls = [journal["base_url"] + "/"]
+    for m in articles:
+        rel_dir, pdf_name, page = render_article(m, journal)
+        dest = os.path.join(out_dir, rel_dir)
+        os.makedirs(dest, exist_ok=True)
+        with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
+            fh.write(page)
+        figdir = os.path.join(m["_dir"], "figures")
+        if os.path.isdir(figdir):
+            shutil.copytree(figdir, os.path.join(dest, "figures"))
+        if not skip_pdf:
+            md_to_pdf(m, journal, os.path.join(dest, pdf_name))
+        urls.append("%s/%s/" % (journal["base_url"], rel_dir))
+
+    by_vol = {}
+    for m in articles:
+        by_vol.setdefault(int(m["volume"]), []).append(m)
+    for vol, metas in by_vol.items():
+        vdir = os.path.join(out_dir, "v%d" % vol)
+        os.makedirs(vdir, exist_ok=True)
+        with open(os.path.join(vdir, "index.html"), "w", encoding="utf-8") as fh:
+            fh.write(render_volume(vol, metas, journal))
+        urls.append("%s/v%d/" % (journal["base_url"], vol))
+
+    with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as fh:
+        fh.write(render_homepage(articles, journal))
+
+    os.makedirs(os.path.join(out_dir, "assets"), exist_ok=True)
+    from jmaker.templates import STYLE_CSS
+    with open(os.path.join(out_dir, "assets", "style.css"), "w",
+              encoding="utf-8") as fh:
+        fh.write(STYLE_CSS)
+
+    write_sitemap(urls, journal, out_dir)
+    write_robots(journal, out_dir)
+    open(os.path.join(out_dir, ".nojekyll"), "w").close()
+
+    return len(articles), out_dir

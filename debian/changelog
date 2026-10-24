@@ -1,0 +1,5 @@
+journal-maker (0.1-1) unstable; urgency=medium
+
+  * Initial packaging: generator, Scholar-compliance checker, de-wiki aid.
+
+ -- Patrick Schleizer <adrelanos@kicksecure.com>  Fri, 24 Oct 2026 00:00:00 +0000

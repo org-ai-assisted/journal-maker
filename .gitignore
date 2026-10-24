@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.mypy_cache/
+.hypothesis/
+# build output of a journal site (generated, never committed)
+_site/
