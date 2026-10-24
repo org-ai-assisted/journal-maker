@@ -45,6 +45,11 @@ def load_journal(path):
     for req in ("title", "base_url"):
         if not j.get(req):
             raise BuildError("journal.toml missing required key: %s" % req)
+    # base_url must be absolute (Scholar requires absolute citation_pdf_url) and
+    # free of whitespace/newlines (it is interpolated into robots.txt + sitemap).
+    if not re.match(r"^https?://[^\s]+$", j["base_url"]):
+        raise BuildError("journal.toml: base_url must be an absolute http(s) URL "
+                         "with no whitespace, got %r" % j["base_url"])
     j["base_url"] = j["base_url"].rstrip("/")
     j.setdefault("issn", "")
     j.setdefault("language", "en")
@@ -140,6 +145,11 @@ def load_article(adir):
         paper = fh.read()
     title, abstract, body = _parse_paper(paper, adir)
     m.setdefault("slug", slug_default)
+    # Slug lands in filesystem paths and HTML attributes; keep it strict so it
+    # cannot traverse out of the output tree or inject into an href.
+    if not re.match(r"^[a-z0-9][a-z0-9-]*$", str(m["slug"])):
+        raise BuildError("%s/meta.toml: slug must match [a-z0-9][a-z0-9-]*, got %r"
+                         % (adir, m["slug"]))
     m["title"] = title
     m["abstract"] = abstract
     for req in ("authors", "date", "volume", "issue"):
@@ -147,6 +157,17 @@ def load_article(adir):
             raise BuildError("%s/meta.toml missing required key: %s" % (adir, req))
     if not isinstance(m["authors"], list) or not m["authors"]:
         raise BuildError("%s/meta.toml: authors must be a non-empty list" % adir)
+    for author in m["authors"]:
+        if not isinstance(author, dict) or not str(author.get("name", "")).strip():
+            raise BuildError("%s/meta.toml: each author needs a non-empty name"
+                             % adir)
+    for key in ("volume", "issue"):
+        try:
+            int(m[key])
+        except (TypeError, ValueError):
+            raise BuildError("%s/meta.toml: %s must be an integer" % (adir, key))
+    if "keywords" in m and not isinstance(m["keywords"], list):
+        raise BuildError("%s/meta.toml: keywords must be a list" % adir)
     # Coerce dates to ISO strings: unquoted TOML dates parse as datetime.date,
     # which would crash _scholar_date. Validate the shape here, loudly.
     for key in ("date", "online_date"):
@@ -182,7 +203,7 @@ def _scholar_date(iso):
 
 
 def _rel_dir(m):
-    return "v%s/i%s/%s" % (m["volume"], m["issue"], m["slug"])
+    return "v%d/i%d/%s" % (int(m["volume"]), int(m["issue"]), m["slug"])
 
 
 def _root_rel(rel_dir):
@@ -191,10 +212,22 @@ def _root_rel(rel_dir):
     return "../" * depth
 
 
+# Neutralize dangerous URL schemes in generated href/src (defense in depth;
+# raw HTML passthrough is already disabled in the reader).
+_DANGEROUS_URL_RE = re.compile(
+    r'((?:href|src)\s*=\s*")\s*(?:javascript|vbscript|data)\s*:', re.I)
+
+
+def _sanitize_html(frag):
+    return _DANGEROUS_URL_RE.sub(r"\1#", frag)
+
+
 def md_to_html_fragment(md_text):
-    r = _run(["pandoc", "-f", "markdown", "-t", "html5", "--wrap=none"],
+    # -raw_html: author raw HTML (e.g. <script>) is escaped to text, not passed
+    # through, so a submitted article cannot inject executable markup.
+    r = _run(["pandoc", "-f", "markdown-raw_html", "-t", "html5", "--wrap=none"],
              input=md_text)
-    return r.stdout
+    return _sanitize_html(r.stdout)
 
 
 def _yaml_dq(s):
@@ -218,14 +251,19 @@ def md_to_pdf(m, journal, out_pdf):
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
     doc = meta_block + m["_body_md"]
+    # -raw_tex: author raw TeX (e.g. \input{/etc/passwd}) is not passed to the
+    # engine. openin_any/openout_any=p additionally bar the engine from reading
+    # or writing files outside the tree, in case any TeX slips through.
+    env = dict(os.environ, openin_any="p", openout_any="p")
     _run([
-        "pandoc", "-f", "markdown", "-o", out_pdf,
+        "pandoc", "-f", "markdown-raw_tex", "-o", out_pdf,
         "--pdf-engine=pdflatex",
+        "--resource-path", m["_dir"],
         "-V", "geometry:margin=1in",
         "-V", "fontsize=11pt",
         "-V", "linkcolor=blue",
         "-V", "urlcolor=blue",
-    ], input=doc)
+    ], input=doc, env=env)
 
 
 # ---------------------------------------------------------------- meta tags
@@ -366,7 +404,7 @@ def render_page(slug, md_text, journal):
 
 def render_homepage(articles, journal, pages):
     items = []
-    by_vol = {}
+    by_vol: dict = {}
     for m in articles:
         by_vol.setdefault(int(m["volume"]), []).append(m)
     for vol in sorted(by_vol, reverse=True):
@@ -436,9 +474,31 @@ def write_robots(journal, out_dir):
 
 # ---------------------------------------------------------------- driver
 
+def _is_within(path, parent):
+    try:
+        return os.path.commonpath([path, parent]) == parent and path != parent
+    except ValueError:
+        return False
+
+
 def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     journal = load_journal(journal_toml)
     journal["_no_index"] = no_index
+
+    # The output dir is wiped (rmtree); refuse only when that would DELETE a
+    # source -- out == / contains articles or the content root, or out is inside
+    # articles. A normal _site inside the content repo is fine.
+    out_abs = os.path.abspath(out_dir)
+    articles_abs = os.path.abspath(articles_dir)
+    content_root = os.path.dirname(os.path.abspath(journal_toml))
+    for src in (articles_abs, content_root):
+        if out_abs == src or _is_within(src, out_abs):
+            raise BuildError("refusing to build: output dir %r would delete "
+                             "source %r" % (out_dir, src))
+    if _is_within(out_abs, articles_abs):
+        raise BuildError("refusing to build: output dir %r is inside the "
+                         "articles dir %r" % (out_dir, articles_abs))
+
     adirs = sorted(
         os.path.join(articles_dir, d) for d in os.listdir(articles_dir)
         if os.path.isdir(os.path.join(articles_dir, d))
@@ -453,21 +513,31 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     os.makedirs(out_dir)
 
     urls = [journal["base_url"] + "/"]
+    seen = {}
     for m in articles:
         rel_dir, pdf_name, page = render_article(m, journal)
+        if rel_dir in seen:
+            raise BuildError("duplicate route %s from %s and %s"
+                             % (rel_dir, seen[rel_dir], m["_dir"]))
+        seen[rel_dir] = m["_dir"]
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(page)
         figdir = os.path.join(m["_dir"], "figures")
         if os.path.isdir(figdir):
+            for froot, fdirs, ffiles in os.walk(figdir):
+                for nm in fdirs + ffiles:
+                    if os.path.islink(os.path.join(froot, nm)):
+                        raise BuildError("symlink in figures not allowed: %s"
+                                         % os.path.join(froot, nm))
             shutil.copytree(figdir, os.path.join(dest, "figures"))
         urls.append("%s/%s/" % (journal["base_url"], rel_dir))
         if not skip_pdf:
             md_to_pdf(m, journal, os.path.join(dest, pdf_name))
             urls.append("%s/%s/%s" % (journal["base_url"], rel_dir, pdf_name))
 
-    by_vol = {}
+    by_vol: dict = {}
     for m in articles:
         by_vol.setdefault(int(m["volume"]), []).append(m)
     for vol, metas in by_vol.items():

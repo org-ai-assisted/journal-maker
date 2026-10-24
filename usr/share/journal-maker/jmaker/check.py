@@ -14,10 +14,11 @@ Scholar invariants (scholar.google.com/intl/en/scholar/inclusion.html):
 PDF sanity: valid %PDF header, <= 5 MB, extractable (searchable) text.
 
 PDF security (supply-chain policy): a generated PDF must carry NO active content.
-Flags /JavaScript /JS /OpenAction /AA /Launch /EmbeddedFile /RichMedia /XFA
-/SubmitForm /ImportData /GoToR. Detection normalizes object streams with qpdf
-when available (so compressed dictionary keys are exposed); without qpdf it is a
-best-effort raw scan and says so.
+Flags the executable/exfiltration primitives (/JavaScript /JS /Launch
+/EmbeddedFile /RichMedia /XFA /SubmitForm /ImportData /GoToR) by scanning the PDF
+STRUCTURE via `qpdf --json` -- not stream content, so prose mentioning a token
+does not false-positive and hex-encoded names are normalized. qpdf is required;
+its absence is an ERROR (cannot verify), never a silent pass.
 """
 
 import os
@@ -27,7 +28,9 @@ import subprocess
 import sys
 
 MAX_PDF_BYTES = 5 * 1024 * 1024
-MIN_PDF_TEXT_CHARS = 500
+# A floor just high enough to prove text is extractable (not a scanned image),
+# without rejecting a legitimately short note.
+MIN_PDF_TEXT_CHARS = 20
 
 # Executable / exfiltration primitives -- the real supply-chain risk. NOT
 # included: /OpenAction and /AA, which are benign action TRIGGERS (hyperref
@@ -81,8 +84,9 @@ def _valid_date(s):
 
 
 def _unescape(s):
-    return (s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-             .replace("&quot;", '"').replace("&#39;", "'").replace("&middot;", "."))
+    return (s.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">")
+             .replace("&quot;", '"').replace("&#39;", "'").replace("&middot;", ".")
+             .replace("&amp;", "&"))
 
 
 def _text_only(htmlfrag):
@@ -90,7 +94,7 @@ def _text_only(htmlfrag):
 
 
 def _collect_meta(page):
-    out = {"citation_author": []}
+    out: dict = {"citation_author": []}
     for name, content in _META_RE.findall(page):
         name = name.lower()
         if name == "citation_author":
@@ -104,15 +108,17 @@ def _dirname_url(u):
     return u.rsplit("/", 1)[0] if "/" in u else u
 
 
-def check_article(page_path, f):
+def check_article(page_path, f, out_dir):
     with open(page_path, "r", encoding="utf-8") as fh:
         page = fh.read()
     meta = _collect_meta(page)
 
-    if not meta.get("citation_title"):
+    title = meta.get("citation_title")
+    if not title:
         f.err(page_path, "missing citation_title")
-    if not meta.get("citation_author"):
-        f.err(page_path, "missing citation_author (>=1 required)")
+    authors = [a for a in meta.get("citation_author", []) if a.strip()]
+    if not authors:
+        f.err(page_path, "missing citation_author (>=1 non-empty required)")
     pub = meta.get("citation_publication_date")
     if not pub:
         f.err(page_path, "missing citation_publication_date")
@@ -121,32 +127,43 @@ def check_article(page_path, f):
     pdf_url = meta.get("citation_pdf_url")
     if not pdf_url:
         f.err(page_path, "missing citation_pdf_url")
+    elif not re.match(r"^https?://", pdf_url):
+        f.err(page_path, "citation_pdf_url must be absolute http(s): %r" % pdf_url)
 
-    # title consistency
+    # title consistency (collapse whitespace on BOTH sides)
     h1 = _H1_RE.search(page)
     if not h1:
         f.err(page_path, "no visible <h1 class=title>")
-    elif meta.get("citation_title") and \
-            _text_only(h1.group(1)) != meta["citation_title"].strip():
+    elif title and _text_only(h1.group(1)) != _text_only(title):
         f.err(page_path, "citation_title != visible <h1> (%r vs %r)"
-              % (meta["citation_title"], _text_only(h1.group(1))))
+              % (title, _text_only(h1.group(1))))
 
-    # abstract visible and substantial
+    # abstract visible and non-trivial (entities, incl. &nbsp;, already decoded)
     ab = _ABSTRACT_RE.search(page)
-    if not ab or len(_text_only(ab.group(1))) < 80:
+    if not ab or len(_text_only(ab.group(1))) < 20:
         f.err(page_path, "abstract not visible / too short on the page")
 
-    # same-directory PDF rule + file exists
+    # The PDF URL must point at this article's REAL on-disk location, and exist.
+    # Tying the URL to the file's path under out_dir defeats a mislocated or
+    # off-origin citation_pdf_url and an encoded-traversal basename.
     if pdf_url:
+        rel = os.path.relpath(os.path.dirname(page_path), out_dir).replace(os.sep, "/")
+        name = pdf_url.rsplit("/", 1)[-1]
+        if not pdf_url.endswith("/%s/%s" % (rel, name)):
+            f.err(page_path, "citation_pdf_url %r not at the article's location "
+                  "(expected .../%s/<file>.pdf)" % (pdf_url, rel))
         landing = meta.get("citation_abstract_html_url", "")
-        if landing and _dirname_url(pdf_url) != _dirname_url(landing):
-            f.err(page_path, "citation_pdf_url not in landing-page directory")
-        pdf_local = os.path.join(os.path.dirname(page_path),
-                                 pdf_url.rsplit("/", 1)[-1])
-        if not os.path.isfile(pdf_local):
-            f.err(page_path, "citation_pdf_url file missing: %s" % pdf_local)
+        if landing and not landing.rstrip("/").endswith("/%s" % rel):
+            f.err(page_path, "citation_abstract_html_url %r not at the article's "
+                  "location" % landing)
+        if "/" in name or ".." in name or "%" in name:
+            f.err(page_path, "citation_pdf_url basename unsafe: %r" % name)
         else:
-            check_pdf(pdf_local, f)
+            pdf_local = os.path.join(os.path.dirname(page_path), name)
+            if not os.path.isfile(pdf_local):
+                f.err(page_path, "citation_pdf_url file missing: %s" % pdf_local)
+            else:
+                check_pdf(pdf_local, f)
 
     # no leftover wiki markup in the rendered body (ignoring code/pre spans)
     body_text = _text_only(_CODE_RE.sub(" ", page))
@@ -156,29 +173,12 @@ def check_article(page_path, f):
         f.err(page_path, "leftover wiki template {{...}} in output")
 
 
-def _normalized_pdf_bytes(path):
-    """Expose compressed dictionary keys via qpdf if present; else raw bytes."""
-    qpdf = shutil.which("qpdf")
-    if qpdf:
-        try:
-            r = subprocess.run(
-                [qpdf, "--qdf", "--object-streams=disable",
-                 "--decode-level=all", path, "-"],
-                capture_output=True)
-            if r.returncode in (0, 3):  # 3 == warnings only
-                return r.stdout, True
-        except Exception:
-            pass
-    with open(path, "rb") as fh:
-        return fh.read(), False
-
-
 def check_pdf(path, f):
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
-        head = fh.read(5)
-    if head != b"%PDF-":
-        f.err(path, "not a valid PDF (bad %PDF header)")
+        head = fh.read(1024)
+    if b"%PDF-" not in head:
+        f.err(path, "not a valid PDF (no %PDF header in first 1KB)")
         return
     if size > MAX_PDF_BYTES:
         f.err(path, "PDF too large: %d bytes (> %d)" % (size, MAX_PDF_BYTES))
@@ -192,13 +192,24 @@ def check_pdf(path, f):
     else:
         f.warn(path, "pdftotext absent; cannot verify searchable text")
 
-    # supply-chain: no active content
-    data, normalized = _normalized_pdf_bytes(path)
-    hits = sorted({t.decode() for t in ACTIVE_TOKENS if t in data})
+    # supply-chain: no active content. Scan the STRUCTURE (qpdf --json), not
+    # stream content, so article prose mentioning a token does not false-positive
+    # and hex-encoded names are normalized. qpdf absence is an ERROR, not a pass.
+    qpdf = shutil.which("qpdf")
+    if not qpdf:
+        f.err(path, "qpdf absent; cannot verify PDF active content")
+        return
+    try:
+        r = subprocess.run([qpdf, "--json=latest", path], capture_output=True)
+    except Exception as exc:
+        f.err(path, "qpdf failed: %s" % exc)
+        return
+    if r.returncode not in (0, 3):  # 3 == warnings only
+        f.err(path, "qpdf could not parse PDF (rc=%d)" % r.returncode)
+        return
+    hits = sorted({t.decode() for t in ACTIVE_TOKENS if t in r.stdout})
     if hits:
         f.err(path, "active content in PDF: %s" % ", ".join(hits))
-    elif not normalized:
-        f.warn(path, "qpdf absent; active-content scan was raw/best-effort")
 
 
 def check_site(out_dir):
@@ -219,7 +230,7 @@ def check_site(out_dir):
     for root, _dirs, files in os.walk(out_dir):
         if "index.html" in files and re.search(r"/v\d+/i\d+/[^/]+$", root):
             found += 1
-            check_article(os.path.join(root, "index.html"), f)
+            check_article(os.path.join(root, "index.html"), f, out_dir)
     if found == 0:
         f.err(out_dir, "no article landing pages found")
     return f, found

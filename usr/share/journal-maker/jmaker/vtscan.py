@@ -22,9 +22,9 @@ import subprocess
 import sys
 import time
 
-# Published assets to scan. Dotfiles (e.g. .nojekyll) are skipped.
-_SCAN_EXT = {".html", ".pdf", ".css", ".xml", ".txt", ".js",
-             ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif"}
+# Never-meaningful-to-scan published files. EVERYTHING else under the site is
+# scanned -- no extension allowlist (an .exe/.php/.dotfile must not slip the gate).
+_SKIP_NAMES = {".nojekyll", "vt-results.json", "VT-CHECKLIST.md"}
 
 
 def _sha256(path):
@@ -39,17 +39,18 @@ def _assets(site):
     out = []
     for root, _dirs, files in os.walk(site):
         for name in files:
-            if name.startswith("."):
+            if name in _SKIP_NAMES:
                 continue
-            if name in ("vt-results.json", "VT-CHECKLIST.md"):
-                continue
-            if os.path.splitext(name)[1].lower() in _SCAN_EXT:
-                out.append(os.path.join(root, name))
+            out.append(os.path.join(root, name))
     return sorted(out)
 
 
 def _query(client, path, upload):
-    """Run the VT client on one file; return a parsed dict or raise."""
+    """Run the VT client on one file; return a parsed dict or raise.
+
+    A detection count MUST be present and numeric; a client that exits 0 with no
+    verdict (e.g. '{}' or '{"status":"queued"}') is an ERROR, never a clean pass.
+    """
     cmd = [client]
     if upload:
         cmd.append("--upload")
@@ -62,11 +63,19 @@ def _query(client, path, upload):
         data = json.loads(r.stdout)
     except json.JSONDecodeError:
         raise RuntimeError("client did not emit JSON: %s" % r.stdout[:200])
-    det = (data.get("malicious")
-           if data.get("malicious") is not None
-           else data.get("detections", 0))
+    det = None
+    for key in ("malicious", "detections", "positives"):
+        val = data.get(key)
+        if isinstance(val, bool):  # bool is not a detection count
+            continue
+        if isinstance(val, int):
+            det = val
+            break
+    if det is None:
+        raise RuntimeError("client gave no numeric detection count: %s"
+                           % r.stdout[:200])
     return {
-        "detections": int(det or 0),
+        "detections": det,
         "permalink": data.get("permalink") or data.get("link", ""),
         "scan_date": data.get("scan_date") or data.get("date", ""),
         "raw": data,
@@ -77,11 +86,16 @@ def main(site, client="vtai.py", out=None, upload=True):
     if not os.path.isdir(site):
         print("vtscan: no such site dir: %s" % site, file=sys.stderr)
         return 2
-    if shutil.which(client) is None and not os.path.isfile(client):
-        # absence is a FAILURE, not a skip
-        print("vtscan: VirusTotal client not found: %s "
-              "(required by supply-chain policy)" % client, file=sys.stderr)
-        return 2
+    if shutil.which(client) is None:
+        if os.path.isfile(client):
+            # A client given as a path (e.g. ./vtai.py) must be run by absolute
+            # path; subprocess/execvp searches PATH only and would miss it.
+            client = os.path.abspath(client)
+        else:
+            # absence is a FAILURE, not a skip
+            print("vtscan: VirusTotal client not found: %s "
+                  "(required by supply-chain policy)" % client, file=sys.stderr)
+            return 2
 
     # Write reports OUTSIDE the site tree, so the published journal never ships
     # an asset inventory (paths, sizes, sha256, VT permalinks).

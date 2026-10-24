@@ -113,7 +113,7 @@ class TestCheckerCanary(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(page)
             f = c.Findings()
-            c.check_article(path, f)
+            c.check_article(path, f, d)
             return [m for _lvl, _p, m in f.errors]
 
     def test_missing_pdf_url_errors(self):
@@ -143,6 +143,121 @@ class TestCheckerCanary(unittest.TestCase):
                  "<code>${{ secrets.X }}</code>")
         msgs = self._run(page)
         self.assertFalse(any("wiki" in m for m in msgs))
+
+
+class TestZenodo(unittest.TestCase):
+    def test_build_metadata_maps_fields(self):
+        from jmaker import zenodo
+        m = dict(META)
+        m["title"] = "A Title"
+        m["abstract"] = "An   abstract."
+        out = zenodo.build_metadata(m, JOURNAL, m["abstract"])["metadata"]
+        self.assertEqual(out["title"], "A Title")
+        self.assertEqual(out["upload_type"], "publication")
+        self.assertEqual(out["publication_type"], "article")
+        self.assertEqual(out["description"], "An abstract.")
+        self.assertEqual(out["license"], "cc-by-4.0")
+        self.assertEqual(out["journal_title"], "Computer Security Research")
+        self.assertEqual(len(out["creators"]), 2)
+        self.assertEqual(out["creators"][0]["affiliation"], "U")
+        self.assertEqual(out["journal_pages"], "1-12")
+
+    def test_write_doi_to_meta(self):
+        from jmaker import zenodo
+        with tempfile.TemporaryDirectory() as d:
+            mp = os.path.join(d, "meta.toml")
+            with open(mp, "w", encoding="utf-8") as fh:
+                fh.write('date = "2026-10-24"\ndoi = ""\nvolume = 1\n')
+            zenodo._write_doi_to_meta(d, "10.5281/zenodo.123")
+            with open(mp, "r", encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn('doi = "10.5281/zenodo.123"', text)
+            self.assertNotIn('doi = ""', text)
+
+
+class TestLoading(unittest.TestCase):
+    def _article(self, d, meta_toml):
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "meta.toml"), "w", encoding="utf-8") as fh:
+            fh.write(meta_toml)
+        with open(os.path.join(d, "paper.md"), "w", encoding="utf-8") as fh:
+            fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                     "validation purposes here.\n\n## 1. Intro\n\nBody.\n")
+
+    def test_base_url_must_be_absolute(self):
+        with tempfile.TemporaryDirectory() as d:
+            jt = os.path.join(d, "journal.toml")
+            with open(jt, "w", encoding="utf-8") as fh:
+                fh.write('title = "J"\nbase_url = "/journal"\n')
+            with self.assertRaises(g.BuildError):
+                g.load_journal(jt)
+
+    def test_bad_slug_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'slug = "../evil"\nvolume = 1\nissue = 1\n'
+                              'date = "2026-10-24"\nauthors = [{name = "A"}]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_empty_author_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'volume = 1\nissue = 1\ndate = "2026-10-24"\n'
+                              'authors = [{name = ""}]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_out_overlapping_articles_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            jt = os.path.join(d, "journal.toml")
+            with open(jt, "w", encoding="utf-8") as fh:
+                fh.write('title = "J"\nbase_url = "https://e.example"\n')
+            arts = os.path.join(d, "articles")
+            os.makedirs(arts)
+            with self.assertRaises(g.BuildError):
+                g.build(arts, jt, arts)  # out == articles dir
+
+    def test_out_site_inside_content_allowed(self):
+        # a normal _site under the content root must NOT trip the guard; it fails
+        # later (no articles), which is a different, expected error
+        with tempfile.TemporaryDirectory() as d:
+            jt = os.path.join(d, "journal.toml")
+            with open(jt, "w", encoding="utf-8") as fh:
+                fh.write('title = "J"\nbase_url = "https://e.example"\n')
+            os.makedirs(os.path.join(d, "articles"))
+            try:
+                g.build(os.path.join(d, "articles"), jt, os.path.join(d, "_site"))
+            except g.BuildError as exc:
+                self.assertNotIn("would delete", str(exc))
+                self.assertNotIn("inside the", str(exc))
+
+
+class TestCheckerLocation(unittest.TestCase):
+    def _run(self, meta):
+        with tempfile.TemporaryDirectory() as out:
+            d = os.path.join(out, "v1", "i1", "x")
+            os.makedirs(d)
+            with open(os.path.join(d, "index.html"), "w", encoding="utf-8") as fh:
+                fh.write(_article_page(meta=meta))
+            f = c.Findings()
+            c.check_article(os.path.join(d, "index.html"), f, out)
+            return [m for _lvl, _p, m in f.errors]
+
+    def test_wrong_location_errors(self):
+        msgs = self._run({"citation_pdf_url": "https://h/wrong/x.pdf",
+                          "citation_abstract_html_url": "https://h/v1/i1/x/"})
+        self.assertTrue(any("not at the article" in m for m in msgs))
+
+    def test_correct_location_no_location_error(self):
+        msgs = self._run({"citation_pdf_url": "https://h/v1/i1/x/x.pdf",
+                          "citation_abstract_html_url": "https://h/v1/i1/x/"})
+        self.assertFalse(any("not at the article" in m for m in msgs))
+
+    def test_relative_pdf_url_errors(self):
+        msgs = self._run({"citation_pdf_url": "x.pdf",
+                          "citation_abstract_html_url": "https://h/v1/i1/x/"})
+        self.assertTrue(any("absolute" in m for m in msgs))
 
 
 class TestPdfCanary(unittest.TestCase):
