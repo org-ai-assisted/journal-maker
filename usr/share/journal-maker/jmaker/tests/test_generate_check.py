@@ -264,6 +264,14 @@ class TestLoading(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.load_article(ad)
 
+    def test_negative_volume_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'volume = -1\nissue = 1\ndate = "2026-10-24"\n'
+                              'authors = [{name = "A"}]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
     def test_remote_image_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             ad = os.path.join(d, "art")

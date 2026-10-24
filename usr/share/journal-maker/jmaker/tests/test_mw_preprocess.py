@@ -45,6 +45,12 @@ class TestPreprocess(unittest.TestCase):
         out = mp.preprocess("{{intro|Let x = 1 be an integer.}}")
         self.assertIn("Let x = 1 be an integer.", out)
 
+    def test_discard_only_parent_with_unknown_child(self):
+        # a metadata-only parent (#seo / chrome) is dropped whole, even with an
+        # unknown child -- it must not raise or block conversion
+        self.assertEqual(mp.preprocess("{{#seo:|image={{PAGENAME}}}}").strip(), "")
+        self.assertEqual(mp.preprocess("{{Footer|{{Weird}}}}").strip(), "")
+
     def test_split_respects_nested_links(self):
         segs = mp._split_args("quotation|quote=see [[Foo|bar]]|context=C")
         self.assertEqual(len(segs), 3)

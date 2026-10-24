@@ -176,6 +176,8 @@ def load_article(adir):
                 or (isinstance(val, str) and val.isdigit())):
             raise BuildError("%s/meta.toml: %s must be an integer" % (adir, key))
         m[key] = int(val)
+        if m[key] < 1:
+            raise BuildError("%s/meta.toml: %s must be a positive integer" % (adir, key))
     if "keywords" in m and not isinstance(m["keywords"], list):
         raise BuildError("%s/meta.toml: keywords must be a list" % adir)
     # Coerce dates to ISO strings: unquoted TOML dates parse as datetime.date,

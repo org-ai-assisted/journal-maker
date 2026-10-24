@@ -139,9 +139,20 @@ def preprocess(text):
         while span is not None:
             s, e = span
             inner = text[s + 2:e - 2]
-            # Outer template still contains a template: DESCEND into it (search
-            # from just after this '{{') so the innermost is expanded first.
             if "{{" in inner:
+                # If the OUTER template is discard-only (chrome / #seo), drop it
+                # WHOLE without descending -- otherwise an unknown child (e.g.
+                # {{PAGENAME}} inside {{#seo:...}}) would wrongly raise.
+                outer = _split_args(inner)[0].strip().lower()
+                if (outer in _CHROME or outer == "#seo"
+                        or outer.startswith("#seo:")):
+                    out.append(text[pos_cur:s])
+                    pos_cur = e
+                    changed = True
+                    span = _find_template(text, e)
+                    continue
+                # Otherwise DESCEND (search from just after this '{{') so the
+                # innermost template is expanded first.
                 span = _find_template(text, s + 2)
                 continue
             name, p, nd = _parse_args(_split_args(inner))
