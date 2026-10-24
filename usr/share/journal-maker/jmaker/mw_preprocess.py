@@ -60,8 +60,9 @@ def _parse_args(segs):
     for seg in segs[1:]:
         if "=" in seg:
             k, _, v = seg.partition("=")
-            # A '=' only counts as a named arg when the key is a bare word.
-            if re.fullmatch(r"\s*[\w .-]+\s*", k):
+            # A '=' only counts as a named arg when the key is a single bare
+            # token (no spaces) -- so prose like "Let x = 1" stays positional.
+            if re.fullmatch(r"\s*[\w.-]+\s*", k):
                 named[k.strip()] = v.strip()
                 continue
         pos.append(seg.strip())
@@ -91,8 +92,13 @@ def _handle(name, pos, named):
     low = name.lower()
     if low in _CHROME:
         return ""
-    if low.startswith("#"):  # parser functions e.g. {{#seo:...}} -> drop
-        return ""
+    if low.startswith("#"):
+        # #seo emits only metadata (no visible content), so drop it; any other
+        # parser function may carry content, so refuse rather than silently drop.
+        # Exact match only -- '#seoevil' must not slip through on a prefix.
+        if low == "#seo" or low.startswith("#seo:"):
+            return ""
+        raise UnknownTemplate(name)
     if low == "intro":
         body = named.get("1") or (pos[0] if pos else "")
         return body.strip() + "\n\n"
@@ -133,9 +139,21 @@ def preprocess(text):
         while span is not None:
             s, e = span
             inner = text[s + 2:e - 2]
-            # Only expand templates that contain no further {{ -> innermost.
             if "{{" in inner:
-                span = _find_template(text, e)
+                # If the OUTER template is discard-only (chrome / #seo), drop it
+                # WHOLE without descending -- otherwise an unknown child (e.g.
+                # {{PAGENAME}} inside {{#seo:...}}) would wrongly raise.
+                outer = _split_args(inner)[0].strip().lower()
+                if (outer in _CHROME or outer == "#seo"
+                        or outer.startswith("#seo:")):
+                    out.append(text[pos_cur:s])
+                    pos_cur = e
+                    changed = True
+                    span = _find_template(text, e)
+                    continue
+                # Otherwise DESCEND (search from just after this '{{') so the
+                # innermost template is expanded first.
+                span = _find_template(text, s + 2)
                 continue
             name, p, nd = _parse_args(_split_args(inner))
             repl = _handle(name, p, nd)

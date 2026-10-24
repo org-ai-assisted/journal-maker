@@ -42,6 +42,11 @@ def _cmd_vtscan(args):
                        upload=not args.no_upload)
 
 
+def _cmd_zenodo(args):
+    from jmaker import zenodo
+    return zenodo.main(args)
+
+
 def _cmd_dewiki(args):
     from jmaker import dewiki
     md = dewiki.convert_file(args.source)
@@ -96,6 +101,16 @@ def build_parser():
     pvt.add_argument("--no-upload", action="store_true",
                      help="hash-lookup only; never upload")
     pvt.set_defaults(func=_cmd_vtscan)
+
+    pz = sub.add_parser("zenodo", help="mint a Zenodo DOI for an article")
+    pz.add_argument("action", choices=["reserve", "publish"])
+    pz.add_argument("article_dir")
+    pz.add_argument("--journal", default="journal.toml")
+    pz.add_argument("--pdf", default=None, help="PDF to upload (publish action)")
+    pz.add_argument("--sandbox", action="store_true",
+                    help="use sandbox.zenodo.org for a dry run")
+    pz.add_argument("--token", default=None, help="Zenodo token (else ZENODO_TOKEN)")
+    pz.set_defaults(func=_cmd_zenodo)
 
     pde = sub.add_parser("dewiki", help="MediaWiki source -> Markdown draft")
     pde.add_argument("source")

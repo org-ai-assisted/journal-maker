@@ -45,6 +45,11 @@ def load_journal(path):
     for req in ("title", "base_url"):
         if not j.get(req):
             raise BuildError("journal.toml missing required key: %s" % req)
+    # base_url must be absolute (Scholar requires absolute citation_pdf_url) and
+    # free of whitespace/newlines (it is interpolated into robots.txt + sitemap).
+    if not re.fullmatch(r"https?://[^/\s]+(/[^\s]*)?", j["base_url"]):
+        raise BuildError("journal.toml: base_url must be an absolute http(s) URL "
+                         "with a host and no whitespace, got %r" % j["base_url"])
     j["base_url"] = j["base_url"].rstrip("/")
     j.setdefault("issn", "")
     j.setdefault("language", "en")
@@ -139,7 +144,17 @@ def load_article(adir):
     with open(body_path, "r", encoding="utf-8") as fh:
         paper = fh.read()
     title, abstract, body = _parse_paper(paper, adir)
+    # Remote images would be fetched by pandoc at PDF build time (SSRF) and leak
+    # the reader's IP at view time; require images to be vendored locally.
+    if re.search(r'!\[[^\]]*\]\(\s*https?://', paper):
+        raise BuildError("%s/paper.md: remote image URLs are not allowed; vendor "
+                         "the image under figures/" % adir)
     m.setdefault("slug", slug_default)
+    # Slug lands in filesystem paths and HTML attributes; keep it strict so it
+    # cannot traverse out of the output tree or inject into an href.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(m["slug"])):
+        raise BuildError("%s/meta.toml: slug must match [a-z0-9][a-z0-9-]*, got %r"
+                         % (adir, m["slug"]))
     m["title"] = title
     m["abstract"] = abstract
     for req in ("authors", "date", "volume", "issue"):
@@ -147,6 +162,24 @@ def load_article(adir):
             raise BuildError("%s/meta.toml missing required key: %s" % (adir, req))
     if not isinstance(m["authors"], list) or not m["authors"]:
         raise BuildError("%s/meta.toml: authors must be a non-empty list" % adir)
+    for author in m["authors"]:
+        if (not isinstance(author, dict)
+                or not isinstance(author.get("name"), str)
+                or not author["name"].strip()):
+            raise BuildError("%s/meta.toml: each author needs a non-empty string "
+                             "name" % adir)
+    for key in ("volume", "issue"):
+        val = m[key]
+        # bool is an int subclass; a float (1.5) or a non-digit string is not a
+        # valid volume/issue. Coerce the accepted forms to a real int.
+        if isinstance(val, bool) or not (isinstance(val, int)
+                or (isinstance(val, str) and val.isdigit())):
+            raise BuildError("%s/meta.toml: %s must be an integer" % (adir, key))
+        m[key] = int(val)
+        if m[key] < 1:
+            raise BuildError("%s/meta.toml: %s must be a positive integer" % (adir, key))
+    if "keywords" in m and not isinstance(m["keywords"], list):
+        raise BuildError("%s/meta.toml: keywords must be a list" % adir)
     # Coerce dates to ISO strings: unquoted TOML dates parse as datetime.date,
     # which would crash _scholar_date. Validate the shape here, loudly.
     for key in ("date", "online_date"):
@@ -182,7 +215,7 @@ def _scholar_date(iso):
 
 
 def _rel_dir(m):
-    return "v%s/i%s/%s" % (m["volume"], m["issue"], m["slug"])
+    return "v%d/i%d/%s" % (int(m["volume"]), int(m["issue"]), m["slug"])
 
 
 def _root_rel(rel_dir):
@@ -191,10 +224,30 @@ def _root_rel(rel_dir):
     return "../" * depth
 
 
+# Neutralize dangerous URL schemes in generated href/src (defense in depth;
+# raw HTML passthrough is already disabled in the reader).
+_DANGEROUS_URL_RE = re.compile(
+    r'((?:href|src)\s*=\s*")\s*(?:javascript|vbscript|data)\s*:', re.I)
+_EVENT_ATTR_RE = re.compile(
+    r'\son[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', re.I)
+
+
+def _sanitize_html(frag):
+    frag = _DANGEROUS_URL_RE.sub(r"\1#", frag)
+    frag = _EVENT_ATTR_RE.sub("", frag)
+    return frag
+
+
 def md_to_html_fragment(md_text):
-    r = _run(["pandoc", "-f", "markdown", "-t", "html5", "--wrap=none"],
-             input=md_text)
-    return r.stdout
+    # Disable: raw_html (author <script> becomes text); smart (keep output ASCII
+    # -- smart would emit curly quotes / en-dashes); and the attribute extensions
+    # that let author Markdown attach arbitrary HTML attributes such as an
+    # onerror handler on an image. _sanitize_html is the backstop for any
+    # residual event-handler attribute or dangerous URL scheme.
+    fmt = ("markdown-raw_html-smart-raw_attribute-link_attributes"
+           "-native_divs-native_spans")
+    r = _run(["pandoc", "-f", fmt, "-t", "html5", "--wrap=none"], input=md_text)
+    return _sanitize_html(r.stdout)
 
 
 def _yaml_dq(s):
@@ -217,15 +270,21 @@ def md_to_pdf(m, journal, out_pdf):
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
-    doc = meta_block + m["_body_md"]
+    doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
+    doc = meta_block + doi_line + m["_body_md"]
+    # -raw_tex: author raw TeX (e.g. \input{/etc/passwd}) is not passed to the
+    # engine. openin_any/openout_any=p additionally bar the engine from reading
+    # or writing files outside the tree, in case any TeX slips through.
+    env = dict(os.environ, openin_any="p", openout_any="p")
     _run([
-        "pandoc", "-f", "markdown", "-o", out_pdf,
+        "pandoc", "-f", "markdown-raw_tex-smart", "-o", out_pdf,
         "--pdf-engine=pdflatex",
+        "--resource-path", m["_dir"],
         "-V", "geometry:margin=1in",
         "-V", "fontsize=11pt",
         "-V", "linkcolor=blue",
         "-V", "urlcolor=blue",
-    ], input=doc)
+    ], input=doc, env=env)
 
 
 # ---------------------------------------------------------------- meta tags
@@ -292,6 +351,52 @@ def _page(lang, head_title, description, canonical, extra_head, body,
     )
 
 
+def _linkify_citations(body_html):
+    """Link in-text [n] to #ref-n and anchor each reference entry."""
+    mo = re.search(r'(<h2[^>]*>\s*References\s*</h2>)', body_html, re.I)
+    head = body_html if mo is None else body_html[:mo.start()]
+    refs = "" if mo is None else body_html[mo.start():]
+    head = re.sub(r'\[(\d+)\]',
+                  lambda x: '<a class="cite" href="#ref-%s">[%s]</a>'
+                  % (x.group(1), x.group(1)), head)
+    refs = re.sub(r'<p>\s*\[(\d+)\]',
+                  lambda x: '<p id="ref-%s">[%s]' % (x.group(1), x.group(1)), refs)
+    return head + refs
+
+
+def _build_toc(body_html):
+    """Table of contents from the body's H2 headings (pandoc-assigned ids)."""
+    items = re.findall(r'<h2[^>]*\bid="([^"]+)"[^>]*>(.*?)</h2>', body_html,
+                       re.I | re.S)
+    if len(items) < 3:
+        return ""
+    strip = re.compile(r'<[^>]+>')
+    lis = []
+    for hid, inner in items:
+        text = re.sub(r'\s+', " ", strip.sub("", inner)).strip()
+        lis.append('<li><a href="#%s">%s</a></li>'
+                   % (html.escape(hid, quote=True), html.escape(text)))
+    return ('<nav class="toc"><div class="toc-label">Contents</div>\n<ol>\n%s\n'
+            "</ol></nav>\n" % "\n".join(lis))
+
+
+def _bibtex(m, journal, landing_url):
+    surname = (re.sub(r'[^a-z0-9]', "", m["authors"][0]["name"].lower().split()[-1])
+               if m["authors"] else "anon")
+    key = "%s%s" % (surname, m["date"][:4])
+    fields = [
+        ("author", " and ".join(a["name"] for a in m["authors"])),
+        ("title", m["title"]),
+        ("journal", journal["title"]),
+        ("year", m["date"][:4]),
+        ("volume", str(m["volume"])),
+        ("number", str(m["issue"])),
+    ]
+    fields.append(("doi", m["doi"]) if m.get("doi") else ("url", landing_url))
+    body = ",\n".join("  %s = {%s}" % (k, v) for k, v in fields)
+    return "@article{%s,\n%s\n}" % (key, body)
+
+
 def render_article(m, journal):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
@@ -300,10 +405,18 @@ def render_article(m, journal):
     pdf_url = landing_url + pdf_name
 
     meta = citation_meta(m, journal, landing_url, pdf_url)
-    body_html = md_to_html_fragment(m["_body_md"])
+    body_html = _linkify_citations(md_to_html_fragment(m["_body_md"]))
     abstract_html = md_to_html_fragment(m["abstract"])
+    toc = _build_toc(body_html)
 
     authors_line = ", ".join(html.escape(a["name"]) for a in m["authors"])
+    affils = []
+    for a in m["authors"]:
+        inst = a.get("institution")
+        if inst and inst not in affils:
+            affils.append(inst)
+    affil_bit = ('<p class="affil">%s</p>\n'
+                 % "; ".join(html.escape(x) for x in affils)) if affils else ""
     year = m["date"][:4]
     venue = "%s, Volume %s, Issue %s (%s)" % (
         html.escape(journal["title"]), html.escape(str(m["volume"])),
@@ -324,17 +437,27 @@ def render_article(m, journal):
             license_bit = ('<footer class="license">Licensed under %s.</footer>'
                            % html.escape(lic))
 
+    bibtex = _bibtex(m, journal, landing_url)
+    authors_plain = ", ".join(a["name"] for a in m["authors"])
+    plain_cite = '%s. "%s." %s, vol. %s, no. %s, %s.' % (
+        authors_plain, m["title"], journal["title"], m["volume"], m["issue"], year)
+    cite_box = ('<details class="cite-this"><summary>Cite this</summary>\n'
+                "<p>%s</p>\n<pre>%s</pre>\n</details>\n"
+                % (html.escape(plain_cite), html.escape(bibtex)))
+
     main = (
         '<main class="article">\n'
         '<h1 class="title">%s</h1>\n'
         '<p class="authors">%s</p>\n'
+        "%s"
         '<p class="venue">%s%s</p>\n'
         '<p class="actions"><a href="%s">Download PDF</a></p>\n'
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
+        "%s%s"
         '<article class="body">\n%s\n</article>\n'
         "%s\n</main>"
-    ) % (html.escape(m["title"]), authors_line, venue, doi_bit, pdf_name,
-         abstract_html, body_html, license_bit)
+    ) % (html.escape(m["title"]), authors_line, affil_bit, venue, doi_bit,
+         pdf_name, abstract_html, toc, cite_box, body_html, license_bit)
 
     description = " ".join(m["abstract"].split())[:300]
     page = _page(
@@ -366,7 +489,7 @@ def render_page(slug, md_text, journal):
 
 def render_homepage(articles, journal, pages):
     items = []
-    by_vol = {}
+    by_vol: dict = {}
     for m in articles:
         by_vol.setdefault(int(m["volume"]), []).append(m)
     for vol in sorted(by_vol, reverse=True):
@@ -436,9 +559,33 @@ def write_robots(journal, out_dir):
 
 # ---------------------------------------------------------------- driver
 
+def _is_within(path, parent):
+    try:
+        return os.path.commonpath([path, parent]) == parent and path != parent
+    except ValueError:
+        return False
+
+
 def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     journal = load_journal(journal_toml)
     journal["_no_index"] = no_index
+
+    # The output dir is wiped (rmtree); refuse only when that would DELETE a
+    # source -- out == / contains articles or the content root, or out is inside
+    # articles. A normal _site inside the content repo is fine.
+    # realpath (not abspath) so a symlinked parent cannot alias past the guard.
+    out_abs = os.path.realpath(out_dir)
+    articles_abs = os.path.realpath(articles_dir)
+    content_root = os.path.dirname(os.path.realpath(journal_toml))
+    pages_abs = os.path.join(content_root, "pages")
+    for src in (articles_abs, content_root, pages_abs):
+        if out_abs == src or _is_within(src, out_abs):
+            raise BuildError("refusing to build: output dir %r would delete "
+                             "source %r" % (out_dir, src))
+    if _is_within(out_abs, articles_abs):
+        raise BuildError("refusing to build: output dir %r is inside the "
+                         "articles dir %r" % (out_dir, articles_abs))
+
     adirs = sorted(
         os.path.join(articles_dir, d) for d in os.listdir(articles_dir)
         if os.path.isdir(os.path.join(articles_dir, d))
@@ -453,21 +600,33 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     os.makedirs(out_dir)
 
     urls = [journal["base_url"] + "/"]
+    seen = {}
     for m in articles:
         rel_dir, pdf_name, page = render_article(m, journal)
+        if rel_dir in seen:
+            raise BuildError("duplicate route %s from %s and %s"
+                             % (rel_dir, seen[rel_dir], m["_dir"]))
+        seen[rel_dir] = m["_dir"]
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(page)
         figdir = os.path.join(m["_dir"], "figures")
+        if os.path.islink(figdir):
+            raise BuildError("figures/ must not be a symlink: %s" % figdir)
         if os.path.isdir(figdir):
+            for froot, fdirs, ffiles in os.walk(figdir):
+                for nm in fdirs + ffiles:
+                    if os.path.islink(os.path.join(froot, nm)):
+                        raise BuildError("symlink in figures not allowed: %s"
+                                         % os.path.join(froot, nm))
             shutil.copytree(figdir, os.path.join(dest, "figures"))
         urls.append("%s/%s/" % (journal["base_url"], rel_dir))
         if not skip_pdf:
             md_to_pdf(m, journal, os.path.join(dest, pdf_name))
             urls.append("%s/%s/%s" % (journal["base_url"], rel_dir, pdf_name))
 
-    by_vol = {}
+    by_vol: dict = {}
     for m in articles:
         by_vol.setdefault(int(m["volume"]), []).append(m)
     for vol, metas in by_vol.items():
