@@ -225,8 +225,10 @@ def _sanitize_html(frag):
 def md_to_html_fragment(md_text):
     # -raw_html: author raw HTML (e.g. <script>) is escaped to text, not passed
     # through, so a submitted article cannot inject executable markup.
-    r = _run(["pandoc", "-f", "markdown-raw_html", "-t", "html5", "--wrap=none"],
-             input=md_text)
+    # -smart: keep output ASCII -- pandoc's default smart extension would turn
+    # straight quotes/--/... into curly quotes, en/em dashes and ellipses.
+    r = _run(["pandoc", "-f", "markdown-raw_html-smart", "-t", "html5",
+              "--wrap=none"], input=md_text)
     return _sanitize_html(r.stdout)
 
 
@@ -256,7 +258,7 @@ def md_to_pdf(m, journal, out_pdf):
     # or writing files outside the tree, in case any TeX slips through.
     env = dict(os.environ, openin_any="p", openout_any="p")
     _run([
-        "pandoc", "-f", "markdown-raw_tex", "-o", out_pdf,
+        "pandoc", "-f", "markdown-raw_tex-smart", "-o", out_pdf,
         "--pdf-engine=pdflatex",
         "--resource-path", m["_dir"],
         "-V", "geometry:margin=1in",

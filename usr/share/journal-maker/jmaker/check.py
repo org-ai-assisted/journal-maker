@@ -212,8 +212,35 @@ def check_pdf(path, f):
         f.err(path, "active content in PDF: %s" % ", ".join(hits))
 
 
+_TEXT_EXT = {".html", ".css", ".xml", ".txt", ".svg", ".json"}
+
+
+def check_ascii(out_dir, f):
+    """Enforce ASCII-only published text (no em-dash / curly quotes / nbsp).
+
+    Pandoc's smart extension and stray source Unicode both leak non-ASCII into
+    output; this is the script-enforced backstop. Non-ASCII that is genuinely
+    needed must be written as an HTML entity (ASCII bytes), not a literal.
+    """
+    for root, _dirs, files in os.walk(out_dir):
+        for name in files:
+            if os.path.splitext(name)[1].lower() not in _TEXT_EXT:
+                continue
+            path = os.path.join(root, name)
+            with open(path, "rb") as fh:
+                data = fh.read()
+            try:
+                data.decode("ascii")
+            except UnicodeDecodeError:
+                bad = sorted({ch for ch in data.decode("utf-8", "replace")
+                              if ord(ch) > 127})
+                f.err(path, "non-ASCII in output (ASCII-only policy): %s"
+                      % " ".join("U+%04X" % ord(ch) for ch in bad[:12]))
+
+
 def check_site(out_dir):
     f = Findings()
+    check_ascii(out_dir, f)
     if not os.path.isfile(os.path.join(out_dir, "index.html")):
         f.err(out_dir, "missing homepage index.html")
     if not os.path.isfile(os.path.join(out_dir, "robots.txt")):

@@ -260,6 +260,24 @@ class TestCheckerLocation(unittest.TestCase):
         self.assertTrue(any("absolute" in m for m in msgs))
 
 
+class TestAsciiGate(unittest.TestCase):
+    def test_non_ascii_output_errors(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "page.html"), "w", encoding="utf-8") as fh:
+                fh.write("<p>em" + chr(0x2014) + "dash, curly" + chr(0x2019) + "q</p>")
+            f = c.Findings()
+            c.check_ascii(d, f)
+            self.assertTrue(any("ASCII-only" in m for _l, _p, m in f.errors))
+
+    def test_ascii_output_ok(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "page.html"), "w", encoding="utf-8") as fh:
+                fh.write("<p>plain ascii -- ok</p>")
+            f = c.Findings()
+            c.check_ascii(d, f)
+            self.assertEqual(f.errors, [])
+
+
 class TestPdfCanary(unittest.TestCase):
     def _check(self, data):
         with tempfile.TemporaryDirectory() as d:
