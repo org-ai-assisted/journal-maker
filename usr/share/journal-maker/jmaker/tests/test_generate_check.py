@@ -63,11 +63,18 @@ class TestChecker(unittest.TestCase):
         self.assertTrue(c._WIKI_LINK_RE.search("see [[Foo]] now"))
         self.assertTrue(c._WIKI_TMPL_RE.search("a {{tmpl}} b"))
 
-    def test_active_tokens_present(self):
-        self.assertIn(b"/JavaScript", c.ACTIVE_TOKENS)
-        self.assertIn(b"/Launch", c.ACTIVE_TOKENS)
-        # /OpenAction is a benign trigger, deliberately NOT blocked
-        self.assertNotIn(b"/OpenAction", c.ACTIVE_TOKENS)
+    def test_active_hits_detects_dangerous(self):
+        self.assertEqual(c._active_hits({"/Names": {"/JavaScript": []}}),
+                         {"/JavaScript"})
+        self.assertIn("/Launch", c._active_hits({"/OpenAction": {"/S": "/Launch"}}))
+
+    def test_active_hits_ignores_benign(self):
+        # hyperref GoTo view, a hyperlink, a font subset name, a title mention
+        benign = {"/OpenAction": {"/S": "/GoTo"},
+                  "/Annots": [{"/S": "/URI", "/URI": "https://example.org"}],
+                  "/Font": {"/BaseFont": "/JSTKMA+CMR10"},
+                  "/Title": "Analysis of /JavaScript engines"}
+        self.assertEqual(c._active_hits(benign), set())
 
     def test_dirname_url(self):
         self.assertEqual(
@@ -241,6 +248,36 @@ class TestLoading(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.build(arts, jt, arts)  # out == articles dir
 
+    def test_base_url_requires_authority(self):
+        with tempfile.TemporaryDirectory() as d:
+            jt = os.path.join(d, "journal.toml")
+            with open(jt, "w", encoding="utf-8") as fh:
+                fh.write('title = "J"\nbase_url = "https:///"\n')
+            with self.assertRaises(g.BuildError):
+                g.load_journal(jt)
+
+    def test_float_volume_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'volume = 1.5\nissue = 1\ndate = "2026-10-24"\n'
+                              'authors = [{name = "A"}]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_remote_image_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            os.makedirs(ad)
+            with open(os.path.join(ad, "meta.toml"), "w", encoding="utf-8") as fh:
+                fh.write('volume = 1\nissue = 1\ndate = "2026-10-24"\n'
+                         'authors = [{name = "A"}]\n')
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation.\n\n## 1. Intro\n\n"
+                         "![x](https://evil.example/x.png)\n")
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
     def test_out_site_inside_content_allowed(self):
         # a normal _site under the content root must NOT trip the guard; it fails
         # later (no articles), which is a different, expected error
@@ -282,6 +319,11 @@ class TestCheckerLocation(unittest.TestCase):
                           "citation_abstract_html_url": "https://h/v1/i1/x/"})
         self.assertTrue(any("absolute" in m for m in msgs))
 
+    def test_off_origin_pdf_errors(self):
+        msgs = self._run({"citation_pdf_url": "https://evil.example/v1/i1/x/x.pdf",
+                          "citation_abstract_html_url": "https://h/v1/i1/x/"})
+        self.assertTrue(any("origin" in m for m in msgs))
+
 
 class TestAsciiGate(unittest.TestCase):
     def test_non_ascii_output_errors(self):
@@ -314,9 +356,10 @@ class TestPdfCanary(unittest.TestCase):
     def test_not_a_pdf_errors(self):
         self.assertTrue(any("valid PDF" in m for m in self._check(b"hello")))
 
-    def test_active_content_errors(self):
-        data = b"%PDF-1.5\n" + b"x" * 1000 + b"/OpenAction /JavaScript\n"
-        self.assertTrue(any("active content" in m for m in self._check(data)))
+    def test_prepended_junk_rejected(self):
+        # non-whitespace before %PDF- is rejected (a leading newline is tolerated)
+        self.assertTrue(any("valid PDF" in m
+                            for m in self._check(b"<script>x</script>\n%PDF-1.5")))
 
 
 if __name__ == "__main__":

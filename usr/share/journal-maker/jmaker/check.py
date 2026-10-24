@@ -21,6 +21,7 @@ does not false-positive and hex-encoded names are normalized. qpdf is required;
 its absence is an ERROR (cannot verify), never a silent pass.
 """
 
+import json
 import os
 import re
 import shutil
@@ -32,15 +33,36 @@ MAX_PDF_BYTES = 5 * 1024 * 1024
 # without rejecting a legitimately short note.
 MIN_PDF_TEXT_CHARS = 20
 
-# Executable / exfiltration primitives -- the real supply-chain risk. NOT
-# included: /OpenAction and /AA, which are benign action TRIGGERS (hyperref
-# emits an /OpenAction "fit page" view in every LaTeX PDF); they are dangerous
-# only when they invoke one of these, which is then caught here independently.
-ACTIVE_TOKENS = [
-    b"/JavaScript", b"/JS", b"/Launch",
-    b"/EmbeddedFile", b"/RichMedia", b"/XFA", b"/SubmitForm",
-    b"/ImportData", b"/GoToR",
-]
+# Inherently dangerous PDF dictionary KEYS (embedded code / payload / scripting).
+# Matched structurally against qpdf --json keys, NOT as raw substrings, so a font
+# subset name (e.g. /JSTKMA+CMR10) or a title mentioning "/JavaScript" does not
+# trigger a false positive.
+_DANGEROUS_KEYS = {"/JavaScript", "/JS", "/EmbeddedFile", "/RichMedia", "/XFA"}
+# Auto-executing action types (a dict's /S value). /GoTo (hyperref's benign "fit
+# page" view) and /URI (ordinary hyperlinks) are excluded on purpose.
+_DANGEROUS_ACTIONS = {"/JavaScript", "/Launch"}
+
+
+def _active_hits(obj, hits=None):
+    """Walk a qpdf --json object tree for dangerous dictionary keys / actions."""
+    if hits is None:
+        hits = set()
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in _DANGEROUS_KEYS:
+                hits.add(k)
+            if k == "/S" and isinstance(v, str) and v in _DANGEROUS_ACTIONS:
+                hits.add(v)
+            _active_hits(v, hits)
+    elif isinstance(obj, list):
+        for item in obj:
+            _active_hits(item, hits)
+    return hits
+
+
+def _origin(url):
+    mo = re.match(r'(https?://[^/]+)', url or "")
+    return mo.group(1) if mo else ""
 
 _META_RE = re.compile(
     r'<meta\s+name="(citation_[a-z_]+)"\s+content="(.*?)">', re.I | re.S)
@@ -130,11 +152,14 @@ def check_article(page_path, f, out_dir):
     elif not re.match(r"^https?://", pdf_url):
         f.err(page_path, "citation_pdf_url must be absolute http(s): %r" % pdf_url)
 
-    # title consistency (collapse whitespace on BOTH sides)
+    # title consistency. The meta title is already plaintext (entity-decoded),
+    # so only normalize its whitespace; the h1 is HTML, so strip tags + decode.
+    # (Applying _text_only to the plaintext title would wrongly strip a literal
+    # "<...>" in the title as if it were a tag.)
     h1 = _H1_RE.search(page)
     if not h1:
         f.err(page_path, "no visible <h1 class=title>")
-    elif title and _text_only(h1.group(1)) != _text_only(title):
+    elif title and _text_only(h1.group(1)) != re.sub(r"\s+", " ", title).strip():
         f.err(page_path, "citation_title != visible <h1> (%r vs %r)"
               % (title, _text_only(h1.group(1))))
 
@@ -156,6 +181,10 @@ def check_article(page_path, f, out_dir):
         if landing and not landing.rstrip("/").endswith("/%s" % rel):
             f.err(page_path, "citation_abstract_html_url %r not at the article's "
                   "location" % landing)
+        if landing and _origin(pdf_url) != _origin(landing):
+            f.err(page_path, "citation_pdf_url and citation_abstract_html_url "
+                  "differ in origin (%r vs %r)"
+                  % (_origin(pdf_url), _origin(landing)))
         if "/" in name or ".." in name or "%" in name:
             f.err(page_path, "citation_pdf_url basename unsafe: %r" % name)
         else:
@@ -177,8 +206,10 @@ def check_pdf(path, f):
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
         head = fh.read(1024)
-    if b"%PDF-" not in head:
-        f.err(path, "not a valid PDF (no %PDF header in first 1KB)")
+    # Must START with %PDF- (leading whitespace tolerated). Junk prepended before
+    # the header -- e.g. an HTML/script prefix -- is rejected.
+    if not head.lstrip()[:5] == b"%PDF-":
+        f.err(path, "not a valid PDF (does not start with %PDF-)")
         return
     if size > MAX_PDF_BYTES:
         f.err(path, "PDF too large: %d bytes (> %d)" % (size, MAX_PDF_BYTES))
@@ -192,9 +223,10 @@ def check_pdf(path, f):
     else:
         f.warn(path, "pdftotext absent; cannot verify searchable text")
 
-    # supply-chain: no active content. Scan the STRUCTURE (qpdf --json), not
-    # stream content, so article prose mentioning a token does not false-positive
-    # and hex-encoded names are normalized. qpdf absence is an ERROR, not a pass.
+    # supply-chain: no active content. Parse the STRUCTURE (qpdf --json) and walk
+    # for dangerous dictionary keys / auto-exec action types -- NOT a substring
+    # scan, so prose or a font subset name cannot false-positive. qpdf absence is
+    # an ERROR, not a pass.
     qpdf = shutil.which("qpdf")
     if not qpdf:
         f.err(path, "qpdf absent; cannot verify PDF active content")
@@ -207,7 +239,12 @@ def check_pdf(path, f):
     if r.returncode not in (0, 3):  # 3 == warnings only
         f.err(path, "qpdf could not parse PDF (rc=%d)" % r.returncode)
         return
-    hits = sorted({t.decode() for t in ACTIVE_TOKENS if t in r.stdout})
+    try:
+        doc = json.loads(r.stdout)
+    except json.JSONDecodeError as exc:
+        f.err(path, "qpdf JSON parse failed: %s" % exc)
+        return
+    hits = sorted(_active_hits(doc))
     if hits:
         f.err(path, "active content in PDF: %s" % ", ".join(hits))
 

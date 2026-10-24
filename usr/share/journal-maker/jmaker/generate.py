@@ -47,9 +47,9 @@ def load_journal(path):
             raise BuildError("journal.toml missing required key: %s" % req)
     # base_url must be absolute (Scholar requires absolute citation_pdf_url) and
     # free of whitespace/newlines (it is interpolated into robots.txt + sitemap).
-    if not re.match(r"^https?://[^\s]+$", j["base_url"]):
+    if not re.fullmatch(r"https?://[^/\s]+(/[^\s]*)?", j["base_url"]):
         raise BuildError("journal.toml: base_url must be an absolute http(s) URL "
-                         "with no whitespace, got %r" % j["base_url"])
+                         "with a host and no whitespace, got %r" % j["base_url"])
     j["base_url"] = j["base_url"].rstrip("/")
     j.setdefault("issn", "")
     j.setdefault("language", "en")
@@ -144,10 +144,15 @@ def load_article(adir):
     with open(body_path, "r", encoding="utf-8") as fh:
         paper = fh.read()
     title, abstract, body = _parse_paper(paper, adir)
+    # Remote images would be fetched by pandoc at PDF build time (SSRF) and leak
+    # the reader's IP at view time; require images to be vendored locally.
+    if re.search(r'!\[[^\]]*\]\(\s*https?://', paper):
+        raise BuildError("%s/paper.md: remote image URLs are not allowed; vendor "
+                         "the image under figures/" % adir)
     m.setdefault("slug", slug_default)
     # Slug lands in filesystem paths and HTML attributes; keep it strict so it
     # cannot traverse out of the output tree or inject into an href.
-    if not re.match(r"^[a-z0-9][a-z0-9-]*$", str(m["slug"])):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(m["slug"])):
         raise BuildError("%s/meta.toml: slug must match [a-z0-9][a-z0-9-]*, got %r"
                          % (adir, m["slug"]))
     m["title"] = title
@@ -158,14 +163,19 @@ def load_article(adir):
     if not isinstance(m["authors"], list) or not m["authors"]:
         raise BuildError("%s/meta.toml: authors must be a non-empty list" % adir)
     for author in m["authors"]:
-        if not isinstance(author, dict) or not str(author.get("name", "")).strip():
-            raise BuildError("%s/meta.toml: each author needs a non-empty name"
-                             % adir)
+        if (not isinstance(author, dict)
+                or not isinstance(author.get("name"), str)
+                or not author["name"].strip()):
+            raise BuildError("%s/meta.toml: each author needs a non-empty string "
+                             "name" % adir)
     for key in ("volume", "issue"):
-        try:
-            int(m[key])
-        except (TypeError, ValueError):
+        val = m[key]
+        # bool is an int subclass; a float (1.5) or a non-digit string is not a
+        # valid volume/issue. Coerce the accepted forms to a real int.
+        if isinstance(val, bool) or not (isinstance(val, int)
+                or (isinstance(val, str) and val.isdigit())):
             raise BuildError("%s/meta.toml: %s must be an integer" % (adir, key))
+        m[key] = int(val)
     if "keywords" in m and not isinstance(m["keywords"], list):
         raise BuildError("%s/meta.toml: keywords must be a list" % adir)
     # Coerce dates to ISO strings: unquoted TOML dates parse as datetime.date,
@@ -216,19 +226,25 @@ def _root_rel(rel_dir):
 # raw HTML passthrough is already disabled in the reader).
 _DANGEROUS_URL_RE = re.compile(
     r'((?:href|src)\s*=\s*")\s*(?:javascript|vbscript|data)\s*:', re.I)
+_EVENT_ATTR_RE = re.compile(
+    r'\son[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', re.I)
 
 
 def _sanitize_html(frag):
-    return _DANGEROUS_URL_RE.sub(r"\1#", frag)
+    frag = _DANGEROUS_URL_RE.sub(r"\1#", frag)
+    frag = _EVENT_ATTR_RE.sub("", frag)
+    return frag
 
 
 def md_to_html_fragment(md_text):
-    # -raw_html: author raw HTML (e.g. <script>) is escaped to text, not passed
-    # through, so a submitted article cannot inject executable markup.
-    # -smart: keep output ASCII -- pandoc's default smart extension would turn
-    # straight quotes/--/... into curly quotes, en/em dashes and ellipses.
-    r = _run(["pandoc", "-f", "markdown-raw_html-smart", "-t", "html5",
-              "--wrap=none"], input=md_text)
+    # Disable: raw_html (author <script> becomes text); smart (keep output ASCII
+    # -- smart would emit curly quotes / en-dashes); and the attribute extensions
+    # that let author Markdown attach arbitrary HTML attributes such as an
+    # onerror handler on an image. _sanitize_html is the backstop for any
+    # residual event-handler attribute or dangerous URL scheme.
+    fmt = ("markdown-raw_html-smart-raw_attribute-link_attributes"
+           "-native_divs-native_spans")
+    r = _run(["pandoc", "-f", fmt, "-t", "html5", "--wrap=none"], input=md_text)
     return _sanitize_html(r.stdout)
 
 
@@ -252,7 +268,8 @@ def md_to_pdf(m, journal, out_pdf):
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
-    doc = meta_block + m["_body_md"]
+    doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
+    doc = meta_block + doi_line + m["_body_md"]
     # -raw_tex: author raw TeX (e.g. \input{/etc/passwd}) is not passed to the
     # engine. openin_any/openout_any=p additionally bar the engine from reading
     # or writing files outside the tree, in case any TeX slips through.
@@ -554,10 +571,12 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     # The output dir is wiped (rmtree); refuse only when that would DELETE a
     # source -- out == / contains articles or the content root, or out is inside
     # articles. A normal _site inside the content repo is fine.
-    out_abs = os.path.abspath(out_dir)
-    articles_abs = os.path.abspath(articles_dir)
-    content_root = os.path.dirname(os.path.abspath(journal_toml))
-    for src in (articles_abs, content_root):
+    # realpath (not abspath) so a symlinked parent cannot alias past the guard.
+    out_abs = os.path.realpath(out_dir)
+    articles_abs = os.path.realpath(articles_dir)
+    content_root = os.path.dirname(os.path.realpath(journal_toml))
+    pages_abs = os.path.join(content_root, "pages")
+    for src in (articles_abs, content_root, pages_abs):
         if out_abs == src or _is_within(src, out_abs):
             raise BuildError("refusing to build: output dir %r would delete "
                              "source %r" % (out_dir, src))
@@ -591,6 +610,8 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(page)
         figdir = os.path.join(m["_dir"], "figures")
+        if os.path.islink(figdir):
+            raise BuildError("figures/ must not be a symlink: %s" % figdir)
         if os.path.isdir(figdir):
             for froot, fdirs, ffiles in os.walk(figdir):
                 for nm in fdirs + ffiles:

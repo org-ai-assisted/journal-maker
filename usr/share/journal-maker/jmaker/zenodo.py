@@ -17,6 +17,7 @@ sandbox.zenodo.org for dry runs. Deposition state is kept in <dir>/.zenodo.json.
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 
@@ -110,9 +111,15 @@ def _write_doi_to_meta(article_dir, doi):
     path = os.path.join(article_dir, "meta.toml")
     with open(path, "r", encoding="utf-8") as fh:
         text = fh.read()
-    new, n = re.subn(r'(?m)^doi\s*=\s*".*"$', 'doi = "%s"' % doi, text)
+    # Replace an existing top-level doi (single- or double-quoted) in place.
+    new, n = re.subn(r'(?m)^doi\s*=\s*([\'"]).*?\1\s*$', 'doi = "%s"' % doi, text)
     if n == 0:
-        new = text.rstrip("\n") + '\ndoi = "%s"\n' % doi
+        # Insert as a TOP-LEVEL key BEFORE the first table header, so it cannot
+        # land inside a trailing [table] / [[array]] (which EOF-append would do).
+        insert = 'doi = "%s"\n' % doi
+        mo = re.search(r'(?m)^\s*\[', text)
+        new = (text[:mo.start()] + insert + text[mo.start():] if mo
+               else text.rstrip("\n") + "\n" + insert)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(new)
 
@@ -120,6 +127,12 @@ def _write_doi_to_meta(article_dir, doi):
 def reserve(article_dir, journal_toml, base, token):
     journal = generate.load_journal(journal_toml)
     m = generate.load_article(article_dir)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(m["date"])):
+        raise ZenodoError("Zenodo requires a full YYYY-MM-DD date; meta.toml has %r"
+                          % m["date"])
+    state_file = _state_path(article_dir)
+    if os.path.islink(state_file):
+        raise ZenodoError(".zenodo.json is a symlink; refusing to overwrite it")
     dep = _api("POST", "%s/api/deposit/depositions" % base, token, payload={})
     dep_id = dep["id"]
     bucket = dep["links"]["bucket"]
@@ -130,7 +143,7 @@ def reserve(article_dir, journal_toml, base, token):
     if not doi:
         raise ZenodoError("no reserved DOI in response for deposition %d" % dep_id)
     _write_doi_to_meta(article_dir, doi)
-    with open(_state_path(article_dir), "w", encoding="utf-8") as fh:
+    with open(state_file, "w", encoding="utf-8") as fh:
         json.dump({"deposition_id": dep_id, "bucket": bucket, "doi": doi,
                    "base": base}, fh, indent=2)
     print("reserved DOI %s (deposition %d); wrote meta.toml -- rebuild, then "
@@ -138,12 +151,30 @@ def reserve(article_dir, journal_toml, base, token):
     return 0
 
 
-def publish(article_dir, pdf_path, token):
+_ZENODO_HOST_RE = re.compile(r"https://(sandbox\.)?zenodo\.org(/|$)")
+
+
+def publish(article_dir, pdf_path, base, token):
+    if not pdf_path:
+        raise ZenodoError("--pdf is required for the publish action")
     state_file = _state_path(article_dir)
+    if os.path.islink(state_file):
+        raise ZenodoError(".zenodo.json is a symlink; refusing to read it")
     if not os.path.isfile(state_file):
         raise ZenodoError("no .zenodo.json; run 'zenodo reserve' first")
     with open(state_file, "r", encoding="utf-8") as fh:
         state = json.load(fh)
+    # The deposition is tied to the environment it was reserved in; a --sandbox
+    # publish of a production deposition (or vice versa) would wrongly target the
+    # other service, so refuse the mismatch.
+    if state.get("base") != base:
+        raise ZenodoError("deposition reserved on %r but this run targets %r "
+                          "(check --sandbox)" % (state.get("base"), base))
+    # Never send the bearer token to a non-Zenodo URL stored in state.
+    for url in (state.get("base", ""), state.get("bucket", "")):
+        if not _ZENODO_HOST_RE.match(url):
+            raise ZenodoError("refusing to send the token to a non-Zenodo URL: %r"
+                              % url)
     if not os.path.isfile(pdf_path):
         raise ZenodoError("PDF not found: %s" % pdf_path)
     with open(pdf_path, "rb") as fh:
@@ -160,11 +191,11 @@ def publish(article_dir, pdf_path, token):
 
 def main(args):
     base = SANDBOX if args.sandbox else PROD
-    token = _token(args.token)
     try:
+        token = _token(args.token)
         if args.action == "reserve":
             return reserve(args.article_dir, args.journal, base, token)
-        return publish(args.article_dir, args.pdf, token)
+        return publish(args.article_dir, args.pdf, base, token)
     except ZenodoError as exc:
-        print("zenodo error: %s" % exc, file=__import__("sys").stderr)
+        print("zenodo error: %s" % exc, file=sys.stderr)
         return 1

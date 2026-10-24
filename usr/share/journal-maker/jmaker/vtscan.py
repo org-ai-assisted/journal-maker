@@ -22,9 +22,11 @@ import subprocess
 import sys
 import time
 
-# Never-meaningful-to-scan published files. EVERYTHING else under the site is
-# scanned -- no extension allowlist (an .exe/.php/.dotfile must not slip the gate).
-_SKIP_NAMES = {".nojekyll", "vt-results.json", "VT-CHECKLIST.md"}
+# Only the GitHub-Pages Jekyll opt-out marker is skipped; EVERYTHING else under
+# the site is scanned -- no extension allowlist (an .exe/.php/.dotfile must not
+# slip the gate), and the VT reports now live OUTSIDE the site so they are not
+# excluded by name here.
+_SKIP_NAMES = {".nojekyll"}
 
 
 def _sha256(path):
@@ -74,6 +76,8 @@ def _query(client, path, upload):
     if det is None:
         raise RuntimeError("client gave no numeric detection count: %s"
                            % r.stdout[:200])
+    if det < 0:
+        raise RuntimeError("client returned a negative detection count: %r" % det)
     return {
         "detections": det,
         "permalink": data.get("permalink") or data.get("link", ""),
@@ -106,8 +110,15 @@ def main(site, client="vtai.py", out=None, upload=True):
     results = []
     failures = 0
     for path in _assets(site):
-        sha = _sha256(path)
         rel = os.path.relpath(path, site)
+        if os.path.islink(path):
+            # a published site should contain no symlinks; refuse rather than
+            # hash/upload whatever the link points at (e.g. a private key)
+            results.append({"path": rel, "status": "ERROR",
+                            "error": "symlink in published site (refused)"})
+            failures += 1
+            continue
+        sha = _sha256(path)
         entry = {"path": rel, "sha256": sha,
                  "size": os.path.getsize(path)}
         try:

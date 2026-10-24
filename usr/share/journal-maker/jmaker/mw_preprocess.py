@@ -95,7 +95,8 @@ def _handle(name, pos, named):
     if low.startswith("#"):
         # #seo emits only metadata (no visible content), so drop it; any other
         # parser function may carry content, so refuse rather than silently drop.
-        if low.startswith("#seo"):
+        # Exact match only -- '#seoevil' must not slip through on a prefix.
+        if low == "#seo" or low.startswith("#seo:"):
             return ""
         raise UnknownTemplate(name)
     if low == "intro":
