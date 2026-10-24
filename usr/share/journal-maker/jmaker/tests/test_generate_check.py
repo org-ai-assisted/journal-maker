@@ -73,6 +73,29 @@ class TestChecker(unittest.TestCase):
         self.assertEqual(
             c._dirname_url("https://h/v1/i1/x/x.pdf"), "https://h/v1/i1/x")
 
+    def test_linkify_citations(self):
+        html_in = ('<p>claim [5].</p><h2 id="references">References</h2>'
+                   '<p>[5] Foo.</p>')
+        out = g._linkify_citations(html_in)
+        self.assertIn('href="#ref-5">[5]</a>', out)
+        self.assertIn('<p id="ref-5">[5] Foo.', out)
+
+    def test_build_toc(self):
+        body = ('<h2 id="a">1. Intro</h2><h2 id="b">2. Bg</h2>'
+                '<h2 id="c">3. More</h2>')
+        toc = g._build_toc(body)
+        self.assertIn('href="#a"', toc)
+        self.assertIn("Contents", toc)
+
+    def test_build_toc_short_is_empty(self):
+        self.assertEqual(g._build_toc('<h2 id="a">Only</h2>'), "")
+
+    def test_bibtex(self):
+        bt = g._bibtex(META, JOURNAL, "https://h/v1/i1/x/")
+        self.assertIn("@article{", bt)
+        self.assertIn("title = {A Title}", bt)
+        self.assertIn("author = {Jane Doe and Rick Roe}", bt)
+
     def test_parse_paper_ignores_fenced_headings(self):
         md = ("```bash\n# not the title\n## Not Abstract\n```\n"
               "# Real Title\n\n## Abstract\n\nThe real abstract.\n\n"

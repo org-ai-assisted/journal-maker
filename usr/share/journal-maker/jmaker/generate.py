@@ -332,6 +332,52 @@ def _page(lang, head_title, description, canonical, extra_head, body,
     )
 
 
+def _linkify_citations(body_html):
+    """Link in-text [n] to #ref-n and anchor each reference entry."""
+    mo = re.search(r'(<h2[^>]*>\s*References\s*</h2>)', body_html, re.I)
+    head = body_html if mo is None else body_html[:mo.start()]
+    refs = "" if mo is None else body_html[mo.start():]
+    head = re.sub(r'\[(\d+)\]',
+                  lambda x: '<a class="cite" href="#ref-%s">[%s]</a>'
+                  % (x.group(1), x.group(1)), head)
+    refs = re.sub(r'<p>\s*\[(\d+)\]',
+                  lambda x: '<p id="ref-%s">[%s]' % (x.group(1), x.group(1)), refs)
+    return head + refs
+
+
+def _build_toc(body_html):
+    """Table of contents from the body's H2 headings (pandoc-assigned ids)."""
+    items = re.findall(r'<h2[^>]*\bid="([^"]+)"[^>]*>(.*?)</h2>', body_html,
+                       re.I | re.S)
+    if len(items) < 3:
+        return ""
+    strip = re.compile(r'<[^>]+>')
+    lis = []
+    for hid, inner in items:
+        text = re.sub(r'\s+', " ", strip.sub("", inner)).strip()
+        lis.append('<li><a href="#%s">%s</a></li>'
+                   % (html.escape(hid, quote=True), html.escape(text)))
+    return ('<nav class="toc"><div class="toc-label">Contents</div>\n<ol>\n%s\n'
+            "</ol></nav>\n" % "\n".join(lis))
+
+
+def _bibtex(m, journal, landing_url):
+    surname = (re.sub(r'[^a-z0-9]', "", m["authors"][0]["name"].lower().split()[-1])
+               if m["authors"] else "anon")
+    key = "%s%s" % (surname, m["date"][:4])
+    fields = [
+        ("author", " and ".join(a["name"] for a in m["authors"])),
+        ("title", m["title"]),
+        ("journal", journal["title"]),
+        ("year", m["date"][:4]),
+        ("volume", str(m["volume"])),
+        ("number", str(m["issue"])),
+    ]
+    fields.append(("doi", m["doi"]) if m.get("doi") else ("url", landing_url))
+    body = ",\n".join("  %s = {%s}" % (k, v) for k, v in fields)
+    return "@article{%s,\n%s\n}" % (key, body)
+
+
 def render_article(m, journal):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
@@ -340,10 +386,18 @@ def render_article(m, journal):
     pdf_url = landing_url + pdf_name
 
     meta = citation_meta(m, journal, landing_url, pdf_url)
-    body_html = md_to_html_fragment(m["_body_md"])
+    body_html = _linkify_citations(md_to_html_fragment(m["_body_md"]))
     abstract_html = md_to_html_fragment(m["abstract"])
+    toc = _build_toc(body_html)
 
     authors_line = ", ".join(html.escape(a["name"]) for a in m["authors"])
+    affils = []
+    for a in m["authors"]:
+        inst = a.get("institution")
+        if inst and inst not in affils:
+            affils.append(inst)
+    affil_bit = ('<p class="affil">%s</p>\n'
+                 % "; ".join(html.escape(x) for x in affils)) if affils else ""
     year = m["date"][:4]
     venue = "%s, Volume %s, Issue %s (%s)" % (
         html.escape(journal["title"]), html.escape(str(m["volume"])),
@@ -364,17 +418,27 @@ def render_article(m, journal):
             license_bit = ('<footer class="license">Licensed under %s.</footer>'
                            % html.escape(lic))
 
+    bibtex = _bibtex(m, journal, landing_url)
+    authors_plain = ", ".join(a["name"] for a in m["authors"])
+    plain_cite = '%s. "%s." %s, vol. %s, no. %s, %s.' % (
+        authors_plain, m["title"], journal["title"], m["volume"], m["issue"], year)
+    cite_box = ('<details class="cite-this"><summary>Cite this</summary>\n'
+                "<p>%s</p>\n<pre>%s</pre>\n</details>\n"
+                % (html.escape(plain_cite), html.escape(bibtex)))
+
     main = (
         '<main class="article">\n'
         '<h1 class="title">%s</h1>\n'
         '<p class="authors">%s</p>\n'
+        "%s"
         '<p class="venue">%s%s</p>\n'
         '<p class="actions"><a href="%s">Download PDF</a></p>\n'
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
+        "%s%s"
         '<article class="body">\n%s\n</article>\n'
         "%s\n</main>"
-    ) % (html.escape(m["title"]), authors_line, venue, doi_bit, pdf_name,
-         abstract_html, body_html, license_bit)
+    ) % (html.escape(m["title"]), authors_line, affil_bit, venue, doi_bit,
+         pdf_name, abstract_html, toc, cite_box, body_html, license_bit)
 
     description = " ".join(m["abstract"].split())[:300]
     page = _page(
