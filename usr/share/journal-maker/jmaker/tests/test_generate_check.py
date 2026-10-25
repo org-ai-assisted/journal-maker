@@ -609,6 +609,27 @@ class TestStatus(unittest.TestCase):
         page = self._META % "published" + "<p><strong>TODO:</strong> fix</p>"
         self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
 
+    def test_published_with_nonbold_todo_marker_errors(self):
+        # Regression: a marker that lost its bold (here in a heading) must still
+        # block a publish -- the old bold-only gate missed exactly this.
+        page = self._META % "published" + "<h3>TODO: resolve the DOI</h3>"
+        self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
+    def test_published_plaintext_todo_marker_errors(self):
+        page = self._META % "published" + "<p>TODO(editorial): tighten this</p>"
+        self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
+    def test_published_todo_in_code_example_ok(self):
+        # A genuine "# TODO:" inside a code example is not an unresolved note.
+        page = (self._META % "published"
+                + "<pre><code># TODO: handle EOF</code></pre>")
+        self.assertEqual(self._lint(page), [])
+
+    def test_published_todo_group_plaintext_not_flagged(self):
+        # Non-bold "TODO Group" (the FOSS org) must still pass the broadened scan.
+        page = self._META % "published" + "<p>maintained by the TODO Group.</p>"
+        self.assertEqual(self._lint(page), [])
+
     def test_published_clean_ok(self):
         page = self._META % "published" + "<p>clean body</p>"
         self.assertEqual(self._lint(page), [])
