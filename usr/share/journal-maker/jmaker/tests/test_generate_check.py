@@ -688,6 +688,39 @@ class TestIdentityAndCite(unittest.TestCase):
                 g.load_article(ad)
 
 
+class TestBrowseNav(unittest.TestCase):
+    def _art(self, slug, vol, iss, kws, author):
+        return {"slug": slug, "volume": vol, "issue": iss, "title": slug.upper(),
+                "keywords": kws, "authors": [{"name": author}],
+                "abstract": "An abstract."}
+
+    def test_order_key(self):
+        a = self._art("b", 1, 2, [], "X")
+        b = self._art("a", 1, 1, [], "Y")
+        self.assertEqual([m["slug"] for m in sorted([a, b], key=g._order_key)],
+                         ["a", "b"])
+
+    def test_article_nav_both(self):
+        prev = self._art("a", 1, 1, [], "X")
+        nxt = self._art("c", 1, 3, [], "Z")
+        out = g._article_nav((prev, nxt), "../../../")
+        self.assertIn('rel="prev" href="../../../v1/i1/a/"', out)
+        self.assertIn('rel="next" href="../../../v1/i3/c/"', out)
+
+    def test_article_nav_alone(self):
+        self.assertEqual(g._article_nav(None, "../../../"), "")
+        self.assertEqual(g._article_nav((None, None), "../../../"), "")
+
+    def test_browse_groups(self):
+        arts = [self._art("a", 1, 1, ["crypto", "mobile"], "Jane Doe"),
+                self._art("b", 1, 2, ["mobile"], "Rick Roe")]
+        page = g.render_browse(arts, dict(JOURNAL))
+        self.assertIn("By keyword", page)
+        self.assertIn("By author", page)
+        self.assertIn("<strong>mobile</strong>", page)
+        self.assertIn('href="../v1/i1/a/"', page)
+
+
 class TestFooterNav(unittest.TestCase):
     def test_footer_nav_relative_and_absolute(self):
         from jmaker import templates

@@ -825,7 +825,31 @@ def _cite_box(m, journal, landing_url, year):
             "</details>\n" % rows)
 
 
-def render_article(m, journal):
+def _order_key(m):
+    """Stable reading order: volume, then issue, then article number or slug."""
+    return (int(m["volume"]), int(m["issue"]),
+            m.get("article_number") or m["slug"])
+
+
+def _article_nav(neighbors, root_rel):
+    """Prev/next links within the journal's reading order (empty if alone)."""
+    if not neighbors:
+        return ""
+    prev, nxt = neighbors
+    parts = []
+    if prev:
+        parts.append('<a class="nav-prev" rel="prev" href="%s%s/">&#8592; %s</a>'
+                     % (root_rel, _rel_dir(prev), html.escape(prev["title"])))
+    if nxt:
+        parts.append('<a class="nav-next" rel="next" href="%s%s/">%s &#8594;</a>'
+                     % (root_rel, _rel_dir(nxt), html.escape(nxt["title"])))
+    if not parts:
+        return ""
+    return ('<nav class="article-nav" aria-label="Article navigation">%s</nav>\n'
+            % "".join(parts))
+
+
+def render_article(m, journal, neighbors=None):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
@@ -883,10 +907,12 @@ def render_article(m, journal):
         "%s%s"                                 # toc, cite box
         '<article class="body">\n%s\n</article>\n'
         "%s"                                   # statements (data/funding/COI)
+        "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
          doi_bit, history, subjects, status_line, pdf_name, pdf_name,
-         abstract_html, toc, cite_box, body_html, statements, license_bit)
+         abstract_html, toc, cite_box, body_html, statements,
+         _article_nav(neighbors, root_rel), license_bit)
 
     page = _page(
         m.get("language", journal["language"]),
@@ -933,11 +959,43 @@ def render_homepage(articles, journal, pages):
     body = (
         '<main id="main">\n<h1>%s</h1>\n'
         "<p>An open-access journal of computer-security research.</p>\n"
-        "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n%s</main>"
+        "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n"
+        '<p><a href="browse/index.html">Browse by keyword and author</a></p>\n'
+        "%s</main>"
     ) % (html.escape(journal["title"]), "\n".join(items), page_nav)
     return _page(journal["language"], journal["title"],
                  "Open-access computer-security research journal.",
                  journal["base_url"] + "/", "", body, journal, "")
+
+
+def render_browse(articles, journal):
+    """A /browse/ index grouping articles by keyword and by author."""
+    def art_link(m):
+        return '<a href="../%s/">%s</a>' % (_rel_dir(m), html.escape(m["title"]))
+
+    def section(title, groups):
+        if not groups:
+            return ""
+        lis = []
+        for key in sorted(groups):
+            items = ", ".join(art_link(x) for x in groups[key])
+            lis.append("<li><strong>%s</strong>: %s</li>"
+                       % (html.escape(key), items))
+        return ("<h2>%s</h2>\n<ul class=\"browse\">\n%s\n</ul>\n"
+                % (title, "\n".join(lis)))
+
+    bykw: dict = {}
+    byauth: dict = {}
+    for m in articles:
+        for kw in m.get("keywords", []):
+            bykw.setdefault(str(kw), []).append(m)
+        for a in m["authors"]:
+            byauth.setdefault(a["name"], []).append(m)
+    body = ('<main id="main">\n<h1>Browse</h1>\n%s%s</main>'
+            % (section("By keyword", bykw), section("By author", byauth)))
+    return _page(journal["language"], "Browse -- %s" % journal["title"],
+                 "Browse articles by keyword and author.",
+                 journal["base_url"] + "/browse/", "", body, journal, "../")
 
 
 def render_volume(vol, metas, journal):
@@ -1060,9 +1118,15 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     os.makedirs(out_dir)
 
     urls = [journal["base_url"] + "/"]
+    # Prev/next neighbours in reading order (volume, issue, article number/slug).
+    ordered = sorted(articles, key=_order_key)
+    nbr = {}
+    for i, a in enumerate(ordered):
+        nbr[_rel_dir(a)] = (ordered[i - 1] if i > 0 else None,
+                            ordered[i + 1] if i < len(ordered) - 1 else None)
     seen = {}
     for m in articles:
-        rel_dir, pdf_name, page = render_article(m, journal)
+        rel_dir, pdf_name, page = render_article(m, journal, nbr.get(_rel_dir(m)))
         if rel_dir in seen:
             raise BuildError("duplicate route %s from %s and %s"
                              % (rel_dir, seen[rel_dir], m["_dir"]))
@@ -1124,6 +1188,12 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
 
     with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as fh:
         fh.write(render_homepage(articles, journal, pages))
+
+    browse_dir = os.path.join(out_dir, "browse")
+    os.makedirs(browse_dir, exist_ok=True)
+    with open(os.path.join(browse_dir, "index.html"), "w", encoding="utf-8") as fh:
+        fh.write(render_browse(articles, journal))
+    urls.append("%s/browse/" % journal["base_url"])
 
     os.makedirs(os.path.join(out_dir, "assets"), exist_ok=True)
     from jmaker.templates import STYLE_CSS, JOURNAL_JS
