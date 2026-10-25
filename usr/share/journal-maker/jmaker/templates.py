@@ -120,7 +120,7 @@ nav.toc ol { margin: 0.4rem 0 0; padding-left: 1.4rem; }
 nav.toc li { margin: 0.15rem 0; }
 article.body { margin-top: 1.5rem; }
 article.body a.cite { text-decoration: none; font-variant-numeric: tabular-nums; }
-article.body table { border-collapse: collapse; width: 100%; font-size: 0.95rem; font-variant-numeric: tabular-nums; margin: 1.2rem 0; }
+article.body table { border-collapse: collapse; display: block; width: max-content; max-width: 100%; overflow-x: auto; font-size: 0.95rem; font-variant-numeric: tabular-nums; margin: 1.2rem 0; }
 article.body thead th { border-bottom: 2px solid var(--fg); }
 article.body tr.header { font-weight: 650; }
 article.body tr.even { background: var(--surface); }
@@ -204,8 +204,8 @@ def site_header(journal_title, site_root):
     t = html.escape(journal_title)
     return (
         '<header class="site">'
-        '<a class="brand" href="%sindex.html">%s</a>'
-        '<nav><a href="%sindex.html">Home</a></nav>'
+        '<a class="brand" href="%s">%s</a>'
+        '<nav><a href="%s">Home</a></nav>'
         "</header>" % (site_root, t, site_root)
     )
 

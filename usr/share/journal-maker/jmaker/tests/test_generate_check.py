@@ -1005,8 +1005,9 @@ class TestHeaderNavRoot(unittest.TestCase):
     def test_header_uses_absolute_root(self):
         from jmaker import templates
         out = templates.site_header("J", "/")
-        self.assertIn('<nav><a href="/index.html">Home</a></nav>', out)
-        # absolute => identical on every page => check_nav sees a consistent nav
+        self.assertIn('<nav><a href="/">Home</a></nav>', out)
+        self.assertIn('<a class="brand" href="/">', out)
+        # absolute + clean (no index.html) => identical on every page => consistent nav
 
 
 class TestFooterNav(unittest.TestCase):
