@@ -103,6 +103,17 @@ class TestChecker(unittest.TestCase):
         self.assertIn('<li id="ref-2">[2] ', out)
         self.assertIn('<li id="ref-1">[1] ', out)
 
+    def test_noncontiguous_reference_still_anchored(self):
+        # A reference separated from the main block by an interrupting paragraph
+        # must still become <li id="ref-n"> (its own <ol>), so its in-text citation
+        # does not dangle. count=1 would have left the second entry an unanchored <p>.
+        body = ('<p>see [1] and [2].</p><h2>References</h2>'
+                '<p>[1] A.</p>\n<p>a sub-note not starting with a bracketed number</p>\n'
+                '<p>[2] B.</p>')
+        out = g._linkify_citations(body)
+        self.assertIn('<li id="ref-1">', out)
+        self.assertIn('<li id="ref-2">', out)
+
     def test_build_toc(self):
         body = ('<h2 id="a">1. Intro</h2><h2 id="b">2. Bg</h2>'
                 '<h2 id="c">3. More</h2>')
