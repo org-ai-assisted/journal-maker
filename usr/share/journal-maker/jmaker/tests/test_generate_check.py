@@ -721,6 +721,20 @@ class TestBrowseNav(unittest.TestCase):
         self.assertIn('href="../v1/i1/a/"', page)
 
 
+class TestHeaderNavRoot(unittest.TestCase):
+    def test_site_root_host_root(self):
+        self.assertEqual(g._site_root({"base_url": "https://e.example"}), "/")
+
+    def test_site_root_subpath(self):
+        self.assertEqual(g._site_root({"base_url": "https://e.example/j"}), "/j/")
+
+    def test_header_uses_absolute_root(self):
+        from jmaker import templates
+        out = templates.site_header("J", "/")
+        self.assertIn('<nav><a href="/index.html">Home</a></nav>', out)
+        # absolute => identical on every page => check_nav sees a consistent nav
+
+
 class TestFooterNav(unittest.TestCase):
     def test_footer_nav_relative_and_absolute(self):
         from jmaker import templates
