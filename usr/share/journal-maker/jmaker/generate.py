@@ -434,9 +434,15 @@ def citation_meta(m, journal, landing_url, pdf_url):
 # Trusted Types are enforced AND no policy may be created (trusted-types 'none').
 
 def _csp_header():
-    """Full policy for a header-capable host (carries frame-ancestors)."""
+    """Full policy for a header-capable host (carries frame-ancestors).
+
+    script-src 'self': ONE self-hosted bundle (assets/journal.js), no CDN, no
+    'unsafe-inline', no eval. Trusted Types stay enforced AND no policy may be
+    created (trusted-types 'none') -- the bundle is written TT-safe (textContent
+    / setAttribute / addEventListener only, never a TT sink), so it needs none.
+    """
     return (
-        "default-src 'none'; script-src 'none'; style-src 'self'; "
+        "default-src 'none'; script-src 'self'; style-src 'self'; "
         "img-src 'self'; base-uri 'none'; form-action 'none'; "
         "frame-ancestors 'none'; object-src 'none'; "
         "require-trusted-types-for 'script'; trusted-types 'none'")
@@ -446,7 +452,7 @@ def _csp_meta():
     """The <meta http-equiv> policy: the header minus frame-ancestors, which a
     meta tag cannot set."""
     return (
-        "default-src 'none'; script-src 'none'; style-src 'self'; "
+        "default-src 'none'; script-src 'self'; style-src 'self'; "
         "img-src 'self'; base-uri 'none'; form-action 'none'; "
         "object-src 'none'; require-trusted-types-for 'script'; "
         "trusted-types 'none'")
@@ -459,10 +465,11 @@ _SVG_CSP = ("default-src 'none'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; object-src 'none'; base-uri 'none'; "
             "frame-ancestors 'none'")
 
-# Deny every browser feature (nothing the journal uses needs any).
+# Deny every browser feature except clipboard-write, which the self-hosted
+# copy-buttons need (scoped to self; nothing else is permitted).
 _PERMISSIONS_POLICY = (
     "accelerometer=(), autoplay=(), browsing-topics=(), camera=(), "
-    "clipboard-read=(), clipboard-write=(), display-capture=(), "
+    "clipboard-read=(), clipboard-write=(self), display-capture=(), "
     "encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), hid=(), "
     "magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), "
     "publickey-credentials-get=(), screen-wake-lock=(), serial=(), sync-xhr=(), "
@@ -532,6 +539,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         'href="%sfeed.xml">\n'
         "%s\n"
         '<link rel="stylesheet" href="%sassets/style.css">\n'
+        '<script src="%sassets/journal.js" defer></script>\n'
         "</head>\n<body>\n"
         '<a class="skip-link" href="#main">Skip to content</a>\n'
         "%s\n%s\n%s\n</body>\n</html>\n"
@@ -540,7 +548,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         html.escape(description),
         html.escape(canonical, quote=True),
         html.escape(journal["title"], quote=True), root_rel,
-        extra_head, root_rel,
+        extra_head, root_rel, root_rel,
         site_header(root_rel, journal["title"]), body,
         site_footer(journal, root_rel),
     )
@@ -1092,10 +1100,13 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
         fh.write(render_homepage(articles, journal, pages))
 
     os.makedirs(os.path.join(out_dir, "assets"), exist_ok=True)
-    from jmaker.templates import STYLE_CSS
+    from jmaker.templates import STYLE_CSS, JOURNAL_JS
     with open(os.path.join(out_dir, "assets", "style.css"), "w",
               encoding="utf-8") as fh:
         fh.write(STYLE_CSS)
+    with open(os.path.join(out_dir, "assets", "journal.js"), "w",
+              encoding="utf-8") as fh:
+        fh.write(JOURNAL_JS)
 
     write_sitemap(urls, journal, out_dir)
     write_feed(articles, journal, out_dir)

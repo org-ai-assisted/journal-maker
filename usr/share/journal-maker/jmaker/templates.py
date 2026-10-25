@@ -149,6 +149,24 @@ section.statement { margin: 1.6rem 0; }
 section.statement h2 { font-size: 1.15rem; font-weight: 650; }
 .cite-fmt { margin: 0.7rem 0; }
 .cite-label { display: block; font-family: var(--sans); font-weight: 650; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.2rem; }
+.copy-btn { float: right; font-family: var(--sans); font-size: 0.72rem; padding: 0.1rem 0.5rem; margin: 0 0 0.2rem 0.5rem; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); color: var(--fg); cursor: pointer; }
+.copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+article.body img.zoomable { cursor: zoom-in; max-width: 100%; height: auto; }
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; padding: 1rem; z-index: 50; cursor: zoom-out; }
+.lightbox img { max-width: 96vw; max-height: 96vh; }
+article.body pre.sourceCode { position: relative; }
+code span.kw { color: #7c4dff; } code span.dt { color: #0b7285; }
+code span.dv, code span.bn, code span.fl { color: #b5651d; }
+code span.st { color: #2e7d32; } code span.co { color: var(--muted); font-style: italic; }
+code span.fu { color: #0b5cad; } code span.op, code span.ot { color: var(--fg); }
+code span.pp { color: #a6378a; } code span.al, code span.er { color: #c62828; font-weight: 650; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) code span.kw { color: #b388ff; }
+  :root:not([data-theme="light"]) code span.dt { color: #4dd0e1; }
+  :root:not([data-theme="light"]) code span.st { color: #81c784; }
+  :root:not([data-theme="light"]) code span.fu { color: #7db4f0; }
+  :root:not([data-theme="light"]) code span.dv, :root:not([data-theme="light"]) code span.bn, :root:not([data-theme="light"]) code span.fl { color: #ffb74d; }
+}
 ol.articles { list-style: none; padding: 0; }
 ol.articles li { padding: 0.8rem 0; border-bottom: 1px solid var(--rule); }
 ol.articles .atitle { font-size: 1.1rem; }
@@ -170,6 +188,69 @@ def site_header(root_rel, journal_title):
         '<nav><a href="%sindex.html">Home</a></nav>'
         "</header>" % (root_rel, t, root_rel)
     )
+
+
+# Self-hosted, Trusted-Types-safe enhancement bundle (script-src 'self'). Builds
+# DOM only via textContent / createElement / setAttribute / classList and never a
+# TT sink (no innerHTML, no script-url), so it runs under trusted-types 'none'
+# with no policy. Hover previews use the native title attribute (no positioned
+# tooltip) so no programmatic inline style is needed under style-src 'self'. The
+# page is fully usable with JS disabled -- every feature here is additive.
+JOURNAL_JS = r"""// Journal interactive enhancements. Trusted-Types-safe; progressive.
+(function () {
+  "use strict";
+
+  // Copy button on each cite-box / code <pre>.
+  function addCopy(pre) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copy-btn";
+    btn.textContent = "Copy";
+    btn.addEventListener("click", function () {
+      if (!(navigator.clipboard && navigator.clipboard.writeText)) { return; }
+      navigator.clipboard.writeText(pre.textContent).then(function () {
+        btn.textContent = "Copied";
+        setTimeout(function () { btn.textContent = "Copy"; }, 1500);
+      }, function () { btn.textContent = "Copy failed"; });
+    });
+    pre.parentNode.insertBefore(btn, pre);
+  }
+  var pres = document.querySelectorAll("details.cite-this pre, article.body pre");
+  for (var i = 0; i < pres.length; i++) { addCopy(pres[i]); }
+
+  // Citation hover/focus preview via the native title attribute (CSP-clean).
+  var cites = document.querySelectorAll("a.cite");
+  for (var j = 0; j < cites.length; j++) {
+    var href = cites[j].getAttribute("href");
+    if (href && href.charAt(0) === "#") {
+      var ref = document.getElementById(href.slice(1));
+      if (ref) {
+        cites[j].setAttribute("title", ref.textContent.replace(/\s+/g, " ").trim());
+      }
+    }
+  }
+
+  // Figure lightbox: click a body image to view enlarged; click or Escape closes.
+  function lightbox(img) {
+    var ov = document.createElement("div");
+    ov.className = "lightbox";
+    var big = document.createElement("img");
+    big.setAttribute("src", img.getAttribute("src"));
+    big.setAttribute("alt", img.getAttribute("alt") || "");
+    ov.appendChild(big);
+    function close() { ov.remove(); document.removeEventListener("keydown", onKey); }
+    function onKey(e) { if (e.key === "Escape") { close(); } }
+    ov.addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(ov);
+  }
+  var imgs = document.querySelectorAll("article.body img");
+  for (var k = 0; k < imgs.length; k++) {
+    imgs[k].classList.add("zoomable");
+    imgs[k].addEventListener("click", function (e) { lightbox(e.currentTarget); });
+  }
+})();
+"""
 
 
 def site_footer(journal, root_rel):
