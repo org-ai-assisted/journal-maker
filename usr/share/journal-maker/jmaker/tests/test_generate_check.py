@@ -558,10 +558,12 @@ class TestRefLinksAndMeta(unittest.TestCase):
         page = g.render_homepage([], dict(JOURNAL), [])
         self.assertIn("Content-Security-Policy", page)
         self.assertIn("default-src 'none'", page)
-        self.assertIn("script-src 'none'", page)
+        self.assertIn("script-src 'self'", page)        # one self-hosted bundle
         self.assertIn("require-trusted-types-for 'script'", page)
         self.assertIn("trusted-types 'none'", page)
-        self.assertNotIn("unsafe-inline", page)        # max-strict, no escape hatch
+        self.assertNotIn("unsafe-inline", page)        # no inline escape hatch
+        self.assertNotIn("unsafe-eval", page)          # no eval / wasm
+        self.assertIn("journal.js", page)              # bundle referenced
         self.assertNotIn("frame-ancestors", g._csp_meta())  # meta cannot set it
 
     def test_security_headers_and_headers_file(self):
@@ -574,6 +576,18 @@ class TestRefLinksAndMeta(unittest.TestCase):
             self.assertIn("Permissions-Policy:", h)
             self.assertIn("Cross-Origin-Opener-Policy: same-origin", h)
             self.assertIn("X-Frame-Options: DENY", h)
+            self.assertIn("clipboard-write=(self)", h)   # copy buttons need it
+
+    def test_js_bundle_is_tt_safe(self):
+        from jmaker import templates
+        js = templates.JOURNAL_JS
+        # Trusted-Types-safe: no DOM-XSS sinks, so it runs under trusted-types 'none'.
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML",
+                     "document.write", "eval(", "new Function"):
+            self.assertNotIn(sink, js)
+        self.assertIn("navigator.clipboard", js)        # copy
+        self.assertIn('setAttribute("title"', js)        # hover preview
+        self.assertIn('"lightbox"', js)                  # figure lightbox
 
     def test_opengraph_tags(self):
         og = g._opengraph({"title": "T"}, {"title": "J"}, "https://e.example/x/",
