@@ -131,8 +131,10 @@ article.body code { font-family: var(--mono); font-size: 0.875em; background: va
 article.body pre { font-family: var(--mono); font-size: 0.85rem; line-height: 1.5; overflow-x: auto; padding: 1rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; tab-size: 4; }
 article.body pre code { background: none; border: 0; padding: 0; }
 article.body blockquote { margin: 1rem 0; padding-left: 1.25rem; border-left: 3px solid var(--rule); color: var(--muted); }
-article.body h2#references ~ p[id^="ref-"], p[id^="ref-"] { padding-left: 2em; text-indent: -2em; font-size: 0.9rem; line-height: 1.5; margin: 0.35rem 0; overflow-wrap: anywhere; }
-p[id^="ref-"]:target { background: var(--surface); }
+ol.references { list-style: none; counter-reset: ref; padding-left: 0; margin: 0.5rem 0; }
+ol.references li { counter-increment: ref; padding-left: 2.4em; text-indent: -2.4em; font-size: 0.9rem; line-height: 1.5; margin: 0.35rem 0; overflow-wrap: anywhere; }
+ol.references li::before { content: "[" counter(ref) "] "; font-variant-numeric: tabular-nums; }
+ol.references li:target { background: var(--surface); }
 details.cite-this { font-family: var(--sans); font-size: 0.9rem; border: 1px solid var(--rule); border-radius: 5px; padding: 0.6rem 1rem; margin: 1.5rem 0; }
 details.cite-this summary { cursor: pointer; font-weight: 650; }
 details.cite-this pre { font-family: var(--mono); font-size: 0.8rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 0.8rem; overflow-x: auto; }

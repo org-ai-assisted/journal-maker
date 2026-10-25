@@ -87,7 +87,8 @@ class TestChecker(unittest.TestCase):
                    '<p>[5] Foo.</p>')
         out = g._linkify_citations(html_in)
         self.assertIn('href="#ref-5">[5]</a>', out)
-        self.assertIn('<p id="ref-5">[5] ', out)
+        self.assertIn('<ol class="references">', out)
+        self.assertIn('<li id="ref-5">', out)
         self.assertIn('href="#cite-5"', out)   # backlink to first mention
         self.assertIn("Foo.", out)
 
@@ -518,21 +519,21 @@ class TestCitationParity(unittest.TestCase):
         return [m for _l, _p, m in f.errors]
 
     def test_clean(self):
-        page = '<a href="#ref-1">[1]</a><p id="ref-1">[1] X.</p>'
+        page = '<a href="#ref-1">[1]</a><ol class="references"><li id="ref-1">X.</li></ol>'
         self.assertEqual(self._run(page), [])
 
     def test_dangling_citation(self):
-        page = '<a href="#ref-2">[2]</a><p id="ref-1">[1] X.</p>'
+        page = '<a href="#ref-2">[2]</a><ol class="references"><li id="ref-1">X.</li></ol>'
         self.assertTrue(any("no reference entry" in m for m in self._run(page)))
 
     def test_uncited_reference(self):
-        page = ('<a href="#ref-1">[1]</a><p id="ref-1">[1] X.</p>'
-                '<p id="ref-2">[2] Y.</p>')
+        page = ('<a href="#ref-1">[1]</a><ol class="references"><li id="ref-1">X.</li>'
+                '<li id="ref-2">Y.</li></ol>')
         self.assertTrue(any("never cited" in m for m in self._run(page)))
 
     def test_duplicate_reference(self):
-        page = ('<a href="#ref-1">[1]</a><p id="ref-1">[1] X.</p>'
-                '<p id="ref-1">[1] dup.</p>')
+        page = ('<a href="#ref-1">[1]</a><ol class="references"><li id="ref-1">X.</li>'
+                '<li id="ref-1">dup.</li></ol>')
         self.assertTrue(any("duplicate" in m for m in self._run(page)))
 
     def test_no_citations_ok(self):
@@ -744,7 +745,7 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertEqual(out.count('id="cite-1"'), 1)
         self.assertIn('href="#ref-1"', out)        # forward link
         self.assertIn('href="#cite-1"', out)        # backlink from the entry
-        self.assertIn('<p id="ref-1">', out)
+        self.assertIn('<li id="ref-1">', out)
 
     def test_reference_url_linkified(self):
         src = ("<p>x [1].</p><h2>References</h2>"
@@ -1111,6 +1112,112 @@ class TestNoInternalRefs(unittest.TestCase):
 
     def test_clean_output_passes(self):
         self.assertEqual(self._run("<p>vendor-neutral content</p>"), [])
+
+
+class TestPdfFonts(unittest.TestCase):
+    HDR = ("name                 type              encoding  emb sub uni object ID\n"
+           "-------------------- ----------------- --------- --- --- --- ---------\n")
+
+    def test_type3_detected(self):
+        out = self.HDR + "ABCDEF+Foo           Type 3            Custom    yes yes no   5 0\n"
+        self.assertTrue(c._has_type3_font(out))
+
+    def test_vector_fonts_pass(self):
+        out = (self.HDR
+               + "ABCDEF+LMRoman10     Type 1C           Custom    yes yes no   5 0\n"
+               + "GHIJKL+LMMono10      Type 1            Custom    yes yes no   6 0\n")
+        self.assertFalse(c._has_type3_font(out))
+
+    def test_empty_font_list_passes(self):
+        self.assertFalse(c._has_type3_font(self.HDR))
+
+
+class TestIndexPolicy(unittest.TestCase):
+    NOINDEX = '<meta name="robots" content="noindex">'
+    DISALLOW = "User-agent: *\nDisallow: /\n"
+    ALLOW = "User-agent: *\nAllow: /\nSitemap: https://e.example/sitemap.xml\n"
+
+    def _check(self, robots, home, extra=None):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "robots.txt"), "w", encoding="utf-8") as fh:
+                fh.write(robots)
+            with open(os.path.join(d, "index.html"), "w", encoding="utf-8") as fh:
+                fh.write(home)
+            for rel, body in (extra or {}).items():
+                p = os.path.join(d, rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            f = c.Findings()
+            c.check_index_policy(d, f)
+            return [m for _l, _p, m in f.errors]
+
+    def test_noindex_consistent_ok(self):
+        self.assertEqual(self._check(self.DISALLOW, "<html>" + self.NOINDEX + "</html>"), [])
+
+    def test_indexable_consistent_ok(self):
+        self.assertEqual(self._check(self.ALLOW, "<html>clean</html>"), [])
+
+    def test_noindex_meta_but_robots_allow_errors(self):
+        self.assertTrue(any("inconsistent" in m for m in
+                            self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>")))
+
+    def test_indexable_but_robots_disallow_errors(self):
+        self.assertTrue(any("inconsistent" in m for m in
+                            self._check(self.DISALLOW, "<html>clean</html>")))
+
+    def test_published_todo_on_standalone_page_errors(self):
+        errs = self._check(self.ALLOW, "<html>clean</html>",
+                           extra={"about/index.html": "<p><strong>TODO:</strong> finish</p>"})
+        self.assertTrue(any("TODO edit-marker" in m for m in errs))
+
+    def test_noindex_build_allows_todo(self):
+        errs = self._check(self.DISALLOW, "<html>" + self.NOINDEX + "</html>",
+                           extra={"about/index.html": "<p><strong>TODO:</strong> finish</p>"})
+        self.assertEqual(errs, [])
+
+
+class TestNoIndexDefault(unittest.TestCase):
+    def test_write_robots_noindex_vs_publish(self):
+        with tempfile.TemporaryDirectory() as d:
+            g.write_robots({"_no_index": True, "base_url": "https://e.example"}, d)
+            with open(os.path.join(d, "robots.txt"), encoding="utf-8") as fh:
+                txt = fh.read()
+            self.assertIn("Disallow: /", txt)
+            self.assertNotIn("Allow: /", txt)
+            g.write_robots({"_no_index": False, "base_url": "https://e.example"}, d)
+            with open(os.path.join(d, "robots.txt"), encoding="utf-8") as fh:
+                txt = fh.read()
+            self.assertIn("Allow: /", txt)
+            self.assertIn("Sitemap:", txt)
+
+    def test_default_build_non_indexable_publish_opts_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            jt = os.path.join(d, "journal.toml")
+            with open(jt, "w", encoding="utf-8") as fh:
+                fh.write('title = "J"\nbase_url = "https://e.example"\n'
+                         'publisher = "P"\nissn = ""\nlicense = "CC-BY-4.0"\n'
+                         'license_url = "https://e.example/by/4.0/"\nlanguage = "en"\n'
+                         'footer_links = [{ title = "Home", href = "index.html" }]\n')
+            ad = os.path.join(d, "articles", "art")
+            os.makedirs(ad)
+            with open(os.path.join(ad, "meta.toml"), "w", encoding="utf-8") as fh:
+                fh.write('authors = [{ name = "A" }]\ndate = "2026-10-24"\n'
+                         'volume = 1\nissue = 1\n')
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation purposes here.\n\n## 1. Intro\n\nBody.\n")
+            arts = os.path.join(d, "articles")
+            out1 = os.path.join(d, "s1")
+            g.build(arts, jt, out1, skip_pdf=True)                 # default
+            with open(os.path.join(out1, "robots.txt"), encoding="utf-8") as fh:
+                self.assertIn("Disallow: /", fh.read())
+            out2 = os.path.join(d, "s2")
+            g.build(arts, jt, out2, skip_pdf=True, publish=True)   # opt in
+            with open(os.path.join(out2, "robots.txt"), encoding="utf-8") as fh:
+                r = fh.read()
+            self.assertIn("Allow: /", r)
+            self.assertIn("Sitemap:", r)
 
 
 if __name__ == "__main__":

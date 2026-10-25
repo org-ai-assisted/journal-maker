@@ -410,6 +410,11 @@ def md_to_pdf(m, journal, out_pdf):
         "date: %s\n"
         "abstract: %s\n"
         "documentclass: article\n"
+        # lmodern gives Type-1 (vector) glyphs; without it pdflatex can fall back
+        # to Type-3 bitmap fonts that render poorly and defeat text extraction /
+        # Scholar indexing (check.py's pdffonts gate rejects Type 3).
+        "header-includes:\n"
+        "  - \\usepackage{lmodern}\n"
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
@@ -666,13 +671,20 @@ def _linkify_citations(body_html):
     head = _sub_outside(_HTML_CODE_RE,
                         lambda s: re.sub(r"\[(\d+)\]", _cite, s), head)
 
-    def _refp(x):
+    def _ref_li(x):
         n = x.group(1)
+        content = x.group(2).rstrip()
         back = ('<a class="backref" href="#cite-%s" '
-                'aria-label="back to citation">&#8617;</a>' % n) if n in seen \
+                'aria-label="back to citation">&#8617;</a> ' % n) if n in seen \
             else ""
-        return '<p id="ref-%s">[%s] %s' % (n, n, back)
-    refs = re.sub(r'<p>\s*\[(\d+)\]', _refp, refs)
+        return '<li id="ref-%s">%s%s</li>' % (n, back, content)
+    # Each pandoc-rendered "[n] ..." reference paragraph becomes an <ol> item; the
+    # list supplies the visible number (CSS restores the "[n]" bracket style), so
+    # the literal "[n]" marker is dropped from the entry text.
+    refs = re.sub(r'<p>\s*\[(\d+)\]\s*(.*?)</p>', _ref_li, refs, flags=re.S)
+    refs = re.sub(r'(?:\s*<li id="ref-\d+">.*?</li>)+',
+                  lambda m: '\n<ol class="references">' + m.group(0) + '\n</ol>',
+                  refs, count=1, flags=re.S)
     return head + _linkify_refs(refs)
 
 
@@ -1148,9 +1160,12 @@ def _is_within(path, parent):
         return False
 
 
-def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
+def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     journal = load_journal(journal_toml)
-    journal["_no_index"] = no_index
+    # Non-indexable by DEFAULT: a draft or interim host must never be crawled.
+    # Indexability is an explicit, trust-bearing opt-in (--publish) for the
+    # canonical host only.
+    journal["_no_index"] = not publish
 
     # The output dir is wiped (rmtree); refuse only when that would DELETE a
     # source -- out == / contains articles or the content root, or out is inside
