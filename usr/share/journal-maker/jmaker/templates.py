@@ -83,6 +83,9 @@ footer.site {
   font-family: var(--sans); font-size: 0.85rem; color: var(--muted);
   border-top: 1px solid var(--rule); margin-top: 3rem; padding: 1.2rem 0 2.5rem;
 }
+footer.site .footer-nav { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; margin-bottom: 0.6rem; }
+footer.site .footer-nav a { color: var(--accent); }
+footer.site p { margin: 0; }
 main { padding: 1.5rem 0; }
 h1, h2, h3, h4 { font-family: var(--sans); line-height: 1.25; }
 h1.title { font-size: 2.1rem; font-weight: 700; letter-spacing: -0.01em; margin: 0.4rem 0 0.5rem; }
@@ -169,10 +172,24 @@ def site_header(root_rel, journal_title):
     )
 
 
-def site_footer(journal_title, issn):
-    t = html.escape(journal_title)
+def site_footer(journal, root_rel):
+    t = html.escape(journal["title"])
+    issn = journal.get("issn", "")
     issn_bit = (" ISSN " + html.escape(issn)) if issn else ""
+    nav = ""
+    links = journal.get("footer_links") or []
+    if links:
+        items = []
+        for link in links:
+            href = link["href"]
+            if not href.startswith(("http://", "https://")):
+                href = root_rel + href   # root-relative, same targets every page
+            items.append('<a href="%s">%s</a>'
+                         % (html.escape(href, quote=True),
+                            html.escape(link["title"])))
+        nav = ('<nav class="footer-nav" aria-label="Journal">%s</nav>\n'
+               % " ".join(items))
     return (
-        '<footer class="site">%s.%s Open access. Built with journal-maker.'
-        "</footer>" % (t, issn_bit)
+        '<footer class="site">%s<p>%s.%s Open access. Built with '
+        "journal-maker.</p></footer>" % (nav, t, issn_bit)
     )
