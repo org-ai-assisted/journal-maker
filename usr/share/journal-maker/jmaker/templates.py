@@ -167,6 +167,10 @@ code span.pp { color: #a6378a; } code span.al, code span.er { color: #c62828; fo
   :root:not([data-theme="light"]) code span.fu { color: #7db4f0; }
   :root:not([data-theme="light"]) code span.dv, :root:not([data-theme="light"]) code span.bn, :root:not([data-theme="light"]) code span.fl { color: #ffb74d; }
 }
+nav.article-nav { display: flex; justify-content: space-between; gap: 1rem; margin: 2.2rem 0 0; padding-top: 1rem; border-top: 1px solid var(--rule); font-family: var(--sans); font-size: 0.9rem; }
+nav.article-nav .nav-next { margin-left: auto; text-align: right; }
+ul.browse { list-style: none; padding: 0; }
+ul.browse li { padding: 0.35rem 0; border-bottom: 1px solid var(--rule); font-family: var(--sans); font-size: 0.95rem; }
 ol.articles { list-style: none; padding: 0; }
 ol.articles li { padding: 0.8rem 0; border-bottom: 1px solid var(--rule); }
 ol.articles .atitle { font-size: 1.1rem; }
