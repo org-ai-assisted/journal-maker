@@ -78,6 +78,24 @@ def load_journal(path):
     j.setdefault("publisher", j["title"])
     j.setdefault("license", "")
     j.setdefault("license_url", "")
+    # Optional consistent footer navigation (same links/order on every page).
+    j.setdefault("footer_links", [])
+    if not isinstance(j["footer_links"], list):
+        raise BuildError("journal.toml: footer_links must be a list")
+    for link in j["footer_links"]:
+        if (not isinstance(link, dict)
+                or not isinstance(link.get("title"), str)
+                or not isinstance(link.get("href"), str)
+                or not link["title"].strip() or not link["href"].strip()):
+            raise BuildError("journal.toml: each footer_link needs a non-empty "
+                             "string title and href")
+        h = link["href"]
+        if "://" in h and not h.startswith(("http://", "https://")):
+            raise BuildError("journal.toml: footer_link href scheme not allowed: "
+                             "%r" % h)
+        if ".." in h or h.startswith("/"):
+            raise BuildError("journal.toml: footer_link href must be relative "
+                             "(no leading / or ..) or absolute http(s): %r" % h)
     return j
 
 
@@ -441,7 +459,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         html.escape(journal["title"], quote=True), root_rel,
         extra_head, root_rel,
         site_header(root_rel, journal["title"]), body,
-        site_footer(journal["title"], journal.get("issn", "")),
+        site_footer(journal, root_rel),
     )
 
 

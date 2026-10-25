@@ -637,5 +637,47 @@ class TestIdentityAndCite(unittest.TestCase):
                 g.load_article(ad)
 
 
+class TestFooterNav(unittest.TestCase):
+    def test_footer_nav_relative_and_absolute(self):
+        from jmaker import templates
+        j = {"title": "J", "issn": "",
+             "footer_links": [{"title": "About", "href": "about/"},
+                              {"title": "Src", "href": "https://e.example/x"}]}
+        out = templates.site_footer(j, "../../../")
+        self.assertIn('href="../../../about/">About', out)   # relative prefixed
+        self.assertIn('href="https://e.example/x">Src', out)  # absolute as-is
+        self.assertIn("footer-nav", out)
+
+    def test_footer_no_links(self):
+        from jmaker import templates
+        out = templates.site_footer({"title": "J", "issn": "",
+                                     "footer_links": []}, "")
+        self.assertNotIn("footer-nav", out)
+
+    def _journal(self, d, body):
+        jt = os.path.join(d, "journal.toml")
+        with open(jt, "w", encoding="utf-8") as fh:
+            fh.write('title="J"\nbase_url="https://e.example"\n' + body)
+        return jt
+
+    def test_leading_slash_footer_link_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._journal(d, 'footer_links=[{title="X", href="/abs"}]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_journal(jt)
+
+    def test_traversal_footer_link_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._journal(d, 'footer_links=[{title="X", href="../up/"}]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_journal(jt)
+
+    def test_valid_footer_links(self):
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._journal(d,
+                               'footer_links=[{title="Home", href="index.html"}]\n')
+            self.assertEqual(len(g.load_journal(jt)["footer_links"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
