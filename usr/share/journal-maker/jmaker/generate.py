@@ -426,6 +426,91 @@ def citation_meta(m, journal, landing_url, pdf_url):
     return "\n".join(tags)
 
 
+# ----------------------------------------------------------- security policy
+# Maximum-strict CSP. The journal ships NO executable script (the only inline
+# <script> is inert application/ld+json data), NO web fonts (system stack), and
+# makes NO network calls -- so everything collapses to 'none' except the single
+# same-origin stylesheet (style-src 'self') and figure images (img-src 'self').
+# Trusted Types are enforced AND no policy may be created (trusted-types 'none').
+
+def _csp_header():
+    """Full policy for a header-capable host (carries frame-ancestors)."""
+    return (
+        "default-src 'none'; script-src 'none'; style-src 'self'; "
+        "img-src 'self'; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'; object-src 'none'; "
+        "require-trusted-types-for 'script'; trusted-types 'none'")
+
+
+def _csp_meta():
+    """The <meta http-equiv> policy: the header minus frame-ancestors, which a
+    meta tag cannot set."""
+    return (
+        "default-src 'none'; script-src 'none'; style-src 'self'; "
+        "img-src 'self'; base-uri 'none'; form-action 'none'; "
+        "object-src 'none'; require-trusted-types-for 'script'; "
+        "trusted-types 'none'")
+
+
+# A directly-opened SVG document enforces the response CSP on itself; style-src
+# 'self' would drop an SVG's inline styles and render it blank, so a directly
+# served SVG gets a sandbox carve-out (still no script).
+_SVG_CSP = ("default-src 'none'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; object-src 'none'; base-uri 'none'; "
+            "frame-ancestors 'none'")
+
+# Deny every browser feature (nothing the journal uses needs any).
+_PERMISSIONS_POLICY = (
+    "accelerometer=(), autoplay=(), browsing-topics=(), camera=(), "
+    "clipboard-read=(), clipboard-write=(), display-capture=(), "
+    "encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), hid=(), "
+    "magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), "
+    "publickey-credentials-get=(), screen-wake-lock=(), serial=(), sync-xhr=(), "
+    "usb=(), xr-spatial-tracking=()")
+
+
+def _security_headers():
+    """Canonical HTTP security headers for a header-capable static host, in
+    order (GitHub Pages ignores _headers; the <meta> CSP is the boundary there)."""
+    return [
+        ("Content-Security-Policy", _csp_header()),
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "DENY"),
+        ("X-XSS-Protection", "0"),
+        ("Referrer-Policy", "strict-origin-when-cross-origin"),
+        ("Strict-Transport-Security",
+         "max-age=63072000; includeSubDomains; preload"),
+        ("Permissions-Policy", _PERMISSIONS_POLICY),
+        ("Cross-Origin-Embedder-Policy", "require-corp"),
+        ("Cross-Origin-Resource-Policy", "same-origin"),
+        ("Cross-Origin-Opener-Policy", "same-origin"),
+    ]
+
+
+def write_headers(out_dir):
+    """Emit the root `_headers` file (Cloudflare/Netlify format): one `/*` block
+    with the canonical security headers, plus a per-SVG CSP carve-out so a
+    directly-opened SVG keeps its inline styles. Mirrors mw-static-generator."""
+    lines = ["/*"]
+    lines += ["  %s: %s" % (n, v) for n, v in _security_headers()]
+    svgs = []
+    for root, _d, files in os.walk(out_dir):
+        for nm in files:
+            if nm.lower().endswith((".svg", ".svgz")):
+                rel = os.path.relpath(os.path.join(root, nm),
+                                      out_dir).replace(os.sep, "/")
+                svgs.append(rel)
+    for rel in sorted(svgs):
+        # Allowlist the path: anything outside this safe charset could widen or
+        # rebind the rule and strip the strict /* CSP off other responses.
+        if not re.fullmatch(r"[A-Za-z0-9._ /-]+", rel):
+            continue
+        lines += ["", "/" + rel, "  ! Content-Security-Policy",
+                  "  Content-Security-Policy: " + _SVG_CSP]
+    with open(os.path.join(out_dir, "_headers"), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
 # ---------------------------------------------------------------- rendering
 
 def _page(lang, head_title, description, canonical, extra_head, body,
@@ -438,9 +523,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         '<html lang="%s">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '<meta http-equiv="Content-Security-Policy" content="default-src '
-        "'none'; style-src 'self'; img-src 'self'; base-uri 'none'; "
-        'form-action \'none\'">\n'
+        '<meta http-equiv="Content-Security-Policy" content="%s">\n'
         "%s"
         "<title>%s</title>\n"
         '<meta name="description" content="%s">\n'
@@ -453,7 +536,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         '<a class="skip-link" href="#main">Skip to content</a>\n'
         "%s\n%s\n%s\n</body>\n</html>\n"
     ) % (
-        html.escape(lang), robots, html.escape(head_title),
+        html.escape(lang), _csp_meta(), robots, html.escape(head_title),
         html.escape(description),
         html.escape(canonical, quote=True),
         html.escape(journal["title"], quote=True), root_rel,
@@ -1016,6 +1099,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
 
     write_sitemap(urls, journal, out_dir)
     write_feed(articles, journal, out_dir)
+    write_headers(out_dir)
     write_robots(journal, out_dir)
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
