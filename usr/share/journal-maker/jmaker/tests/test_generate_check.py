@@ -398,5 +398,113 @@ class TestPdfCanary(unittest.TestCase):
                             for m in self._check(b"<script>x</script>\n%PDF-1.5")))
 
 
+class TestStatus(unittest.TestCase):
+    def _article(self, d, meta_toml):
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "meta.toml"), "w", encoding="utf-8") as fh:
+            fh.write(meta_toml)
+        with open(os.path.join(d, "paper.md"), "w", encoding="utf-8") as fh:
+            fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                     "validation purposes here.\n\n## 1. Intro\n\nBody.\n")
+
+    _BASE = 'volume = 1\nissue = 1\ndate = "2026-10-24"\nauthors = [{name = "A"}]\n'
+
+    def test_default_status_is_draft(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, self._BASE)
+            self.assertEqual(g.load_article(ad)["status"], "draft")
+
+    def test_invalid_status_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, self._BASE + 'status = "final"\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_corrected_requires_date(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, self._BASE + 'status = "corrected"\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_corrected_bad_url_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, self._BASE + 'status = "corrected"\n'
+                          'corrected_date = "2026-10-25"\n'
+                          'correction_url = "javascript:evil"\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_corrected_valid(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, self._BASE + 'status = "corrected"\n'
+                          'corrected_date = "2026-10-25"\n')
+            m = g.load_article(ad)
+            self.assertEqual(m["status"], "corrected")
+            self.assertEqual(m["corrected_date"], "2026-10-25")
+
+    def test_fragment_draft(self):
+        pill, banner, line, head = g._status_fragment({"status": "draft"})
+        self.assertIn("status-pill status-draft", pill)
+        self.assertIn("status-banner status-draft", banner)
+        self.assertIn("not peer reviewed", line)
+        self.assertIn('content="draft"', head)
+
+    def test_fragment_published_has_no_banner(self):
+        pill, banner, line, head = g._status_fragment({"status": "published"})
+        self.assertEqual(banner, "")
+        self.assertIn("status-pill status-published", pill)
+        self.assertIn('content="published"', head)
+
+    def test_fragment_corrected_banner_has_date(self):
+        _p, banner, _l, _h = g._status_fragment(
+            {"status": "corrected", "corrected_date": "2026-10-25",
+             "correction_url": "https://e.example/notice"})
+        self.assertIn("status-banner status-corrected", banner)
+        self.assertIn("2026-10-25", banner)
+        self.assertIn("https://e.example/notice", banner)
+
+    def test_jsonld_has_status_and_escapes(self):
+        j = g._jsonld({"title": "A <b> title", "authors": [{"name": "A"}],
+                       "date": "2026-10-24", "status": "draft"},
+                      {"title": "J"}, "https://e.example/x/")
+        self.assertIn('"creativeWorkStatus": "Draft"', j)
+        self.assertNotIn("<b>", j)            # breakout chars neutralized
+        self.assertIn("\\u003c", j)
+
+    def _lint(self, page):
+        f = c.Findings()
+        c.check_release_state(page, "p.html", f)
+        return [m for _lvl, _p, m in f.errors]
+
+    _META = '<meta name="article_status" content="%s">'
+
+    def test_published_with_todo_marker_errors(self):
+        page = self._META % "published" + "<p><strong>TODO:</strong> fix</p>"
+        self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
+    def test_published_clean_ok(self):
+        page = self._META % "published" + "<p>clean body</p>"
+        self.assertEqual(self._lint(page), [])
+
+    def test_draft_without_banner_errors(self):
+        page = self._META % "draft" + "<p>body</p>"
+        self.assertTrue(any("not-peer-reviewed banner" in m
+                            for m in self._lint(page)))
+
+    def test_draft_with_banner_ok(self):
+        page = (self._META % "draft"
+                + '<aside class="status-banner status-draft">x</aside>')
+        self.assertEqual(self._lint(page), [])
+
+    def test_missing_status_meta_errors(self):
+        self.assertTrue(any("missing article_status" in m
+                            for m in self._lint("<p>no meta</p>")))
+
+
 if __name__ == "__main__":
     unittest.main()
