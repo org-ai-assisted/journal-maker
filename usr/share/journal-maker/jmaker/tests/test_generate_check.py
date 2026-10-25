@@ -777,5 +777,25 @@ class TestFooterNav(unittest.TestCase):
             self.assertEqual(len(g.load_journal(jt)["footer_links"]), 1)
 
 
+class TestNoInternalRefs(unittest.TestCase):
+    def _run(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "index.html"), "w", encoding="utf-8") as fh:
+                fh.write(text)
+            f = c.Findings()
+            c.check_no_internal_refs(d, f)
+            return [m for _l, _p, m in f.errors]
+
+    def test_forbidden_link_flagged(self):
+        errs = self._run('<a href="https://github.com/org-ai-assisted/x">x</a>')
+        self.assertTrue(any("org-ai-assisted" in m for m in errs))
+
+    def test_forbidden_mention_case_insensitive(self):
+        self.assertTrue(self._run("<p>built by Org-AI-Assisted</p>"))
+
+    def test_clean_output_passes(self):
+        self.assertEqual(self._run("<p>vendor-neutral content</p>"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
