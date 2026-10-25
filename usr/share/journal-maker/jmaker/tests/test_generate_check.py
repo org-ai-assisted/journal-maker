@@ -652,6 +652,28 @@ class TestIdentityAndCite(unittest.TestCase):
             self.assertIn(">%s<" % label, box)
         self.assertIn("TY  - JOUR", box)
 
+    def test_article_number_in_cites(self):
+        m = dict(self._M)
+        m["article_number"] = "CSR-2026-001"
+        self.assertIn("Art. no. CSR-2026-001",
+                      g._ieee_cite(m, {"title": "J"}, "2026"))
+        self.assertIn("Article CSR-2026-001", g._apa(m, {"title": "J"}, "2026"))
+        self.assertIn("M1  - CSR-2026-001",
+                      g._ris(m, {"title": "J"}, "https://e.example/x/"))
+
+    def test_bad_article_number_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            os.makedirs(ad)
+            with open(os.path.join(ad, "meta.toml"), "w") as fh:
+                fh.write('volume=1\nissue=1\ndate="2026-10-24"\n'
+                         'authors=[{name="A"}]\narticle_number="CSR 2026 001"\n')
+            with open(os.path.join(ad, "paper.md"), "w") as fh:
+                fh.write("# T\n\n## Abstract\n\nLong enough abstract here now.\n\n"
+                         "## 1. X\n\nBody.\n")
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
     def test_bad_orcid_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             ad = os.path.join(d, "art")

@@ -24,6 +24,7 @@ matches the visible title and the abstract is always both visible and in meta.
 """
 
 import datetime
+import hashlib
 import html
 import json
 import os
@@ -231,6 +232,14 @@ def load_article(adir):
     for key in ("data_availability", "funding", "conflicts"):
         if key in m and not isinstance(m[key], str):
             raise BuildError("%s/meta.toml: %s must be a string" % (adir, key))
+    if "article_number" in m:
+        an = str(m["article_number"])
+        # Stable online-only article id (e.g. CSR-2026-001). Keep it to a safe,
+        # citation-friendly charset; it is shown and goes into cite strings.
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", an):
+            raise BuildError("%s/meta.toml: article_number must match "
+                             "[A-Za-z0-9][A-Za-z0-9.-]*, got %r" % (adir, an))
+        m["article_number"] = an
     # Coerce dates to ISO strings: unquoted TOML dates parse as datetime.date,
     # which would crash _scholar_date. Validate the shape here, loudly.
     for key in ("date", "online_date", "received", "accepted"):
@@ -772,6 +781,8 @@ def _ris(m, journal, landing_url):
     lines += ["TI  - " + m["title"], "JO  - " + journal["title"],
               "PY  - " + m["date"][:4], "VL  - " + str(m["volume"]),
               "IS  - " + str(m["issue"])]
+    if m.get("article_number"):
+        lines.append("M1  - " + m["article_number"])
     if m.get("doi"):
         lines.append("DO  - " + m["doi"])
     lines.append("UR  - " + ("https://doi.org/" + m["doi"]
@@ -782,16 +793,21 @@ def _ris(m, journal, landing_url):
 
 def _apa(m, journal, year):
     authors = ", ".join(a["name"] for a in m["authors"])
+    art = (", Article %s" % m["article_number"]) if m.get("article_number") else ""
     src = (" https://doi.org/%s" % m["doi"]) if m.get("doi") else ""
-    return "%s (%s). %s. %s, %s(%s).%s" % (
-        authors, year, m["title"], journal["title"], m["volume"], m["issue"], src)
+    return "%s (%s). %s. %s, %s(%s)%s.%s" % (
+        authors, year, m["title"], journal["title"], m["volume"], m["issue"],
+        art, src)
 
 
 def _ieee_cite(m, journal, year):
     authors = ", ".join(a["name"] for a in m["authors"])
+    artno = (", Art. no. %s" % m["article_number"]) if m.get("article_number") \
+        else ""
     tail = (", doi: %s" % m["doi"]) if m.get("doi") else ""
-    return '%s, "%s," %s, vol. %s, no. %s, %s%s.' % (
-        authors, m["title"], journal["title"], m["volume"], m["issue"], year, tail)
+    return '%s, "%s," %s, vol. %s, no. %s%s, %s%s.' % (
+        authors, m["title"], journal["title"], m["volume"], m["issue"], artno,
+        year, tail)
 
 
 def _cite_box(m, journal, landing_url, year):
@@ -838,6 +854,8 @@ def render_article(m, journal):
     venue = "%s, Volume %s, Issue %s (%s)" % (
         html.escape(journal["title"]), html.escape(str(m["volume"])),
         html.escape(str(m["issue"])), html.escape(year))
+    if m.get("article_number"):
+        venue += ", Article %s" % html.escape(m["article_number"])
     doi_bit = ""
     if m.get("doi"):
         doi_bit = ' &middot; DOI: <a href="https://doi.org/%s">%s</a>' % (
@@ -859,15 +877,16 @@ def render_article(m, journal):
         "%s"                                   # article history
         "%s"                                   # subjects
         "%s"                                   # status line
-        '<p class="actions"><a href="%s">Download PDF</a></p>\n'
+        '<p class="actions"><a href="%s">Download PDF</a> '
+        '<a class="checksum" href="%s.sha256">SHA-256</a></p>\n'
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
         "%s%s"                                 # toc, cite box
         '<article class="body">\n%s\n</article>\n'
         "%s"                                   # statements (data/funding/COI)
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
-         doi_bit, history, subjects, status_line, pdf_name, abstract_html, toc,
-         cite_box, body_html, statements, license_bit)
+         doi_bit, history, subjects, status_line, pdf_name, pdf_name,
+         abstract_html, toc, cite_box, body_html, statements, license_bit)
 
     page = _page(
         m.get("language", journal["language"]),
@@ -1064,7 +1083,14 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
             shutil.copytree(figdir, os.path.join(dest, "figures"))
         urls.append("%s/%s/" % (journal["base_url"], rel_dir))
         if not skip_pdf:
-            md_to_pdf(m, journal, os.path.join(dest, pdf_name))
+            pdf_path = os.path.join(dest, pdf_name)
+            md_to_pdf(m, journal, pdf_path)
+            h = hashlib.sha256()
+            with open(pdf_path, "rb") as pf:
+                for chunk in iter(lambda: pf.read(65536), b""):
+                    h.update(chunk)
+            with open(pdf_path + ".sha256", "w", encoding="utf-8") as sf:
+                sf.write("%s  %s\n" % (h.hexdigest(), pdf_name))  # sha256sum format
             urls.append("%s/%s/%s" % (journal["base_url"], rel_dir, pdf_name))
 
     by_vol: dict = {}
