@@ -241,7 +241,7 @@ JOURNAL_JS = r"""// Journal interactive enhancements. Trusted-Types-safe; progre
   // Citation hovercards: hover/focus a [n] to preview its reference, with prev/next
   // stepping through the references in document order. The native title= is kept as a
   // JS-off fallback. TT-safe: the card is built with DOM APIs + cloneNode only (no
-  // innerHTML, no HTML strings), so it survives a strict Content-Security-Policy.
+  // HTML-string sinks), so it survives a strict Content-Security-Policy.
   var cites = [].slice.call(document.querySelectorAll("a.cite"));
   var refOrder = [];            // ref ids in first-citation document order (deduped)
   var seen = Object.create(null);
