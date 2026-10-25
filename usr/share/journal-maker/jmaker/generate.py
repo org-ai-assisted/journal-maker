@@ -98,6 +98,14 @@ def load_journal(path):
         if ".." in h or h.startswith("/"):
             raise BuildError("journal.toml: footer_link href must be relative "
                              "(no leading / or ..) or absolute http(s): %r" % h)
+    # Phrases permitted to mention the project names the journal is otherwise
+    # neutral about (Kicksecure/Whonix). Empty = strictest (no mention allowed).
+    j.setdefault("allow_vendor_mentions", [])
+    if (not isinstance(j["allow_vendor_mentions"], list)
+            or not all(isinstance(x, str) and x.strip()
+                       for x in j["allow_vendor_mentions"])):
+        raise BuildError("journal.toml: allow_vendor_mentions must be a list of "
+                         "non-empty strings")
     return j
 
 
@@ -1222,11 +1230,17 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     # Carry the served-tree web-tests policy into the build so the consistency
     # suite reads it from _site/.github/web-tests.yml (else it defaults to the
     # wrong policy). content_root is the dir holding journal.toml.
+    gh_dir = os.path.join(out_dir, ".github")
+    os.makedirs(gh_dir, exist_ok=True)
     wt_src = os.path.join(content_root, ".github", "web-tests.yml")
     if os.path.isfile(wt_src):
-        wt_dst_dir = os.path.join(out_dir, ".github")
-        os.makedirs(wt_dst_dir, exist_ok=True)
-        shutil.copyfile(wt_src, os.path.join(wt_dst_dir, "web-tests.yml"))
+        shutil.copyfile(wt_src, os.path.join(gh_dir, "web-tests.yml"))
+    # The vendor-mention allowlist the no-vendor-refs gate reads (absent/empty
+    # = strictest: no Kicksecure/Whonix mention permitted in served content).
+    allow = journal["allow_vendor_mentions"]
+    with open(os.path.join(gh_dir, "vendor-allowlist.txt"), "w",
+              encoding="utf-8") as fh:
+        fh.write("".join(line + "\n" for line in allow))
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
     return len(articles), out_dir
