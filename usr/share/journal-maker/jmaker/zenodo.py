@@ -177,6 +177,11 @@ def _pdf_text(pdf_path):
         # SubprocessError covers TimeoutExpired (a hung pdftotext); it is NOT an
         # OSError, so it must be named explicitly or it escapes as a traceback.
         raise ZenodoError("pdftotext failed on %s: %s" % (pdf_path, exc))
+    # Fail closed: a nonzero exit means the extraction is incomplete, so partial
+    # output must not be trusted to decide an irreversible publish.
+    if r.returncode != 0:
+        raise ZenodoError("pdftotext exited %d on %s: %s"
+                          % (r.returncode, pdf_path, r.stderr.strip()))
     return r.stdout
 
 

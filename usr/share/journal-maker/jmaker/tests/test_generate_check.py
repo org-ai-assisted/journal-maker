@@ -339,6 +339,21 @@ class TestZenodo(unittest.TestCase):
         with self.assertRaises(zenodo.ZenodoError):
             zenodo._pdf_text("/nonexistent.pdf")
 
+    def test_pdf_text_nonzero_exit_fails_closed(self):
+        # A nonzero pdftotext exit must raise, not return partial text that could
+        # pass the DOI guard before an irreversible publish.
+        from jmaker import zenodo
+
+        class R:
+            returncode = 1
+            stdout = "DOI: 10.5281/zenodo.123"
+            stderr = "Syntax Error: broken xref"
+        orig = subprocess.run
+        subprocess.run = lambda *a, **k: R()
+        self.addCleanup(lambda: setattr(subprocess, "run", orig))
+        with self.assertRaises(zenodo.ZenodoError):
+            zenodo._pdf_text("/some.pdf")
+
 
 class TestLoading(unittest.TestCase):
     def _article(self, d, meta_toml):
