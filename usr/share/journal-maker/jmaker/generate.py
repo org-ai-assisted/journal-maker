@@ -420,6 +420,9 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         '<html lang="%s">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta http-equiv="Content-Security-Policy" content="default-src '
+        "'none'; style-src 'self'; img-src 'self'; base-uri 'none'; "
+        'form-action \'none\'">\n'
         "%s"
         "<title>%s</title>\n"
         '<meta name="description" content="%s">\n'
