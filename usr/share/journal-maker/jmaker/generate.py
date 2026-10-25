@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from urllib.parse import urlsplit
 
@@ -410,11 +411,6 @@ def md_to_pdf(m, journal, out_pdf):
         "date: %s\n"
         "abstract: %s\n"
         "documentclass: article\n"
-        # lmodern gives Type-1 (vector) glyphs; without it pdflatex can fall back
-        # to Type-3 bitmap fonts that render poorly and defeat text extraction /
-        # Scholar indexing (check.py's pdffonts gate rejects Type 3).
-        "header-includes:\n"
-        "  - \\usepackage{lmodern}\n"
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
@@ -427,15 +423,29 @@ def md_to_pdf(m, journal, out_pdf):
     # openin_any/openout_any=p additionally bar the engine from reading or
     # writing files outside the tree, in case any TeX slips through.
     env = dict(os.environ, openin_any="p", openout_any="p")
-    _run([
-        "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute", "-o", out_pdf,
-        "--pdf-engine=pdflatex",
-        "--resource-path", m["_dir"],
-        "-V", "geometry:margin=1in",
-        "-V", "fontsize=11pt",
-        "-V", "linkcolor=blue",
-        "-V", "urlcolor=blue",
-    ], input=doc, env=env)
+    # lmodern gives Type-1 (vector) glyphs instead of the Type-3 bitmaps that defeat
+    # text extraction / Scholar indexing (check.py's pdffonts gate rejects Type 3). It
+    # MUST go through --include-in-header, which inserts it into the LaTeX preamble
+    # VERBATIM: the reader runs with raw_tex disabled, so the same \usepackage via a
+    # header-includes metadata value is escaped to literal text -- not loaded, and
+    # printed as visible garbage in the PDF.
+    hdr = tempfile.NamedTemporaryFile(mode="w", suffix=".tex", delete=False,
+                                      encoding="utf-8")
+    try:
+        hdr.write("\\usepackage{lmodern}\n")
+        hdr.close()
+        _run([
+            "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute", "-o", out_pdf,
+            "--pdf-engine=pdflatex",
+            "--include-in-header", hdr.name,
+            "--resource-path", m["_dir"],
+            "-V", "geometry:margin=1in",
+            "-V", "fontsize=11pt",
+            "-V", "linkcolor=blue",
+            "-V", "urlcolor=blue",
+        ], input=doc, env=env)
+    finally:
+        os.unlink(hdr.name)
 
 
 # ---------------------------------------------------------------- meta tags
@@ -684,11 +694,14 @@ def _linkify_citations(body_html):
             return '<li id="ref-%s">[%s] %s%s</li>' % (n, n, back, content)
         lis = re.sub(r'<p>\s*\[(\d+)\]\s*(.*?)</p>\s*', _li, m.group(0), flags=re.S)
         return '\n<ol class="references">\n' + lis.rstrip() + '\n</ol>\n'
-    # Convert ONLY the first consecutive run of reference paragraphs (the block
-    # right after the References heading) into one <ol>; a stray "[k]" paragraph
-    # elsewhere is not pulled in, and no reference <li> is ever left outside a list.
+    # Convert EVERY consecutive run of reference paragraphs after the References
+    # heading (each run -> its own <ol>), so a reference separated from the main
+    # block by an interrupting paragraph is still wrapped and anchored (id="ref-n")
+    # and its in-text citation does not dangle. References is the last section, so
+    # `refs` spans it to end of document; there is no later section whose "[k]"
+    # lines this could wrongly capture.
     refs = re.sub(r'(?:<p>\s*\[\d+\]\s*.*?</p>\s*)+', _refs_to_ol, refs,
-                  count=1, flags=re.S)
+                  flags=re.S)
     return head + _linkify_refs(refs)
 
 
