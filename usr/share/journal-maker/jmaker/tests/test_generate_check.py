@@ -572,5 +572,64 @@ class TestRefLinksAndMeta(unittest.TestCase):
             self.assertIn("2026", xml)
 
 
+class TestIdentityAndCite(unittest.TestCase):
+    _M = {"title": "T", "authors": [{"name": "Jane Doe"}], "date": "2026-10-24",
+          "volume": 1, "issue": 2, "abstract": "An abstract."}
+
+    def test_authors_orcid(self):
+        m = {"authors": [{"name": "Jane Doe",
+                          "orcid": "0000-0002-1825-0097"}]}
+        out = g._authors_html(m)
+        self.assertIn("https://orcid.org/0000-0002-1825-0097", out)
+        self.assertIn("Jane Doe", out)
+
+    def test_authors_no_orcid(self):
+        self.assertEqual(g._authors_html({"authors": [{"name": "Jane Doe"}]}),
+                         "Jane Doe")
+
+    def test_history_line(self):
+        self.assertIn("Received 2026-01-01",
+                      g._history_line({"received": "2026-01-01",
+                                       "date": "2026-10-24"}))
+        self.assertEqual(g._history_line({"date": "2026-10-24"}), "")
+
+    def test_subjects_line(self):
+        self.assertIn("cs.CR", g._subjects_line({"subjects": ["cs.CR"]}))
+        self.assertEqual(g._subjects_line({}), "")
+
+    def test_license_footer(self):
+        out = g._license_footer(self._M, {"license": "CC-BY-4.0",
+                                          "license_url": "https://e.example/by"})
+        self.assertIn("cc-badge", out)
+        self.assertIn("(c) 2026", out)
+        self.assertEqual(g._license_footer(self._M, {}), "")
+
+    def test_statements(self):
+        out = g._statements({"data_availability": "No new data.",
+                             "conflicts": "None."})
+        self.assertIn("Data and Code Availability", out)
+        self.assertIn("Conflicts of Interest", out)
+        self.assertEqual(g._statements({}), "")
+
+    def test_cite_box_formats(self):
+        box = g._cite_box(self._M, {"title": "J"}, "https://e.example/x/", "2026")
+        for label in ("IEEE", "APA", "BibTeX", "RIS"):
+            self.assertIn(">%s<" % label, box)
+        self.assertIn("TY  - JOUR", box)
+
+    def test_bad_orcid_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            os.makedirs(ad)
+            with open(os.path.join(ad, "meta.toml"), "w") as fh:
+                fh.write('volume=1\nissue=1\ndate="2026-10-24"\n'
+                         'authors=[{name="A", orcid="bad"}]\n')
+            with open(os.path.join(ad, "paper.md"), "w") as fh:
+                fh.write("# T\n\n## Abstract\n\nLong enough abstract here now.\n\n"
+                         "## 1. X\n\nBody.\n")
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+
 if __name__ == "__main__":
     unittest.main()
