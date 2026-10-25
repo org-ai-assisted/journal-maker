@@ -53,6 +53,9 @@ STYLE_CSS = """\
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
+.skip-link { position: absolute; left: -9999px; top: 0; background: var(--accent); color: #ffffff; padding: 0.5rem 0.9rem; border-radius: 0 0 4px 0; font-family: var(--sans); z-index: 10; }
+.skip-link:focus { left: 0; }
+a.backref { text-decoration: none; font-size: 0.85em; }
 body {
   margin: 0;
   background: var(--bg);

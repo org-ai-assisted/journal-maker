@@ -282,6 +282,36 @@ def _sanitize_html(frag):
     return frag
 
 
+# Source stays ASCII " -- "; output renders a spaced en dash (idiomatic typeset
+# prose, not a plaintext double hyphen). Skip code so a " -- " argument separator
+# in a sample survives. Pandoc's smart stays OFF so quotes are left straight.
+_HTML_CODE_RE = re.compile(r"<(pre|code)\b[^>]*>.*?</\1>", re.I | re.S)
+_MD_CODE_RE = re.compile(r"```.*?```|`[^`\n]+`", re.S)
+_EN_DASH = chr(0x2013)  # literal only at runtime; source byte sequence is ASCII
+
+
+def _sub_outside(code_re, replace, text):
+    out, last = [], 0
+    for m in code_re.finditer(text):
+        out.append(replace(text[last:m.start()]))
+        out.append(m.group(0))  # code span: untouched
+        last = m.end()
+    out.append(replace(text[last:]))
+    return "".join(out)
+
+
+def _endash_html(frag):
+    # &ndash; is ASCII bytes (passes the ASCII gate) and renders as an en dash.
+    return _sub_outside(_HTML_CODE_RE, lambda s: s.replace(" -- ", " &ndash; "),
+                        frag)
+
+
+def _endash_md(text):
+    # PDF path (not ASCII-gated): feed a real en dash; LaTeX/inputenc render it.
+    return _sub_outside(_MD_CODE_RE,
+                        lambda s: s.replace(" -- ", " " + _EN_DASH + " "), text)
+
+
 def md_to_html_fragment(md_text):
     # Disable: raw_html (author <script> becomes text); smart (keep output ASCII
     # -- smart would emit curly quotes / en-dashes); and the attribute extensions
@@ -291,7 +321,7 @@ def md_to_html_fragment(md_text):
     fmt = ("markdown-raw_html-smart-raw_attribute-link_attributes"
            "-native_divs-native_spans")
     r = _run(["pandoc", "-f", fmt, "-t", "html5", "--wrap=none"], input=md_text)
-    return _sanitize_html(r.stdout)
+    return _endash_html(_sanitize_html(r.stdout))
 
 
 def _yaml_dq(s):
@@ -315,7 +345,7 @@ def md_to_pdf(m, journal, out_pdf):
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
     doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
-    doc = meta_block + doi_line + m["_body_md"]
+    doc = _endash_md(meta_block + doi_line + m["_body_md"])
     # -raw_tex: author raw TeX (e.g. \input{/etc/passwd}) is not passed to the
     # engine. openin_any/openout_any=p additionally bar the engine from reading
     # or writing files outside the tree, in case any TeX slips through.
@@ -383,29 +413,71 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         "<title>%s</title>\n"
         '<meta name="description" content="%s">\n'
         '<link rel="canonical" href="%s">\n'
+        '<link rel="alternate" type="application/rss+xml" title="%s" '
+        'href="%sfeed.xml">\n'
         "%s\n"
         '<link rel="stylesheet" href="%sassets/style.css">\n'
-        "</head>\n<body>\n%s\n%s\n%s\n</body>\n</html>\n"
+        "</head>\n<body>\n"
+        '<a class="skip-link" href="#main">Skip to content</a>\n'
+        "%s\n%s\n%s\n</body>\n</html>\n"
     ) % (
         html.escape(lang), robots, html.escape(head_title),
         html.escape(description),
-        html.escape(canonical, quote=True), extra_head, root_rel,
+        html.escape(canonical, quote=True),
+        html.escape(journal["title"], quote=True), root_rel,
+        extra_head, root_rel,
         site_header(root_rel, journal["title"]), body,
         site_footer(journal["title"], journal.get("issn", "")),
     )
 
 
+# A bare URL in a reference entry (pandoc already entity-escaped any &); not
+# preceded by " or > so a URL already inside an href/anchor is left alone.
+_REF_URL_RE = re.compile(r'(?<![">])(https?://[^\s<]+)')
+
+
+def _linkify_refs(refs):
+    """Turn plain-text DOIs and URLs in reference entries into links."""
+    refs = re.sub(
+        r'\bdoi:\s*(10\.[^\s<]+)',
+        lambda x: 'doi: <a href="https://doi.org/%s">%s</a>'
+        % (x.group(1).rstrip("."), x.group(1).rstrip(".")), refs, flags=re.I)
+
+    def _url(x):
+        url, trail = x.group(1), ""
+        while url and url[-1] in ").,;":
+            trail = url[-1] + trail
+            url = url[:-1]
+        return '<a href="%s">%s</a>%s' % (url, url, trail)
+    return _REF_URL_RE.sub(_url, refs)
+
+
 def _linkify_citations(body_html):
-    """Link in-text [n] to #ref-n and anchor each reference entry."""
+    """Link in-text [n] to #ref-n (first mention gets a back-anchor id), anchor
+    each reference entry with a backlink to its first mention, and turn plain
+    DOIs/URLs in references into links."""
     mo = re.search(r'(<h2[^>]*>\s*References\s*</h2>)', body_html, re.I)
     head = body_html if mo is None else body_html[:mo.start()]
     refs = "" if mo is None else body_html[mo.start():]
-    head = re.sub(r'\[(\d+)\]',
-                  lambda x: '<a class="cite" href="#ref-%s">[%s]</a>'
-                  % (x.group(1), x.group(1)), head)
-    refs = re.sub(r'<p>\s*\[(\d+)\]',
-                  lambda x: '<p id="ref-%s">[%s]' % (x.group(1), x.group(1)), refs)
-    return head + refs
+    seen: set = set()
+
+    def _cite(x):
+        n = x.group(1)
+        if n in seen:
+            return '<a class="cite" href="#ref-%s">[%s]</a>' % (n, n)
+        seen.add(n)
+        return ('<a class="cite" id="cite-%s" href="#ref-%s">[%s]</a>'
+                % (n, n, n))
+    head = re.sub(r'\[(\d+)\]', _cite, head)
+
+    def _refp(x):
+        n = x.group(1)
+        back = ('<a class="backref" href="#cite-%s" '
+                'aria-label="back to citation">&#8617;</a>' % n) if n in seen \
+            else ""
+        return '<p id="ref-%s">[%s] %s' % (n, n, back)
+    refs = re.sub(r'<p>\s*\[(\d+)\]', _refp, refs)
+    return head + _linkify_refs(refs)
 
 
 def _build_toc(body_html):
@@ -450,8 +522,8 @@ def _status_fragment(m):
     status = m["status"]
     pill = ('<p class="status-pill-row"><span class="status-pill status-%s">%s'
             "</span></p>\n" % (status, html.escape(_STATUS_PILL[status])))
-    line = ('<p class="status-line">Status: %s</p>\n'
-            % html.escape(STATUS_LABELS[status]))
+    line = _endash_html('<p class="status-line">Status: %s</p>\n'
+                        % html.escape(STATUS_LABELS[status]))
     banner = ""
     if status == "draft":
         banner = ('<aside class="status-banner status-draft" role="note">'
@@ -486,10 +558,30 @@ def _jsonld(m, journal, landing_url):
     }
     if m.get("doi"):
         ld["identifier"] = "https://doi.org/" + m["doi"]
+    if m.get("keywords"):
+        ld["keywords"] = ", ".join(m["keywords"])
     # ensure_ascii keeps output ASCII; then neutralize </script> breakout chars.
     j = (json.dumps(ld).replace("<", "\\u003c").replace(">", "\\u003e")
          .replace("&", "\\u0026"))
     return '<script type="application/ld+json">%s</script>' % j
+
+
+def _opengraph(m, journal, landing_url, description):
+    """OpenGraph + Twitter-card meta: web search and social link previews.
+    (These are NOT read by Google Scholar -- the citation_* tags serve that.)"""
+    def t(key, content, attr="property"):
+        return ('<meta %s="%s" content="%s">'
+                % (attr, key, html.escape(str(content), quote=True)))
+    return "\n".join([
+        t("og:type", "article"),
+        t("og:title", m["title"]),
+        t("og:description", description),
+        t("og:url", landing_url),
+        t("og:site_name", journal["title"]),
+        t("twitter:card", "summary", attr="name"),
+        t("twitter:title", m["title"], attr="name"),
+        t("twitter:description", description, attr="name"),
+    ])
 
 
 def render_article(m, journal):
@@ -498,10 +590,13 @@ def render_article(m, journal):
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
     pdf_name = "%s.pdf" % m["slug"]
     pdf_url = landing_url + pdf_name
+    description = " ".join(m["abstract"].split())[:300]
 
     meta = citation_meta(m, journal, landing_url, pdf_url)
     pill, banner, status_line, status_head = _status_fragment(m)
-    meta = meta + "\n" + status_head + "\n" + _jsonld(m, journal, landing_url)
+    meta = (meta + "\n" + status_head + "\n"
+            + _opengraph(m, journal, landing_url, description) + "\n"
+            + _jsonld(m, journal, landing_url))
     body_html = _linkify_citations(md_to_html_fragment(m["_body_md"]))
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
@@ -543,7 +638,7 @@ def render_article(m, journal):
                 % (html.escape(plain_cite), html.escape(bibtex)))
 
     main = (
-        '<main class="article">\n'
+        '<main id="main" class="article">\n'
         "%s"
         "%s"
         '<h1 class="title">%s</h1>\n'
@@ -560,7 +655,6 @@ def render_article(m, journal):
          doi_bit, status_line, pdf_name, abstract_html, toc, cite_box, body_html,
          license_bit)
 
-    description = " ".join(m["abstract"].split())[:300]
     page = _page(
         m.get("language", journal["language"]),
         "%s -- %s" % (m["title"], journal["title"]),
@@ -581,7 +675,7 @@ def render_page(slug, md_text, journal):
             break
     body_html = md_to_html_fragment("\n".join(body_lines))
     canonical = "%s/%s/" % (journal["base_url"], slug)
-    main = ('<main class="page">\n<h1>%s</h1>\n%s\n</main>'
+    main = ('<main id="main" class="page">\n<h1>%s</h1>\n%s\n</main>'
             % (html.escape(title), body_html))
     page = _page(journal["language"], "%s -- %s" % (title, journal["title"]),
                  title, canonical, "", main, journal, "../")
@@ -604,7 +698,7 @@ def render_homepage(articles, journal, pages):
                           % (slug, html.escape(title)) for slug, title in pages)
         page_nav = "<h2>About</h2>\n<ul>\n%s\n</ul>\n" % links
     body = (
-        '<main>\n<h1>%s</h1>\n'
+        '<main id="main">\n<h1>%s</h1>\n'
         "<p>An open-access journal of computer-security research.</p>\n"
         "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n%s</main>"
     ) % (html.escape(journal["title"]), "\n".join(items), page_nav)
@@ -629,7 +723,8 @@ def render_volume(vol, metas, journal):
             % (rel_from_volume, html.escape(m["title"]),
                authors, html.escape(str(m["issue"]))))
     body = (
-        '<main>\n<h1>Volume %d</h1>\n<ol class="articles">\n%s\n</ol>\n</main>'
+        '<main id="main">\n<h1>Volume %d</h1>\n<ol class="articles">\n%s\n</ol>\n'
+        "</main>"
     ) % (vol, "\n".join(lis))
     return _page(journal["language"], "Volume %d -- %s" % (vol, journal["title"]),
                  "Volume %d." % vol, "%s/v%d/" % (journal["base_url"], vol),
@@ -643,6 +738,37 @@ def write_sitemap(urls, journal, out_dir):
            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
            "%s\n</urlset>\n") % entries
     with open(os.path.join(out_dir, "sitemap.xml"), "w", encoding="utf-8") as fh:
+        fh.write(xml)
+
+
+def write_feed(articles, journal, out_dir):
+    """RSS 2.0 feed of articles, newest first (discoverability, no backend)."""
+    items = []
+    for m in sorted(articles, key=lambda a: a["date"], reverse=True):
+        link = "%s/%s/" % (journal["base_url"], _rel_dir(m))
+        desc = " ".join(m["abstract"].split())[:300]
+        pub = ""
+        try:
+            dt = datetime.datetime.strptime(m["date"][:10], "%Y-%m-%d")
+            pub = "<pubDate>%s</pubDate>" % dt.strftime(
+                "%a, %d %b %Y 00:00:00 +0000")
+        except ValueError:
+            pass
+        items.append(
+            '  <item><title>%s</title><link>%s</link>'
+            '<guid isPermaLink="true">%s</guid>%s'
+            "<description>%s</description></item>"
+            % (html.escape(m["title"]), html.escape(link, quote=True),
+               html.escape(link, quote=True), pub, html.escape(desc)))
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<rss version="2.0"><channel>\n'
+           "<title>%s</title>\n<link>%s</link>\n<description>%s</description>\n"
+           "%s\n</channel></rss>\n"
+           % (html.escape(journal["title"]),
+              html.escape(journal["base_url"] + "/", quote=True),
+              html.escape("Open-access computer-security research journal."),
+              "\n".join(items)))
+    with open(os.path.join(out_dir, "feed.xml"), "w", encoding="utf-8") as fh:
         fh.write(xml)
 
 
@@ -766,6 +892,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
         fh.write(STYLE_CSS)
 
     write_sitemap(urls, journal, out_dir)
+    write_feed(articles, journal, out_dir)
     write_robots(journal, out_dir)
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
