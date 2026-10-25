@@ -201,6 +201,43 @@ def check_article(page_path, f, out_dir):
     if _WIKI_TMPL_RE.search(body_text):
         f.err(page_path, "leftover wiki template {{...}} in output")
 
+    check_citation_parity(page, page_path, f)
+
+
+def check_citation_parity(page, page_path, f):
+    """Every in-text [n] has a reference entry and every entry is cited.
+
+    Catches a dead #ref-n link, an undefined citation, an uncited reference, and
+    a duplicate reference id. Works on linkified anchors, falling back to the
+    visible [n] markers in the body when a page has no reference links.
+    """
+    defined = re.findall(r'<p id="ref-(\d+)">', page)
+    dups = sorted({n for n in defined if defined.count(n) > 1}, key=int)
+    if dups:
+        f.err(page_path, "duplicate reference id(s): %s"
+              % ", ".join("[%s]" % n for n in dups))
+    defined_set = set(defined)
+
+    cited = set(re.findall(r'href="#ref-(\d+)"', page))
+    if not cited:
+        body = page
+        mo = re.search(r'<h2[^>]*>\s*References\s*</h2>', page, re.I)
+        if mo:
+            body = page[:mo.start()]
+        cited = set(re.findall(r'\[(\d+)\]', _text_only(_CODE_RE.sub(" ", body))))
+
+    if not cited and not defined_set:
+        return  # an article with no citations and no reference list is fine
+
+    dangling = sorted(cited - defined_set, key=int)
+    if dangling:
+        f.err(page_path, "in-text citation(s) with no reference entry: %s"
+              % ", ".join("[%s]" % n for n in dangling))
+    uncited = sorted(defined_set - cited, key=int)
+    if uncited:
+        f.err(page_path, "reference entr(y/ies) never cited: %s"
+              % ", ".join("[%s]" % n for n in uncited))
+
 
 def check_pdf(path, f):
     size = os.path.getsize(path)

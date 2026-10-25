@@ -351,6 +351,34 @@ class TestAsciiGate(unittest.TestCase):
             self.assertEqual(f.errors, [])
 
 
+class TestCitationParity(unittest.TestCase):
+    def _run(self, page):
+        f = c.Findings()
+        c.check_citation_parity(page, "p", f)
+        return [m for _l, _p, m in f.errors]
+
+    def test_clean(self):
+        page = '<a href="#ref-1">[1]</a><p id="ref-1">[1] X.</p>'
+        self.assertEqual(self._run(page), [])
+
+    def test_dangling_citation(self):
+        page = '<a href="#ref-2">[2]</a><p id="ref-1">[1] X.</p>'
+        self.assertTrue(any("no reference entry" in m for m in self._run(page)))
+
+    def test_uncited_reference(self):
+        page = ('<a href="#ref-1">[1]</a><p id="ref-1">[1] X.</p>'
+                '<p id="ref-2">[2] Y.</p>')
+        self.assertTrue(any("never cited" in m for m in self._run(page)))
+
+    def test_duplicate_reference(self):
+        page = ('<a href="#ref-1">[1]</a><p id="ref-1">[1] X.</p>'
+                '<p id="ref-1">[1] dup.</p>')
+        self.assertTrue(any("duplicate" in m for m in self._run(page)))
+
+    def test_no_citations_ok(self):
+        self.assertEqual(self._run("<p>no citations here</p>"), [])
+
+
 class TestPdfCanary(unittest.TestCase):
     def _check(self, data):
         with tempfile.TemporaryDirectory() as d:
