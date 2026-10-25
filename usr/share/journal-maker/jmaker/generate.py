@@ -415,11 +415,14 @@ def md_to_pdf(m, journal, out_pdf):
     doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
     doc = _endash_md(meta_block + doi_line + m["_body_md"])
     # -raw_tex: author raw TeX (e.g. \input{/etc/passwd}) is not passed to the
-    # engine. openin_any/openout_any=p additionally bar the engine from reading
-    # or writing files outside the tree, in case any TeX slips through.
+    # engine. -raw_attribute: a fenced ```{=latex} / ```{=html} block is literal
+    # text, not a raw passthrough to the engine (disabling raw_tex alone does not
+    # cover the raw_attribute syntax). Mirrors md_to_html_fragment's reader.
+    # openin_any/openout_any=p additionally bar the engine from reading or
+    # writing files outside the tree, in case any TeX slips through.
     env = dict(os.environ, openin_any="p", openout_any="p")
     _run([
-        "pandoc", "-f", "markdown-raw_tex-smart", "-o", out_pdf,
+        "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute", "-o", out_pdf,
         "--pdf-engine=pdflatex",
         "--resource-path", m["_dir"],
         "-V", "geometry:margin=1in",

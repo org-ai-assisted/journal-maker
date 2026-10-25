@@ -109,6 +109,9 @@ def build_parser():
     pz.add_argument("--pdf", default=None, help="PDF to upload (publish action)")
     pz.add_argument("--sandbox", action="store_true",
                     help="use sandbox.zenodo.org for a dry run")
+    pz.add_argument("--replace", action="store_true",
+                    help="reserve: allow re-reserving when .zenodo.json already "
+                         "exists (orphans the previous deposition)")
     pz.add_argument("--token", default=None, help="Zenodo token (else ZENODO_TOKEN)")
     pz.set_defaults(func=_cmd_zenodo)
 

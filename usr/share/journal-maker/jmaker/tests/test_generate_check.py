@@ -207,6 +207,101 @@ class TestZenodo(unittest.TestCase):
             self.assertIn('doi = "10.5281/zenodo.123"', text)
             self.assertNotIn('doi = ""', text)
 
+    def test_build_metadata_sets_prereserve_doi(self):
+        # reserve() reads the reserved DOI back from metadata.prereserve_doi.doi;
+        # the request must ask Zenodo to reserve one.
+        from jmaker import zenodo
+        out = zenodo.build_metadata(dict(META), JOURNAL, "x")["metadata"]
+        self.assertIs(out["prereserve_doi"], True)
+
+    def test_pdf_reader_disables_raw_attribute(self):
+        # A fenced ```{=latex} / ```{=html} block must not pass through to the
+        # engine; the PDF reader disables raw_attribute like the HTML reader.
+        from jmaker import zenodo  # noqa: F401 (keep import parity with class)
+        captured = {}
+
+        def fake_run(argv, **kw):
+            captured["argv"] = argv
+            class R:
+                stdout = ""
+            return R()
+        orig = g._run
+        g._run = fake_run
+        self.addCleanup(lambda: setattr(g, "_run", orig))
+        m = dict(META)
+        m["doi"] = ""
+        m["_body_md"] = "body\n"
+        m["_dir"] = "/nonexistent"
+        g.md_to_pdf(m, JOURNAL, "/dev/null")
+        argv = captured["argv"]
+        fmt = argv[argv.index("-f") + 1]
+        self.assertIn("-raw_attribute", fmt)
+
+    def test_reserve_refuses_second_reservation(self):
+        # A second reserve would orphan the first deposition; refuse it and never
+        # hit the API.
+        from jmaker import zenodo
+
+        def boom(*a, **k):
+            raise RuntimeError("_api must not be called when refusing")
+        orig = zenodo._api
+        zenodo._api = boom
+        self.addCleanup(lambda: setattr(zenodo, "_api", orig))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
+                json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.1"}, fh)
+            with self.assertRaises(zenodo.ZenodoError) as cm:
+                zenodo.reserve(d, "journal.toml", zenodo.SANDBOX, "tok")
+            self.assertIn("already records", str(cm.exception))
+
+    def test_publish_rejects_pdf_without_doi(self):
+        # Publishing is irreversible; a PDF lacking the reserved DOI is refused
+        # before any API call.
+        from jmaker import zenodo
+
+        def boom(*a, **k):
+            raise RuntimeError("_api must not be called when refusing")
+        orig_api, orig_txt = zenodo._api, zenodo._pdf_text
+        zenodo._api = boom
+        zenodo._pdf_text = lambda p: "unrelated text, no doi here"
+        self.addCleanup(lambda: setattr(zenodo, "_api", orig_api))
+        self.addCleanup(lambda: setattr(zenodo, "_pdf_text", orig_txt))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
+                json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.123",
+                           "bucket": "https://sandbox.zenodo.org/api/files/x",
+                           "base": zenodo.SANDBOX}, fh)
+            pdf = os.path.join(d, "a.pdf")
+            with open(pdf, "wb") as fh:
+                fh.write(b"%PDF-1.4 dummy")
+            with self.assertRaises(zenodo.ZenodoError) as cm:
+                zenodo.publish(d, pdf, zenodo.SANDBOX, "tok")
+            self.assertIn("reserved DOI", str(cm.exception))
+
+    def test_publish_accepts_pdf_with_doi(self):
+        # The matching PDF passes the guard and the upload + publish calls run.
+        from jmaker import zenodo
+        calls = []
+
+        def rec(method, url, token, **k):
+            calls.append((method, url))
+            return {"doi": "10.5281/zenodo.123"}
+        orig_api, orig_txt = zenodo._api, zenodo._pdf_text
+        zenodo._api = rec
+        zenodo._pdf_text = lambda p: "title ... DOI: 10.5281/zenodo.123 ... body"
+        self.addCleanup(lambda: setattr(zenodo, "_api", orig_api))
+        self.addCleanup(lambda: setattr(zenodo, "_pdf_text", orig_txt))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
+                json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.123",
+                           "bucket": "https://sandbox.zenodo.org/api/files/x",
+                           "base": zenodo.SANDBOX}, fh)
+            pdf = os.path.join(d, "a.pdf")
+            with open(pdf, "wb") as fh:
+                fh.write(b"%PDF-1.4 dummy")
+            self.assertEqual(zenodo.publish(d, pdf, zenodo.SANDBOX, "tok"), 0)
+        self.assertEqual(len(calls), 2)
+
 
 class TestLoading(unittest.TestCase):
     def _article(self, d, meta_toml):
