@@ -206,7 +206,9 @@ def publish(article_dir, pdf_path, base, token):
     # "DOI: <doi>" in the PDF, so the reserved DOI must appear in its text layer.
     # Guards against publishing the wrong article's PDF under this DOI.
     doi = state.get("doi", "")
-    if doi and doi not in _pdf_text(pdf_path):
+    if not doi:
+        raise ZenodoError("no reserved DOI in .zenodo.json; re-run 'zenodo reserve'")
+    if doi not in _pdf_text(pdf_path):
         raise ZenodoError(
             "%s does not contain the reserved DOI %s; refusing to publish a PDF "
             "that is not this article's camera-ready build (rebuild the site "

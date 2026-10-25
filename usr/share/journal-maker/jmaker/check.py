@@ -78,8 +78,9 @@ _CODE_RE = re.compile(r'<(pre|code)\b[^>]*>.*?</\1>', re.I | re.S)
 _DATE_RE = re.compile(r'^\d{4}(/\d{1,2}(/\d{1,2})?)?$')
 _STATUS_RE = re.compile(r'<meta\s+name="article_status"\s+content="([a-z]+)">', re.I)
 # Our edit-markers render as bold TODO (**TODO:** / **TODO(editorial):**); the
-# bold form avoids matching the literal word TODO inside a code sample.
-_EDIT_MARKER_RE = re.compile(r'<strong>\s*TODO', re.I)
+# ':'/'(' after TODO is required so ordinary bold prose (e.g. "**TODO Group**",
+# the FOSS org) is not mistaken for an unresolved note.
+_EDIT_MARKER_RE = re.compile(r'<strong>\s*TODO[:(]', re.I)
 _ALLOWED_STATUS = {"draft", "published", "corrected"}
 
 
@@ -224,9 +225,10 @@ def check_release_state(page, page_path, f):
     status = smo.group(1).lower()
     if status not in _ALLOWED_STATUS:
         f.err(page_path, "unknown article_status: %r" % status)
-    if status == "published" and _EDIT_MARKER_RE.search(page):
-        f.err(page_path, "published article still has TODO edit-marker(s); "
-              "resolve them or keep status=draft")
+    # A version of record (published OR corrected) must carry no unresolved notes.
+    if status in ("published", "corrected") and _EDIT_MARKER_RE.search(page):
+        f.err(page_path, "%s article still has TODO edit-marker(s); "
+              "resolve them or keep status=draft" % status)
     if status == "draft" and "status-banner status-draft" not in page:
         f.err(page_path, "draft article missing the not-peer-reviewed banner")
     if status == "corrected" and "status-banner status-corrected" not in page:

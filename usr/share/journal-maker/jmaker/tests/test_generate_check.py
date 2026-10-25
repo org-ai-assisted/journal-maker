@@ -336,6 +336,16 @@ class TestLoading(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.load_article(ad)
 
+    def test_non_string_keyword_rejected(self):
+        # A non-string keyword would crash JSON-LD/meta rendering later; reject
+        # it at load with a clean error.
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'volume = 1\nissue = 1\ndate = "2026-10-24"\n'
+                              'authors = [{name = "A"}]\nkeywords = ["ok", 1]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
     def test_out_overlapping_articles_refused(self):
         with tempfile.TemporaryDirectory() as d:
             jt = os.path.join(d, "journal.toml")
@@ -569,10 +579,24 @@ class TestStatus(unittest.TestCase):
     def test_jsonld_has_status_and_escapes(self):
         j = g._jsonld({"title": "A <b> title", "authors": [{"name": "A"}],
                        "date": "2026-10-24", "status": "draft"},
-                      {"title": "J"}, "https://e.example/x/")
+                      {"title": "J", "publisher": "University Press"},
+                      "https://e.example/x/")
         self.assertIn('"creativeWorkStatus": "Draft"', j)
         self.assertNotIn("<b>", j)            # breakout chars neutralized
         self.assertIn("\\u003c", j)
+        self.assertIn('"name": "University Press"', j)   # publisher, not title
+
+    def test_corrected_with_todo_marker_errors(self):
+        # corrected is a version of record too, so unresolved notes are rejected.
+        page = self._META % "corrected" + (
+            '<aside class="status-banner status-corrected">x</aside>'
+            "<p><strong>TODO:</strong> verify</p>")
+        self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
+    def test_todo_group_prose_not_flagged(self):
+        # "TODO Group" (the FOSS org) in bold prose is not an edit-marker.
+        page = self._META % "published" + "<p><strong>TODO Group</strong> x</p>"
+        self.assertEqual(self._lint(page), [])
 
     def _lint(self, page):
         f = c.Findings()
@@ -625,6 +649,11 @@ class TestEnDash(unittest.TestCase):
         self.assertEqual(g._endash_md("run `foo -- bar` now -- then"),
                          "run `foo -- bar` now " + chr(0x2013) + " then")
 
+    def test_md_tilde_fence_preserved(self):
+        out = g._endash_md("~~~sh\ncmd -- arg\n~~~\na -- b")
+        self.assertIn("cmd -- arg", out)            # tilde-fenced: untouched
+        self.assertIn("a " + chr(0x2013) + " b", out)
+
 
 class TestRefLinksAndMeta(unittest.TestCase):
     def test_citation_backlink_and_anchor(self):
@@ -649,6 +678,42 @@ class TestRefLinksAndMeta(unittest.TestCase):
                "<p>[1] Title. doi: 10.1109/ABC.2020.123.</p>")
         out = g._linkify_citations(src)
         self.assertIn('href="https://doi.org/10.1109/ABC.2020.123"', out)
+
+    def test_reference_url_href_escaped(self):
+        # A '"' in a reference URL must be escaped, not smuggle an attribute past
+        # the sanitizer (linkify runs after _sanitize_html).
+        src = ('<p>x [1].</p><h2>References</h2>'
+               '<p>[1] P. https://e.example/x"onmouseover=alert(1)</p>')
+        out = g._linkify_citations(src)
+        self.assertNotIn('"onmouseover=', out)
+        self.assertIn("&quot;onmouseover=", out)
+
+    def test_reference_url_balanced_paren(self):
+        # A ')' that closes a '(' in the URL stays inside the link.
+        src = ("<p>x [1].</p><h2>References</h2>"
+               "<p>[1] P. https://en.wikipedia.org/wiki/Foo_(bar)</p>")
+        out = g._linkify_citations(src)
+        self.assertIn('href="https://en.wikipedia.org/wiki/Foo_(bar)"', out)
+
+    def test_linkify_citations_skips_code(self):
+        # An array index inside <code> is not a citation.
+        src = ('<p>claim [1]. <code>arr[2]</code></p>'
+               '<h2>References</h2><p>[1] A.</p>')
+        out = g._linkify_citations(src)
+        self.assertIn('href="#ref-1"', out)
+        self.assertNotIn('href="#ref-2"', out)
+        self.assertIn("<code>arr[2]</code>", out)
+
+    def test_linkify_citations_combined_and_range(self):
+        # [1, 2] and [3-5] linkify every number so parity sees them cited.
+        src = ("<p>a [1, 2] b [3-5].</p><h2>References</h2>"
+               "<p>[1] A.</p><p>[2] B.</p><p>[3] C.</p><p>[4] D.</p><p>[5] E.</p>")
+        out = g._linkify_citations(src)
+        for n in ("1", "2", "3", "4", "5"):
+            self.assertIn('href="#ref-%s"' % n, out)
+        f = c.Findings()
+        c.check_citation_parity(out, "p", f)
+        self.assertEqual(f.errors, [])
 
     def test_csp_meta_present(self):
         page = g.render_homepage([], dict(JOURNAL), [])

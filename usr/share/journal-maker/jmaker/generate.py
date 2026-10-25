@@ -233,8 +233,9 @@ def load_article(adir):
         m[key] = int(val)
         if m[key] < 1:
             raise BuildError("%s/meta.toml: %s must be a positive integer" % (adir, key))
-    if "keywords" in m and not isinstance(m["keywords"], list):
-        raise BuildError("%s/meta.toml: keywords must be a list" % adir)
+    if "keywords" in m and (not isinstance(m["keywords"], list)
+                            or not all(isinstance(k, str) for k in m["keywords"])):
+        raise BuildError("%s/meta.toml: keywords must be a list of strings" % adir)
     if "subjects" in m and not isinstance(m["subjects"], list):
         raise BuildError("%s/meta.toml: subjects must be a list" % adir)
     for a in m["authors"]:
@@ -354,7 +355,7 @@ def _sanitize_html(frag):
 # prose, not a plaintext double hyphen). Skip code so a " -- " argument separator
 # in a sample survives. Pandoc's smart stays OFF so quotes are left straight.
 _HTML_CODE_RE = re.compile(r"<(pre|code)\b[^>]*>.*?</\1>", re.I | re.S)
-_MD_CODE_RE = re.compile(r"```.*?```|`[^`\n]+`", re.S)
+_MD_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.S)
 _EN_DASH = chr(0x2013)  # literal only at runtime; source byte sequence is ASCII
 
 
@@ -601,19 +602,39 @@ def _page(lang, head_title, description, canonical, extra_head, body,
 _REF_URL_RE = re.compile(r'(?<![">])(https?://[^\s<]+)')
 
 
+def _anchor(href_url, text=None, trail=""):
+    # Escape the URL into BOTH the href attribute and the visible text: linkify
+    # runs AFTER _sanitize_html, so an unescaped '"' here would close the href
+    # early and smuggle an event-handler attribute past the sanitizer.
+    if text is None:
+        text = href_url
+    return '<a href="%s">%s</a>%s' % (html.escape(href_url, quote=True),
+                                      html.escape(text, quote=True), trail)
+
+
 def _linkify_refs(refs):
     """Turn plain-text DOIs and URLs in reference entries into links."""
     refs = re.sub(
         r'\bdoi:\s*(10\.[^\s<]+)',
-        lambda x: 'doi: <a href="https://doi.org/%s">%s</a>'
-        % (x.group(1).rstrip("."), x.group(1).rstrip(".")), refs, flags=re.I)
+        lambda x: 'doi: ' + _anchor("https://doi.org/" + x.group(1).rstrip("."),
+                                    x.group(1).rstrip(".")), refs, flags=re.I)
 
     def _url(x):
         url, trail = x.group(1), ""
-        while url and url[-1] in ").,;":
-            trail = url[-1] + trail
-            url = url[:-1]
-        return '<a href="%s">%s</a>%s' % (url, url, trail)
+        # Strip trailing sentence punctuation, but keep a ')' that closes a '('
+        # inside the URL itself (e.g. a Wikipedia '..._(disambiguation)' link).
+        while url:
+            ch = url[-1]
+            if ch in ".,;":
+                trail = ch + trail
+                url = url[:-1]
+                continue
+            if ch == ")" and url.count("(") < url.count(")"):
+                trail = ch + trail
+                url = url[:-1]
+                continue
+            break
+        return _anchor(url, trail=trail)
     return _REF_URL_RE.sub(_url, refs)
 
 
@@ -626,14 +647,47 @@ def _linkify_citations(body_html):
     refs = "" if mo is None else body_html[mo.start():]
     seen: set = set()
 
-    def _cite(x):
-        n = x.group(1)
+    def _one(n, bracket):
+        # bracket=True keeps the historical single-cite form <a>[n]</a>; False
+        # links just the number, for use inside a combined [1, 2] / [1-3] group.
+        show = "[%s]" % n if bracket else n
         if n in seen:
-            return '<a class="cite" href="#ref-%s">[%s]</a>' % (n, n)
+            return '<a class="cite" href="#ref-%s">%s</a>' % (n, show)
         seen.add(n)
-        return ('<a class="cite" id="cite-%s" href="#ref-%s">[%s]</a>'
-                % (n, n, n))
-    head = re.sub(r'\[(\d+)\]', _cite, head)
+        return ('<a class="cite" id="cite-%s" href="#ref-%s">%s</a>'
+                % (n, n, show))
+
+    def _cite(x):
+        inner = x.group(1)
+        if re.fullmatch(r"\d+", inner):
+            return _one(inner, True)
+        # Combined/range bracket (e.g. [1, 2] or [1-3]): linkify each number,
+        # expanding N-M ranges, preserving the original separators.
+        out = []
+        for part in re.split(r"(\s*,\s*)", inner):
+            rng = re.fullmatch(r"(\s*)(\d+)\s*-\s*(\d+)(\s*)", part)
+            if rng:
+                lo, hi = int(rng.group(2)), int(rng.group(3))
+                if lo <= hi <= lo + 50:
+                    out.append(rng.group(1)
+                               + "-".join(_one(str(i), False)
+                                          for i in range(lo, hi + 1))
+                               + rng.group(4))
+                    continue
+            num = re.fullmatch(r"(\s*)(\d+)(\s*)", part)
+            if num:
+                out.append(num.group(1) + _one(num.group(2), False)
+                           + num.group(3))
+                continue
+            out.append(part)  # a separator, or an unexpected token
+        return "[" + "".join(out) + "]"
+
+    # Only OUTSIDE code spans, so an array index such as arr[2] in a <code>
+    # block is never turned into a citation.
+    head = _sub_outside(
+        _HTML_CODE_RE,
+        lambda s: re.sub(r"\[\s*(\d+(?:\s*[,\-]\s*\d+)*)\s*\]", _cite, s),
+        head)
 
     def _refp(x):
         n = x.group(1)
@@ -718,7 +772,7 @@ def _jsonld(m, journal, landing_url):
         "datePublished": m["date"],
         "creativeWorkStatus": _STATUS_SCHEMA[m["status"]],
         "isAccessibleForFree": True,
-        "publisher": {"@type": "Organization", "name": journal["title"]},
+        "publisher": {"@type": "Organization", "name": journal["publisher"]},
         "url": landing_url,
     }
     if m.get("doi"):
