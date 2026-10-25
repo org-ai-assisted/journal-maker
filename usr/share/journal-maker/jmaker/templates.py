@@ -139,6 +139,13 @@ footer.license { font-family: var(--sans); font-size: 0.85rem; color: var(--mute
 .status-banner.status-draft { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-rule); }
 .status-banner.status-corrected { background: var(--surface); color: var(--fg); border: 1px solid var(--accent); border-left: 4px solid var(--accent); }
 .status-banner a { color: inherit; }
+a.orcid { font-family: var(--sans); font-size: 0.68rem; font-weight: 700; color: #a6ce39; border: 1px solid #a6ce39; border-radius: 3px; padding: 0 0.22rem; text-decoration: none; vertical-align: 0.12em; }
+p.history, p.subjects { font-family: var(--sans); font-size: 0.85rem; color: var(--muted); margin: 0.15rem 0; }
+.cc-badge { font-family: var(--sans); font-weight: 650; font-size: 0.8rem; padding: 0.05rem 0.4rem; border: 1px solid var(--rule); border-radius: 3px; text-decoration: none; }
+section.statement { margin: 1.6rem 0; }
+section.statement h2 { font-size: 1.15rem; font-weight: 650; }
+.cite-fmt { margin: 0.7rem 0; }
+.cite-label { display: block; font-family: var(--sans); font-weight: 650; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.2rem; }
 ol.articles { list-style: none; padding: 0; }
 ol.articles li { padding: 0.8rem 0; border-bottom: 1px solid var(--rule); }
 ol.articles .atitle { font-size: 1.1rem; }
@@ -146,7 +153,7 @@ ol.articles .ameta { color: var(--muted); font-size: 0.9rem; font-family: var(--
 @media print {
   :root { --bg: #ffffff; --fg: #000000; }
   a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.8em; word-break: break-all; }
-  nav.toc, p.actions, details.cite-this { display: none; }
+  nav.toc, p.actions, details.cite-this, .skip-link, .status-pill-row { display: none; }
   h1, h2, h3, figure { break-inside: avoid; }
 }
 """

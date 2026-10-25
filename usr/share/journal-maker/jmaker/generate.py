@@ -202,9 +202,20 @@ def load_article(adir):
             raise BuildError("%s/meta.toml: %s must be a positive integer" % (adir, key))
     if "keywords" in m and not isinstance(m["keywords"], list):
         raise BuildError("%s/meta.toml: keywords must be a list" % adir)
+    if "subjects" in m and not isinstance(m["subjects"], list):
+        raise BuildError("%s/meta.toml: subjects must be a list" % adir)
+    for a in m["authors"]:
+        oid = a.get("orcid")
+        if oid is not None and not re.fullmatch(
+                r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]", str(oid)):
+            raise BuildError("%s/meta.toml: orcid must be 0000-0000-0000-000X, "
+                             "got %r" % (adir, oid))
+    for key in ("data_availability", "funding", "conflicts"):
+        if key in m and not isinstance(m[key], str):
+            raise BuildError("%s/meta.toml: %s must be a string" % (adir, key))
     # Coerce dates to ISO strings: unquoted TOML dates parse as datetime.date,
     # which would crash _scholar_date. Validate the shape here, loudly.
-    for key in ("date", "online_date"):
+    for key in ("date", "online_date", "received", "accepted"):
         val = m.get(key)
         if val is None:
             continue
@@ -584,6 +595,108 @@ def _opengraph(m, journal, landing_url, description):
     ])
 
 
+def _authors_html(m):
+    out = []
+    for a in m["authors"]:
+        bit = html.escape(a["name"])
+        if a.get("orcid"):
+            bit += (' <a class="orcid" href="https://orcid.org/%s" '
+                    'aria-label="ORCID iD for %s">iD</a>'
+                    % (html.escape(a["orcid"], quote=True),
+                       html.escape(a["name"], quote=True)))
+        out.append(bit)
+    return ", ".join(out)
+
+
+def _history_line(m):
+    if not (m.get("received") or m.get("accepted")):
+        return ""   # nothing to add beyond the year already shown in the venue
+    parts = []
+    for label, key in (("Received", "received"), ("Accepted", "accepted"),
+                       ("Published", "date")):
+        if m.get(key):
+            parts.append("%s %s" % (label, html.escape(m[key])))
+    return '<p class="history">%s</p>\n' % "; ".join(parts)
+
+
+def _subjects_line(m):
+    subs = m.get("subjects") or []
+    if not subs:
+        return ""
+    return ('<p class="subjects">Subjects: %s</p>\n'
+            % "; ".join(html.escape(str(s)) for s in subs))
+
+
+def _license_footer(m, journal):
+    lic = m.get("license", journal.get("license", ""))
+    if not lic:
+        return ""
+    lic_url = journal.get("license_url", "")
+    copyr = "(c) %s %s." % (m["date"][:4],
+                            html.escape(", ".join(a["name"] for a in m["authors"])))
+    if lic_url:
+        badge = ('<a class="cc-badge" href="%s">%s</a>'
+                 % (html.escape(lic_url, quote=True), html.escape(lic)))
+    else:
+        badge = '<span class="cc-badge">%s</span>' % html.escape(lic)
+    return ('<footer class="license">%s Licensed under %s.</footer>'
+            % (copyr, badge))
+
+
+def _statements(m):
+    out = []
+    for title, key in (("Data and Code Availability", "data_availability"),
+                       ("Funding", "funding"),
+                       ("Conflicts of Interest", "conflicts")):
+        if m.get(key):
+            out.append('<section class="statement"><h2>%s</h2>\n<p>%s</p>'
+                       "</section>\n" % (title, html.escape(m[key])))
+    return "".join(out)
+
+
+def _ris(m, journal, landing_url):
+    lines = ["TY  - JOUR"]
+    lines += ["AU  - " + a["name"] for a in m["authors"]]
+    lines += ["TI  - " + m["title"], "JO  - " + journal["title"],
+              "PY  - " + m["date"][:4], "VL  - " + str(m["volume"]),
+              "IS  - " + str(m["issue"])]
+    if m.get("doi"):
+        lines.append("DO  - " + m["doi"])
+    lines.append("UR  - " + ("https://doi.org/" + m["doi"]
+                             if m.get("doi") else landing_url))
+    lines.append("ER  - ")
+    return "\n".join(lines)
+
+
+def _apa(m, journal, year):
+    authors = ", ".join(a["name"] for a in m["authors"])
+    src = (" https://doi.org/%s" % m["doi"]) if m.get("doi") else ""
+    return "%s (%s). %s. %s, %s(%s).%s" % (
+        authors, year, m["title"], journal["title"], m["volume"], m["issue"], src)
+
+
+def _ieee_cite(m, journal, year):
+    authors = ", ".join(a["name"] for a in m["authors"])
+    tail = (", doi: %s" % m["doi"]) if m.get("doi") else ""
+    return '%s, "%s," %s, vol. %s, no. %s, %s%s.' % (
+        authors, m["title"], journal["title"], m["volume"], m["issue"], year, tail)
+
+
+def _cite_box(m, journal, landing_url, year):
+    fmts = [
+        ("IEEE", _ieee_cite(m, journal, year)),
+        ("APA", _apa(m, journal, year)),
+        ("BibTeX", _bibtex(m, journal, landing_url)),
+        ("RIS", _ris(m, journal, landing_url)),
+    ]
+    rows = "".join(
+        '<div class="cite-fmt"><span class="cite-label">%s</span>'
+        "<pre>%s</pre></div>\n" % (label, html.escape(text))
+        for label, text in fmts)
+    return ('<details class="cite-this"><summary>Cite this</summary>\n%s'
+            "</details>\n" % rows)
+
+
 def render_article(m, journal):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
@@ -601,7 +714,7 @@ def render_article(m, journal):
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
 
-    authors_line = ", ".join(html.escape(a["name"]) for a in m["authors"])
+    authors_line = _authors_html(m)
     affils = []
     for a in m["authors"]:
         inst = a.get("institution")
@@ -617,43 +730,32 @@ def render_article(m, journal):
     if m.get("doi"):
         doi_bit = ' &middot; DOI: <a href="https://doi.org/%s">%s</a>' % (
             html.escape(m["doi"], quote=True), html.escape(m["doi"]))
-    license_bit = ""
-    lic = m.get("license", journal.get("license", ""))
-    lic_url = journal.get("license_url", "")
-    if lic:
-        if lic_url:
-            license_bit = ('<footer class="license">Licensed under '
-                           '<a href="%s">%s</a>.</footer>'
-                           % (html.escape(lic_url, quote=True), html.escape(lic)))
-        else:
-            license_bit = ('<footer class="license">Licensed under %s.</footer>'
-                           % html.escape(lic))
-
-    bibtex = _bibtex(m, journal, landing_url)
-    authors_plain = ", ".join(a["name"] for a in m["authors"])
-    plain_cite = '%s. "%s." %s, vol. %s, no. %s, %s.' % (
-        authors_plain, m["title"], journal["title"], m["volume"], m["issue"], year)
-    cite_box = ('<details class="cite-this"><summary>Cite this</summary>\n'
-                "<p>%s</p>\n<pre>%s</pre>\n</details>\n"
-                % (html.escape(plain_cite), html.escape(bibtex)))
+    history = _history_line(m)
+    subjects = _subjects_line(m)
+    cite_box = _cite_box(m, journal, landing_url, year)
+    statements = _statements(m)
+    license_bit = _license_footer(m, journal)
 
     main = (
         '<main id="main" class="article">\n'
-        "%s"
-        "%s"
+        "%s"                                   # banner (draft/corrected)
+        "%s"                                   # status pill
         '<h1 class="title">%s</h1>\n'
         '<p class="authors">%s</p>\n'
-        "%s"
+        "%s"                                   # affiliations
         '<p class="venue">%s%s</p>\n'
-        "%s"
+        "%s"                                   # article history
+        "%s"                                   # subjects
+        "%s"                                   # status line
         '<p class="actions"><a href="%s">Download PDF</a></p>\n'
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
-        "%s%s"
+        "%s%s"                                 # toc, cite box
         '<article class="body">\n%s\n</article>\n'
-        "%s\n</main>"
+        "%s"                                   # statements (data/funding/COI)
+        "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
-         doi_bit, status_line, pdf_name, abstract_html, toc, cite_box, body_html,
-         license_bit)
+         doi_bit, history, subjects, status_line, pdf_name, abstract_html, toc,
+         cite_box, body_html, statements, license_bit)
 
     page = _page(
         m.get("language", journal["language"]),
