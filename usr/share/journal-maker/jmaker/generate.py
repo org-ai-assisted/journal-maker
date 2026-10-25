@@ -98,14 +98,19 @@ def load_journal(path):
         if ".." in h or h.startswith("/"):
             raise BuildError("journal.toml: footer_link href must be relative "
                              "(no leading / or ..) or absolute http(s): %r" % h)
-    # Phrases permitted to mention the project names the journal is otherwise
-    # neutral about (Kicksecure/Whonix). Empty = strictest (no mention allowed).
-    j.setdefault("allow_vendor_mentions", [])
-    if (not isinstance(j["allow_vendor_mentions"], list)
-            or not all(isinstance(x, str) and x.strip()
-                       for x in j["allow_vendor_mentions"])):
-        raise BuildError("journal.toml: allow_vendor_mentions must be a list of "
-                         "non-empty strings")
+    # Per-PAGE vendor-mention allowlist: slug -> exact phrases, applied ONLY to
+    # that page's files. Articles carry their own allow_vendor_mentions in
+    # meta.toml. There is no global allowlist -- an allowance is always scoped to
+    # one file, so it can never license a mention elsewhere.
+    pav = j.setdefault("page_allow_vendor_mentions", {})
+    if not isinstance(pav, dict):
+        raise BuildError("journal.toml: page_allow_vendor_mentions must be a "
+                         "table (slug -> list of phrases)")
+    for slug, phrases in pav.items():
+        if (not isinstance(phrases, list)
+                or not all(isinstance(x, str) and x.strip() for x in phrases)):
+            raise BuildError("journal.toml: page_allow_vendor_mentions[%r] must "
+                             "be a list of non-empty strings" % slug)
     return j
 
 
@@ -249,6 +254,13 @@ def load_article(adir):
             raise BuildError("%s/meta.toml: article_number must match "
                              "[A-Za-z0-9][A-Za-z0-9.-]*, got %r" % (adir, an))
         m["article_number"] = an
+    # Per-article vendor-mention allowlist: exact phrases permitted in THIS
+    # article's output only (e.g. a COI disclosure naming the project).
+    av = m.setdefault("allow_vendor_mentions", [])
+    if not isinstance(av, list) or not all(
+            isinstance(x, str) and x.strip() for x in av):
+        raise BuildError("%s/meta.toml: allow_vendor_mentions must be a list of "
+                         "non-empty strings" % adir)
     # Coerce dates to ISO strings: unquoted TOML dates parse as datetime.date,
     # which would crash _scholar_date. Validate the shape here, loudly.
     for key in ("date", "online_date", "received", "accepted"):
@@ -1235,12 +1247,21 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     wt_src = os.path.join(content_root, ".github", "web-tests.yml")
     if os.path.isfile(wt_src):
         shutil.copyfile(wt_src, os.path.join(gh_dir, "web-tests.yml"))
-    # The vendor-mention allowlist the no-vendor-refs gate reads (absent/empty
-    # = strictest: no Kicksecure/Whonix mention permitted in served content).
-    allow = journal["allow_vendor_mentions"]
-    with open(os.path.join(gh_dir, "vendor-allowlist.txt"), "w",
+    # Per-file vendor-mention allowlist manifest: {dir-key -> [phrases]}, where
+    # the key is an article's rel dir (v<N>/i<M>/<slug>) or a page slug. The gate
+    # applies an entry ONLY to files in that dir, so one article's or page's
+    # allowance never licenses a mention anywhere else. Absent/empty = strictest.
+    vendor_manifest = {}
+    for m in articles:
+        if m.get("allow_vendor_mentions"):
+            vendor_manifest[_rel_dir(m)] = m["allow_vendor_mentions"]
+    for slug, _title in pages:
+        ph = journal["page_allow_vendor_mentions"].get(slug)
+        if ph:
+            vendor_manifest[slug] = ph
+    with open(os.path.join(gh_dir, "vendor-allowlist.json"), "w",
               encoding="utf-8") as fh:
-        fh.write("".join(line + "\n" for line in allow))
+        json.dump(vendor_manifest, fh)
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
     return len(articles), out_dir

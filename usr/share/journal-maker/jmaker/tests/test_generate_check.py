@@ -1,4 +1,5 @@
 #!/usr/bin/python3 -Bsu
+import json
 import os
 import tempfile
 import unittest
@@ -781,14 +782,46 @@ class TestNoVendorRefs(unittest.TestCase):
     def _run(self, text, allow=()):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, ".github"))
-            with open(os.path.join(d, ".github", "vendor-allowlist.txt"),
+            with open(os.path.join(d, ".github", "vendor-allowlist.json"),
                       "w", encoding="utf-8") as fh:
-                fh.write("".join(a + "\n" for a in allow))
+                json.dump({"": list(allow)}, fh)   # root-dir file allowlist
             with open(os.path.join(d, "index.html"), "w", encoding="utf-8") as fh:
                 fh.write(text)
             f = c.Findings()
             c.check_no_vendor_refs(d, f)
             return [m for _l, _p, m in f.errors]
+
+    def test_per_file_isolation(self):
+        # a phrase allow-listed for dir a/ does NOT license it in dir b/
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".github"))
+            os.makedirs(os.path.join(d, "a"))
+            os.makedirs(os.path.join(d, "b"))
+            with open(os.path.join(d, ".github", "vendor-allowlist.json"),
+                      "w", encoding="utf-8") as fh:
+                json.dump({"a": ["Whonix security guide"]}, fh)
+            for sub in ("a", "b"):
+                with open(os.path.join(d, sub, "index.html"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("<p>the Whonix security guide</p>")
+            f = c.Findings()
+            c.check_no_vendor_refs(d, f)
+            errs = [p for _l, p, _m in f.errors]
+            self.assertTrue(any(p.endswith(os.path.join("b", "index.html"))
+                                for p in errs))
+            self.assertFalse(any(p.endswith(os.path.join("a", "index.html"))
+                                 for p in errs))
+
+    def test_github_dir_not_scanned(self):
+        # the manifest itself holds vendor phrases; .github must be skipped
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".github"))
+            with open(os.path.join(d, ".github", "vendor-allowlist.json"),
+                      "w", encoding="utf-8") as fh:
+                json.dump({"x": ["Kicksecure and Whonix"]}, fh)
+            f = c.Findings()
+            c.check_no_vendor_refs(d, f)
+            self.assertEqual([m for _l, _p, m in f.errors], [])
 
     def test_whonix_mention_flagged(self):
         self.assertTrue(self._run("<p>built on Whonix</p>"))

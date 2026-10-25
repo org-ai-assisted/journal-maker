@@ -364,34 +364,44 @@ def check_no_internal_refs(out_dir, f):
 
 
 # Project names the journal stays neutral about: no mention in served content
-# unless the exact phrase is allow-listed (journal.toml allow_vendor_mentions,
-# emitted to _site/.github/vendor-allowlist.txt by the build).
+# unless the exact phrase is allow-listed. The allowlist is PER FILE -- a
+# manifest {dir-key -> [phrases]} emitted to _site/.github/vendor-allowlist.json
+# (article meta.toml allow_vendor_mentions + journal.toml page_allow_vendor_mentions).
 _VENDOR_TOKENS = ("kicksecure", "whonix")
 
 
 def check_no_vendor_refs(out_dir, f):
-    """Fail on any Kicksecure/Whonix mention in served text that is not covered
-    by an allow-listed phrase (de-project-ification is enforced, not trusted)."""
-    allow = []
-    ap = os.path.join(out_dir, ".github", "vendor-allowlist.txt")
-    if os.path.isfile(ap):
-        with open(ap, encoding="utf-8") as fh:
-            allow = [ln.strip().lower() for ln in fh if ln.strip()]
+    """Fail on any Kicksecure/Whonix mention in served text not covered by a
+    PER-FILE allow-listed phrase (de-project-ification is enforced, not trusted;
+    an allowance for one article/page never licenses a mention elsewhere)."""
+    manifest = {}
+    mp = os.path.join(out_dir, ".github", "vendor-allowlist.json")
+    if os.path.isfile(mp):
+        with open(mp, encoding="utf-8") as fh:
+            try:
+                manifest = json.load(fh)
+            except json.JSONDecodeError:
+                f.err(mp, "vendor-allowlist.json is not valid JSON")
     for root, _dirs, files in os.walk(out_dir):
+        rel_dir = os.path.relpath(root, out_dir).replace(os.sep, "/")
+        rel_dir = "" if rel_dir == "." else rel_dir
+        if rel_dir == ".github" or rel_dir.startswith(".github/"):
+            continue  # internal build config, not served content
+        allow = [p.lower() for p in manifest.get(rel_dir, [])]
         for name in files:
             if os.path.splitext(name)[1].lower() not in _TEXT_EXT:
                 continue
             path = os.path.join(root, name)
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 low = fh.read().lower()
-            for phrase in allow:            # remove allow-listed phrases first
+            for phrase in allow:            # remove this file's allow-listed phrases
                 low = low.replace(phrase, " ")
             for tok in _VENDOR_TOKENS:
                 if tok in low:
                     f.err(path, "non-allowlisted mention of %r in published "
                           "output (journal is vendor-neutral; add the exact "
-                          "phrase to journal.toml allow_vendor_mentions if "
-                          "intended)" % tok)
+                          "phrase to this article's meta.toml allow_vendor_mentions "
+                          "or journal.toml page_allow_vendor_mentions)" % tok)
 
 
 def check_site(out_dir):
