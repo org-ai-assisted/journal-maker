@@ -558,7 +558,22 @@ class TestRefLinksAndMeta(unittest.TestCase):
         page = g.render_homepage([], dict(JOURNAL), [])
         self.assertIn("Content-Security-Policy", page)
         self.assertIn("default-src 'none'", page)
-        self.assertIn("style-src 'self'", page)
+        self.assertIn("script-src 'none'", page)
+        self.assertIn("require-trusted-types-for 'script'", page)
+        self.assertIn("trusted-types 'none'", page)
+        self.assertNotIn("unsafe-inline", page)        # max-strict, no escape hatch
+        self.assertNotIn("frame-ancestors", g._csp_meta())  # meta cannot set it
+
+    def test_security_headers_and_headers_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            g.write_headers(d)
+            with open(os.path.join(d, "_headers"), encoding="utf-8") as fh:
+                h = fh.read()
+            self.assertTrue(h.startswith("/*\n"))
+            self.assertIn("frame-ancestors 'none'", h)   # header-only directive
+            self.assertIn("Permissions-Policy:", h)
+            self.assertIn("Cross-Origin-Opener-Policy: same-origin", h)
+            self.assertIn("X-Frame-Options: DENY", h)
 
     def test_opengraph_tags(self):
         og = g._opengraph({"title": "T"}, {"title": "J"}, "https://e.example/x/",
