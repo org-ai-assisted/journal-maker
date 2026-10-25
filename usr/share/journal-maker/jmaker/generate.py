@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from urllib.parse import urlsplit
 
 
 class BuildError(Exception):
@@ -306,6 +307,15 @@ def _root_rel(rel_dir):
     return "../" * depth
 
 
+def _site_root(journal):
+    """Absolute root path for the HEADER nav, identical on every page so the nav
+    is cross-page consistent (depth-relative '../' would differ by page depth and
+    read as an inconsistent nav). Derived from base_url's path: a host-root site
+    yields '/', a subpath deployment yields '/<path>/'."""
+    path = urlsplit(journal["base_url"]).path.rstrip("/")
+    return (path + "/") if path else "/"
+
+
 # Neutralize dangerous URL schemes in generated href/src (defense in depth;
 # raw HTML passthrough is already disabled in the reader).
 _DANGEROUS_URL_RE = re.compile(
@@ -558,7 +568,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         html.escape(canonical, quote=True),
         html.escape(journal["title"], quote=True), root_rel,
         extra_head, root_rel, root_rel,
-        site_header(root_rel, journal["title"]), body,
+        site_header(journal["title"], _site_root(journal)), body,
         site_footer(journal, root_rel),
     )
 
@@ -1208,6 +1218,15 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
     write_feed(articles, journal, out_dir)
     write_headers(out_dir)
     write_robots(journal, out_dir)
+
+    # Carry the served-tree web-tests policy into the build so the consistency
+    # suite reads it from _site/.github/web-tests.yml (else it defaults to the
+    # wrong policy). content_root is the dir holding journal.toml.
+    wt_src = os.path.join(content_root, ".github", "web-tests.yml")
+    if os.path.isfile(wt_src):
+        wt_dst_dir = os.path.join(out_dir, ".github")
+        os.makedirs(wt_dst_dir, exist_ok=True)
+        shutil.copyfile(wt_src, os.path.join(wt_dst_dir, "web-tests.yml"))
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
     return len(articles), out_dir

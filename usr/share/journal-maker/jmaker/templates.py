@@ -100,6 +100,8 @@ p.actions a {
   background: var(--accent); color: #ffffff; border-radius: 4px;
   text-decoration: none; font-size: 0.9rem;
 }
+p.actions a.checksum { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.8rem; }
+main.page { max-width: var(--measure); }
 section.abstract {
   margin: 1.5rem 0; padding: 1rem 1.25rem;
   background: var(--surface); border-left: 3px solid var(--accent);
@@ -120,6 +122,9 @@ article.body { margin-top: 1.5rem; }
 article.body a.cite { text-decoration: none; font-variant-numeric: tabular-nums; }
 article.body table { border-collapse: collapse; width: 100%; font-size: 0.95rem; font-variant-numeric: tabular-nums; margin: 1.2rem 0; }
 article.body thead th { border-bottom: 2px solid var(--fg); }
+article.body tr.header { font-weight: 650; }
+article.body tr.even { background: var(--surface); }
+article.body tr.odd { background: transparent; }
 article.body table { border-top: 2px solid var(--fg); border-bottom: 2px solid var(--fg); }
 article.body th, article.body td { padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
 article.body code { font-family: var(--mono); font-size: 0.875em; background: var(--surface); border: 1px solid var(--rule); padding: 0.1em 0.35em; border-radius: 3px; }
@@ -184,13 +189,15 @@ ol.articles .ameta { color: var(--muted); font-size: 0.9rem; font-family: var(--
 """
 
 
-def site_header(root_rel, journal_title):
+def site_header(journal_title, site_root):
+    # Absolute hrefs (site_root, identical on every page) so the header nav is
+    # cross-page consistent; depth-relative would differ by page depth.
     t = html.escape(journal_title)
     return (
         '<header class="site">'
         '<a class="brand" href="%sindex.html">%s</a>'
         '<nav><a href="%sindex.html">Home</a></nav>'
-        "</header>" % (root_rel, t, root_rel)
+        "</header>" % (site_root, t, site_root)
     )
 
 
