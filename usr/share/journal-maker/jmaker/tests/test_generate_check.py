@@ -92,6 +92,17 @@ class TestChecker(unittest.TestCase):
         self.assertIn('href="#cite-5"', out)   # backlink to first mention
         self.assertIn("Foo.", out)
 
+    def test_references_number_matches_citation_key(self):
+        # Out-of-order reference list: the visible [n] is the citation key (emitted
+        # as literal text), NOT the <ol> position -- so a "[2]"-first entry still
+        # renders "[2]". Guards the counter-based mis-numbering the reviewer found.
+        body = ('<p>see [1] and [2].</p><h2>References</h2>'
+                '<p>[2] Apple.</p>\n<p>[1] Zebra.</p>')
+        out = g._linkify_citations(body)
+        self.assertIn('<ol class="references">', out)
+        self.assertIn('<li id="ref-2">[2] ', out)
+        self.assertIn('<li id="ref-1">[1] ', out)
+
     def test_build_toc(self):
         body = ('<h2 id="a">1. Intro</h2><h2 id="b">2. Bg</h2>'
                 '<h2 id="c">3. More</h2>')
@@ -1170,6 +1181,17 @@ class TestIndexPolicy(unittest.TestCase):
         errs = self._check(self.ALLOW, "<html>clean</html>",
                            extra={"about/index.html": "<p><strong>TODO:</strong> finish</p>"})
         self.assertTrue(any("TODO edit-marker" in m for m in errs))
+
+    def test_published_draft_article_todo_skipped(self):
+        # An article page carries article_status and is governed by
+        # check_release_state (a draft may keep TODO notes); the index-policy
+        # scan must SKIP it, not error on the published build.
+        art = ('<meta name="article_status" content="draft">'
+               '<aside class="status-banner status-draft">x</aside>'
+               '<p><strong>TODO:</strong> add numbers</p>')
+        errs = self._check(self.ALLOW, "<html>clean</html>",
+                           extra={"v1/i1/art/index.html": art})
+        self.assertEqual(errs, [])
 
     def test_noindex_build_allows_todo(self):
         errs = self._check(self.DISALLOW, "<html>" + self.NOINDEX + "</html>",

@@ -320,7 +320,12 @@ def check_pdf(path, f):
     # pins lmodern). pdffonts ships with poppler-utils, as pdftotext does.
     if shutil.which("pdffonts"):
         r = subprocess.run(["pdffonts", path], capture_output=True, text=True)
-        if _has_type3_font(r.stdout):
+        if r.returncode != 0:
+            # Fail closed: an errored pdffonts leaves empty stdout, which would
+            # otherwise read as "no Type 3 font" and bypass the gate.
+            f.err(path, "pdffonts exited %d; cannot verify font types (fail closed)"
+                        % r.returncode)
+        elif _has_type3_font(r.stdout):
             f.err(path, "PDF embeds a Type 3 (bitmap) font; rebuild with lmodern "
                         "(vector fonts) so the PDF stays searchable/indexable")
     else:
@@ -464,17 +469,23 @@ def check_index_policy(out_dir, f):
     if disallows or not allows:
         f.err(robots_path, "no noindex meta (indexable build) but robots.txt "
                            "does not Allow: / -- index policy is inconsistent")
-    # An indexable, published site must not ship unresolved edit-markers anywhere.
+    # An indexable, published site must not ship unresolved edit-markers on its
+    # STANDALONE pages. Article pages carry article_status and are governed by
+    # check_release_state (status-aware: a draft article may legitimately keep
+    # TODO notes under its not-peer-reviewed banner), so skip them here.
     for root, _dirs, files in os.walk(out_dir):
         for name in files:
             if not name.endswith(".html"):
                 continue
             p = os.path.join(root, name)
             with open(p, encoding="utf-8") as fh:
-                marker = html.unescape(_text_only(_CODE_RE.sub(" ", fh.read())))
+                page = fh.read()
+            if _STATUS_RE.search(page):
+                continue
+            marker = html.unescape(_text_only(_CODE_RE.sub(" ", page)))
             if _EDIT_MARKER_RE.search(marker):
-                f.err(p, "published (indexable) site still has a TODO edit-marker; "
-                         "resolve it or build without --publish")
+                f.err(p, "published (indexable) site still has a TODO edit-marker on "
+                         "a standalone page; resolve it or build without --publish")
 
 
 def check_site(out_dir):

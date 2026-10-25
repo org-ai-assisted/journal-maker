@@ -671,20 +671,24 @@ def _linkify_citations(body_html):
     head = _sub_outside(_HTML_CODE_RE,
                         lambda s: re.sub(r"\[(\d+)\]", _cite, s), head)
 
-    def _ref_li(x):
-        n = x.group(1)
-        content = x.group(2).rstrip()
-        back = ('<a class="backref" href="#cite-%s" '
-                'aria-label="back to citation">&#8617;</a> ' % n) if n in seen \
-            else ""
-        return '<li id="ref-%s">%s%s</li>' % (n, back, content)
-    # Each pandoc-rendered "[n] ..." reference paragraph becomes an <ol> item; the
-    # list supplies the visible number (CSS restores the "[n]" bracket style), so
-    # the literal "[n]" marker is dropped from the entry text.
-    refs = re.sub(r'<p>\s*\[(\d+)\]\s*(.*?)</p>', _ref_li, refs, flags=re.S)
-    refs = re.sub(r'(?:\s*<li id="ref-\d+">.*?</li>)+',
-                  lambda m: '\n<ol class="references">' + m.group(0) + '\n</ol>',
-                  refs, count=1, flags=re.S)
+    def _refs_to_ol(m):
+        def _li(x):
+            n = x.group(1)
+            content = x.group(2).rstrip()
+            back = ('<a class="backref" href="#cite-%s" '
+                    'aria-label="back to citation">&#8617;</a> ' % n) if n in seen \
+                else ""
+            # Emit the visible "[n]" as literal text, NOT a CSS list counter, so the
+            # displayed number always equals the citation key n -- even when the
+            # reference list is not authored in 1,2,3 order.
+            return '<li id="ref-%s">[%s] %s%s</li>' % (n, n, back, content)
+        lis = re.sub(r'<p>\s*\[(\d+)\]\s*(.*?)</p>\s*', _li, m.group(0), flags=re.S)
+        return '\n<ol class="references">\n' + lis.rstrip() + '\n</ol>\n'
+    # Convert ONLY the first consecutive run of reference paragraphs (the block
+    # right after the References heading) into one <ol>; a stray "[k]" paragraph
+    # elsewhere is not pulled in, and no reference <li> is ever left outside a list.
+    refs = re.sub(r'(?:<p>\s*\[\d+\]\s*.*?</p>\s*)+', _refs_to_ol, refs,
+                  count=1, flags=re.S)
     return head + _linkify_refs(refs)
 
 
