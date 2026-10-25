@@ -24,6 +24,8 @@ STYLE_CSS = """\
   --visited: #6b3fa0;
   --rule: #d9d9d4;
   --measure: 38rem;
+  --warn-bg: #fdf2d0; --warn-fg: #6b4e00; --warn-rule: #e0b84d;
+  --ok-bg: #e4f3e6; --ok-fg: #1d5a2a; --ok-rule: #88c096;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -34,6 +36,8 @@ STYLE_CSS = """\
     --accent: #7db4f0;
     --visited: #b79be0;
     --rule: #32363e;
+    --warn-bg: #3a300f; --warn-fg: #f0d78a; --warn-rule: #7a6420;
+    --ok-bg: #16301c; --ok-fg: #9fd9ab; --ok-rule: #2f5d39;
   }
 }
 :root[data-theme="dark"] {
@@ -44,6 +48,8 @@ STYLE_CSS = """\
   --accent: #7db4f0;
   --visited: #b79be0;
   --rule: #32363e;
+  --warn-bg: #3a300f; --warn-fg: #f0d78a; --warn-rule: #7a6420;
+  --ok-bg: #16301c; --ok-fg: #9fd9ab; --ok-rule: #2f5d39;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -120,6 +126,16 @@ details.cite-this { font-family: var(--sans); font-size: 0.9rem; border: 1px sol
 details.cite-this summary { cursor: pointer; font-weight: 650; }
 details.cite-this pre { font-family: var(--mono); font-size: 0.8rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 0.8rem; overflow-x: auto; }
 footer.license { font-family: var(--sans); font-size: 0.85rem; color: var(--muted); margin-top: 2rem; border-top: 1px solid var(--rule); padding-top: 0.8rem; }
+.status-pill-row { margin: 0.2rem 0 0; }
+.status-pill { display: inline-block; font-family: var(--sans); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.15rem 0.5rem; border-radius: 3px; border: 1px solid var(--rule); }
+.status-pill.status-draft { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-rule); }
+.status-pill.status-published { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-rule); }
+.status-pill.status-corrected { background: var(--surface); color: var(--accent); border-color: var(--accent); }
+.status-line { font-family: var(--sans); font-size: 0.85rem; color: var(--muted); margin: 0.2rem 0; }
+.status-banner { font-family: var(--sans); font-size: 0.92rem; line-height: 1.5; padding: 0.7rem 1rem; border-radius: 5px; margin: 0.5rem 0 1rem; }
+.status-banner.status-draft { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-rule); }
+.status-banner.status-corrected { background: var(--surface); color: var(--fg); border: 1px solid var(--accent); border-left: 4px solid var(--accent); }
+.status-banner a { color: inherit; }
 ol.articles { list-style: none; padding: 0; }
 ol.articles li { padding: 0.8rem 0; border-bottom: 1px solid var(--rule); }
 ol.articles .atitle { font-size: 1.1rem; }

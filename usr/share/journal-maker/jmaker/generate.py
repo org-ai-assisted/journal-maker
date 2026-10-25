@@ -25,6 +25,7 @@ matches the visible title and the abstract is always both visible and in meta.
 
 import datetime
 import html
+import json
 import os
 import re
 import shutil
@@ -35,6 +36,27 @@ import tomllib
 
 class BuildError(Exception):
     pass
+
+
+# Publication-status model (NISO JAV subset). Default is "draft" so a new
+# article is honestly labeled not-peer-reviewed until an author DELIBERATELY
+# promotes it to "published" -- that promotion is what turns on the release-state
+# lint (no leftover TODO edit-markers). The safe state needs nothing remembered.
+STATUS_LABELS = {
+    "draft": "Draft -- not peer reviewed",
+    "published": ("Published (version of record) -- editorial review only, "
+                  "not peer reviewed"),
+    "corrected": "Corrected version of record -- see correction notice",
+}
+# Short badge text per status (keep it a state keyword, not a sentence).
+_STATUS_PILL = {
+    "draft": "Draft",
+    "published": "Version of record",
+    "corrected": "Corrected",
+}
+# schema.org creativeWorkStatus value (corrected is still a published VoR).
+_STATUS_SCHEMA = {"draft": "Draft", "published": "Published",
+                  "corrected": "Published"}
 
 
 # ---------------------------------------------------------------- loading
@@ -193,6 +215,28 @@ def load_article(adir):
         if not re.match(r"^\d{4}(-\d{2}-\d{2})?$", m[key]):
             raise BuildError("%s/meta.toml: %s must be YYYY-MM-DD or YYYY, got %r"
                              % (adir, key, m[key]))
+    status = str(m.get("status", "draft")).lower()
+    if status not in STATUS_LABELS:
+        raise BuildError("%s/meta.toml: status must be one of %s, got %r"
+                         % (adir, ", ".join(sorted(STATUS_LABELS)),
+                            m.get("status")))
+    m["status"] = status
+    if status == "corrected":
+        cd = m.get("corrected_date")
+        if cd is None:
+            raise BuildError("%s/meta.toml: status 'corrected' requires "
+                             "corrected_date (YYYY-MM-DD)" % adir)
+        cd = cd.isoformat()[:10] if isinstance(cd, (datetime.date,
+                                                    datetime.datetime)) else str(cd)
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", cd):
+            raise BuildError("%s/meta.toml: corrected_date must be YYYY-MM-DD, "
+                             "got %r" % (adir, cd))
+        m["corrected_date"] = cd
+        cu = str(m.get("correction_url", ""))
+        if cu and not re.match(r"^https?://", cu):
+            raise BuildError("%s/meta.toml: correction_url must be http(s), got %r"
+                             % (adir, cu))
+        m["correction_url"] = cu
     m["_dir"] = adir
     m["_body_md"] = body
     return m
@@ -397,6 +441,57 @@ def _bibtex(m, journal, landing_url):
     return "@article{%s,\n%s\n}" % (key, body)
 
 
+def _status_fragment(m):
+    """Visible + machine status markers. Pure (no pandoc) so it is unit-testable.
+
+    Returns (pill_html, banner_html, line_html, head_meta). The pill is kept
+    OUT of the <h1> so it cannot pollute the citation_title consistency check.
+    """
+    status = m["status"]
+    pill = ('<p class="status-pill-row"><span class="status-pill status-%s">%s'
+            "</span></p>\n" % (status, html.escape(_STATUS_PILL[status])))
+    line = ('<p class="status-line">Status: %s</p>\n'
+            % html.escape(STATUS_LABELS[status]))
+    banner = ""
+    if status == "draft":
+        banner = ('<aside class="status-banner status-draft" role="note">'
+                  "This is a draft posted for comment. It has not been peer "
+                  "reviewed and may change. Cite with caution.</aside>\n")
+    elif status == "corrected":
+        when = (" on " + html.escape(m["corrected_date"])) if m.get(
+            "corrected_date") else ""
+        url = m.get("correction_url", "")
+        notice = ('See the <a href="%s">correction notice</a>.'
+                  % html.escape(url, quote=True)) if url \
+            else "See the correction notice."
+        banner = ('<aside class="status-banner status-corrected" role="note">'
+                  "This article was corrected%s. %s</aside>\n" % (when, notice))
+    head = '<meta name="article_status" content="%s">' % status
+    return pill, banner, line, head
+
+
+def _jsonld(m, journal, landing_url):
+    """schema.org ScholarlyArticle; carries creativeWorkStatus (the one standard
+    machine field for status -- there is no citation_* version/status tag)."""
+    ld = {
+        "@context": "https://schema.org",
+        "@type": "ScholarlyArticle",
+        "headline": m["title"],
+        "author": [{"@type": "Person", "name": a["name"]} for a in m["authors"]],
+        "datePublished": m["date"],
+        "creativeWorkStatus": _STATUS_SCHEMA[m["status"]],
+        "isAccessibleForFree": True,
+        "publisher": {"@type": "Organization", "name": journal["title"]},
+        "url": landing_url,
+    }
+    if m.get("doi"):
+        ld["identifier"] = "https://doi.org/" + m["doi"]
+    # ensure_ascii keeps output ASCII; then neutralize </script> breakout chars.
+    j = (json.dumps(ld).replace("<", "\\u003c").replace(">", "\\u003e")
+         .replace("&", "\\u0026"))
+    return '<script type="application/ld+json">%s</script>' % j
+
+
 def render_article(m, journal):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
@@ -405,6 +500,8 @@ def render_article(m, journal):
     pdf_url = landing_url + pdf_name
 
     meta = citation_meta(m, journal, landing_url, pdf_url)
+    pill, banner, status_line, status_head = _status_fragment(m)
+    meta = meta + "\n" + status_head + "\n" + _jsonld(m, journal, landing_url)
     body_html = _linkify_citations(md_to_html_fragment(m["_body_md"]))
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
@@ -447,17 +544,21 @@ def render_article(m, journal):
 
     main = (
         '<main class="article">\n'
+        "%s"
+        "%s"
         '<h1 class="title">%s</h1>\n'
         '<p class="authors">%s</p>\n'
         "%s"
         '<p class="venue">%s%s</p>\n'
+        "%s"
         '<p class="actions"><a href="%s">Download PDF</a></p>\n'
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
         "%s%s"
         '<article class="body">\n%s\n</article>\n'
         "%s\n</main>"
-    ) % (html.escape(m["title"]), authors_line, affil_bit, venue, doi_bit,
-         pdf_name, abstract_html, toc, cite_box, body_html, license_bit)
+    ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
+         doi_bit, status_line, pdf_name, abstract_html, toc, cite_box, body_html,
+         license_bit)
 
     description = " ".join(m["abstract"].split())[:300]
     page = _page(

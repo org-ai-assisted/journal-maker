@@ -76,6 +76,11 @@ _TAG_RE = re.compile(r'<[^>]+>')
 # and {{ }} (CI expressions, templating) -- strip them before the wiki scan.
 _CODE_RE = re.compile(r'<(pre|code)\b[^>]*>.*?</\1>', re.I | re.S)
 _DATE_RE = re.compile(r'^\d{4}(/\d{1,2}(/\d{1,2})?)?$')
+_STATUS_RE = re.compile(r'<meta\s+name="article_status"\s+content="([a-z]+)">', re.I)
+# Our edit-markers render as bold TODO (**TODO:** / **TODO(editorial):**); the
+# bold form avoids matching the literal word TODO inside a code sample.
+_EDIT_MARKER_RE = re.compile(r'<strong>\s*TODO', re.I)
+_ALLOWED_STATUS = {"draft", "published", "corrected"}
 
 
 class Findings:
@@ -201,7 +206,31 @@ def check_article(page_path, f, out_dir):
     if _WIKI_TMPL_RE.search(body_text):
         f.err(page_path, "leftover wiki template {{...}} in output")
 
+    check_release_state(page, page_path, f)
     check_citation_parity(page, page_path, f)
+
+
+def check_release_state(page, page_path, f):
+    """Visible edit-markers must match the declared status.
+
+    published => no leftover TODO markers (a draft cannot ship as the record with
+    unresolved notes); draft/corrected => the matching banner must be present so
+    the honesty label can never be dropped. Status drives it, nothing to recall.
+    """
+    smo = _STATUS_RE.search(page)
+    if not smo:
+        f.err(page_path, "missing article_status meta (set status in meta.toml)")
+        return
+    status = smo.group(1).lower()
+    if status not in _ALLOWED_STATUS:
+        f.err(page_path, "unknown article_status: %r" % status)
+    if status == "published" and _EDIT_MARKER_RE.search(page):
+        f.err(page_path, "published article still has TODO edit-marker(s); "
+              "resolve them or keep status=draft")
+    if status == "draft" and "status-banner status-draft" not in page:
+        f.err(page_path, "draft article missing the not-peer-reviewed banner")
+    if status == "corrected" and "status-banner status-corrected" not in page:
+        f.err(page_path, "corrected article missing the correction banner")
 
 
 def check_citation_parity(page, page_path, f):
