@@ -134,6 +134,14 @@ article.body blockquote { margin: 1rem 0; padding-left: 1.25rem; border-left: 3p
 ol.references { list-style: none; padding-left: 0; margin: 0.5rem 0; }
 ol.references li { padding-left: 2.4em; text-indent: -2.4em; font-size: 0.9rem; line-height: 1.5; margin: 0.35rem 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 ol.references li:target { background: var(--surface); }
+.hovercard { position: absolute; z-index: 50; max-width: min(90vw, 30rem); background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18); padding: 0.55rem 0.75rem; font-size: 0.85rem; line-height: 1.5; }
+.hovercard[hidden] { display: none; }
+.hovercard-body { overflow-wrap: anywhere; }
+.hovercard-nav { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin-top: 0.4rem; }
+.hovercard-nav[hidden] { display: none; }
+.hovercard-navbtn { font-family: var(--sans); font-size: 0.8rem; line-height: 1; padding: 0.15rem 0.45rem; border: 1px solid var(--rule); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer; }
+.hovercard-navbtn:disabled { opacity: 0.4; cursor: default; }
+.hovercard-pos { font-family: var(--sans); font-size: 0.75rem; color: var(--muted); }
 details.cite-this { font-family: var(--sans); font-size: 0.9rem; border: 1px solid var(--rule); border-radius: 5px; padding: 0.6rem 1rem; margin: 1.5rem 0; }
 details.cite-this summary { cursor: pointer; font-weight: 650; }
 details.cite-this pre { font-family: var(--mono); font-size: 0.8rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 0.8rem; overflow-x: auto; }
@@ -230,16 +238,101 @@ JOURNAL_JS = r"""// Journal interactive enhancements. Trusted-Types-safe; progre
   var pres = document.querySelectorAll("details.cite-this pre, article.body pre");
   for (var i = 0; i < pres.length; i++) { addCopy(pres[i]); }
 
-  // Citation hover/focus preview via the native title attribute (CSP-clean).
-  var cites = document.querySelectorAll("a.cite");
+  // Citation hovercards: hover/focus a [n] to preview its reference, with prev/next
+  // stepping through the references in document order. The native title= is kept as a
+  // JS-off fallback. TT-safe: the card is built with DOM APIs + cloneNode only (no
+  // innerHTML, no HTML strings), so it survives a strict Content-Security-Policy.
+  var cites = [].slice.call(document.querySelectorAll("a.cite"));
+  var refOrder = [];            // ref ids in first-citation document order (deduped)
+  var seen = Object.create(null);
   for (var j = 0; j < cites.length; j++) {
     var href = cites[j].getAttribute("href");
-    if (href && href.charAt(0) === "#") {
-      var ref = document.getElementById(href.slice(1));
-      if (ref) {
-        cites[j].setAttribute("title", ref.textContent.replace(/\s+/g, " ").trim());
+    if (!href || href.charAt(0) !== "#") { continue; }
+    var rid = href.slice(1);
+    var ref = document.getElementById(rid);
+    if (!ref) { continue; }
+    cites[j].setAttribute("title", ref.textContent.replace(/\s+/g, " ").trim());
+    if (!seen[rid]) { seen[rid] = true; refOrder.push(rid); }
+  }
+  if (refOrder.length) {
+    var card = document.createElement("div");
+    card.className = "hovercard";
+    card.setAttribute("role", "dialog");
+    card.hidden = true;
+    var cbody = document.createElement("div");
+    cbody.className = "hovercard-body";
+    var cnav = document.createElement("div");
+    cnav.className = "hovercard-nav";
+    var cprev = document.createElement("button");
+    cprev.type = "button"; cprev.className = "hovercard-navbtn";
+    cprev.textContent = String.fromCharCode(0x25C0); cprev.setAttribute("aria-label", "Previous reference");
+    var cpos = document.createElement("span");
+    cpos.className = "hovercard-pos";
+    var cnext = document.createElement("button");
+    cnext.type = "button"; cnext.className = "hovercard-navbtn";
+    cnext.textContent = String.fromCharCode(0x25B6); cnext.setAttribute("aria-label", "Next reference");
+    cnav.appendChild(cprev); cnav.appendChild(cpos); cnav.appendChild(cnext);
+    card.appendChild(cbody); card.appendChild(cnav);
+    document.body.appendChild(card);
+
+    var hideTimer = null, curIdx = -1, curAnchor = null;
+    function refFragment(id) {
+      var frag = document.createDocumentFragment();
+      var r = document.getElementById(id);
+      if (!r) { return frag; }
+      var kids = r.childNodes;
+      for (var i = 0; i < kids.length; i++) {
+        var k = kids[i];
+        if (k.nodeType === 1 && k.classList && k.classList.contains("backref")) { continue; }
+        frag.appendChild(k.cloneNode(true));
       }
+      return frag;
     }
+    function populate(idx) {
+      if (idx < 0 || idx >= refOrder.length) { return; }
+      curIdx = idx;
+      while (cbody.firstChild) { cbody.removeChild(cbody.firstChild); }
+      cbody.appendChild(refFragment(refOrder[idx]));
+      cpos.textContent = (idx + 1) + " / " + refOrder.length;
+      cnav.hidden = refOrder.length < 2;
+      cprev.disabled = idx === 0;
+      cnext.disabled = idx === refOrder.length - 1;
+    }
+    function place(anchor) {
+      var rect = anchor.getBoundingClientRect();
+      var left = window.pageXOffset + rect.left;
+      var maxLeft = window.pageXOffset + document.documentElement.clientWidth - card.offsetWidth - 8;
+      if (left > maxLeft) { left = maxLeft; }
+      if (left < window.pageXOffset + 8) { left = window.pageXOffset + 8; }
+      card.style.left = left + "px";
+      card.style.top = (window.pageYOffset + rect.bottom + 6) + "px";
+    }
+    function show(anchor, idx) {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      curAnchor = anchor;
+      card.hidden = false;
+      populate(idx);
+      place(anchor);
+    }
+    function hideSoon() { hideTimer = setTimeout(function () { card.hidden = true; }, 200); }
+    function cancelHide() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }
+    for (var c = 0; c < cites.length; c++) {
+      (function (a) {
+        var h = a.getAttribute("href");
+        if (!h || h.charAt(0) !== "#") { return; }
+        var idx = refOrder.indexOf(h.slice(1));
+        if (idx < 0) { return; }
+        a.addEventListener("mouseenter", function () { show(a, idx); });
+        a.addEventListener("mouseleave", hideSoon);
+        a.addEventListener("focus", function () { show(a, idx); });
+        a.addEventListener("blur", hideSoon);
+      })(cites[c]);
+    }
+    card.addEventListener("mouseenter", cancelHide);
+    card.addEventListener("mouseleave", hideSoon);
+    cprev.addEventListener("click", function () { if (curIdx > 0) { populate(curIdx - 1); } });
+    cnext.addEventListener("click", function () { if (curIdx < refOrder.length - 1) { populate(curIdx + 1); } });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") { card.hidden = true; } });
   }
 
   // Figure lightbox: click a body image to view enlarged; click or Escape closes.
