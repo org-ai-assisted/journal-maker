@@ -341,9 +341,32 @@ def check_ascii(out_dir, f):
                       % " ".join("U+%04X" % ord(ch) for ch in bad[:12]))
 
 
+# Interim / AI-assist infrastructure that must NEVER appear in the published
+# journal: it is a vendor-neutral academic venue and will move to its own org,
+# so an org-ai-assisted link or mention would leak non-permanent infra (and
+# break the "never change an indexed URL" rule once the org move happens).
+_FORBIDDEN_REFS = ("org-ai-assisted",)
+
+
+def check_no_internal_refs(out_dir, f):
+    """Fail if any served text links to or mentions interim/AI-assist infra."""
+    for root, _dirs, files in os.walk(out_dir):
+        for name in files:
+            if os.path.splitext(name)[1].lower() not in _TEXT_EXT:
+                continue
+            path = os.path.join(root, name)
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                low = fh.read().lower()
+            for tok in _FORBIDDEN_REFS:
+                if tok in low:
+                    f.err(path, "forbidden reference to interim infra %r in "
+                          "published output (journal is vendor-neutral)" % tok)
+
+
 def check_site(out_dir):
     f = Findings()
     check_ascii(out_dir, f)
+    check_no_internal_refs(out_dir, f)
     if not os.path.isfile(os.path.join(out_dir, "index.html")):
         f.err(out_dir, "missing homepage index.html")
     if not os.path.isfile(os.path.join(out_dir, "robots.txt")):
