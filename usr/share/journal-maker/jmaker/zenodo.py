@@ -17,6 +17,7 @@ sandbox.zenodo.org for dry runs. Deposition state is kept in <dir>/.zenodo.json.
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -56,6 +57,11 @@ def build_metadata(m, journal, abstract):
         "creators": creators,
         "publication_date": m["date"],
         "access_right": "open",
+        # Ask Zenodo to reserve a DOI in the deposit response; reserve() reads it
+        # back from metadata.prereserve_doi.doi. Without this the reserved DOI is
+        # not guaranteed to be present, and reserve() would fail after creating
+        # the (now orphaned) deposition.
+        "prereserve_doi": True,
         "journal_title": journal["title"],
         "journal_volume": str(m["volume"]),
         "journal_issue": str(m["issue"]),
@@ -124,15 +130,23 @@ def _write_doi_to_meta(article_dir, doi):
         fh.write(new)
 
 
-def reserve(article_dir, journal_toml, base, token):
+def reserve(article_dir, journal_toml, base, token, replace=False):
+    state_file = _state_path(article_dir)
+    if os.path.islink(state_file):
+        raise ZenodoError(".zenodo.json is a symlink; refusing to overwrite it")
+    # A second reserve creates a NEW deposition and overwrites the DOI +
+    # .zenodo.json, orphaning the first deposition and its reserved DOI. Refuse
+    # unless the operator explicitly asks to replace it.
+    if os.path.exists(state_file) and not replace:
+        raise ZenodoError(
+            "%s already records a reservation; a second reserve would orphan the "
+            "first deposition and overwrite its DOI. Pass --replace to reserve "
+            "again intentionally." % state_file)
     journal = generate.load_journal(journal_toml)
     m = generate.load_article(article_dir)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(m["date"])):
         raise ZenodoError("Zenodo requires a full YYYY-MM-DD date; meta.toml has %r"
                           % m["date"])
-    state_file = _state_path(article_dir)
-    if os.path.islink(state_file):
-        raise ZenodoError(".zenodo.json is a symlink; refusing to overwrite it")
     dep = _api("POST", "%s/api/deposit/depositions" % base, token, payload={})
     dep_id = dep["id"]
     bucket = dep["links"]["bucket"]
@@ -152,6 +166,23 @@ def reserve(article_dir, journal_toml, base, token):
 
 
 _ZENODO_HOST_RE = re.compile(r"https://(sandbox\.)?zenodo\.org(/|$)")
+
+
+def _pdf_text(pdf_path):
+    """Extract a PDF's text layer (poppler-utils is a hard dependency)."""
+    try:
+        r = subprocess.run(["pdftotext", "-q", pdf_path, "-"],
+                           capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # SubprocessError covers TimeoutExpired (a hung pdftotext); it is NOT an
+        # OSError, so it must be named explicitly or it escapes as a traceback.
+        raise ZenodoError("pdftotext failed on %s: %s" % (pdf_path, exc))
+    # Fail closed: a nonzero exit means the extraction is incomplete, so partial
+    # output must not be trusted to decide an irreversible publish.
+    if r.returncode != 0:
+        raise ZenodoError("pdftotext exited %d on %s: %s"
+                          % (r.returncode, pdf_path, r.stderr.strip()))
+    return r.stdout
 
 
 def publish(article_dir, pdf_path, base, token):
@@ -177,6 +208,20 @@ def publish(article_dir, pdf_path, base, token):
                               % url)
     if not os.path.isfile(pdf_path):
         raise ZenodoError("PDF not found: %s" % pdf_path)
+    # Publishing is irreversible (Zenodo cannot delete a published deposition),
+    # so confirm this PDF is THIS article's camera-ready build: generate embeds
+    # "DOI: <doi>" in the PDF, so the reserved DOI must appear in its text layer.
+    # Guards against publishing the wrong article's PDF under this DOI.
+    doi = state.get("doi", "")
+    if not doi:
+        raise ZenodoError("no reserved DOI in .zenodo.json; re-run 'zenodo reserve'")
+    # Whole-token match so a reserved DOI (e.g. ...zenodo.123) is not satisfied by
+    # a different one that merely contains it (...zenodo.1234).
+    if not re.search(r"(?<![\w.])%s(?![\w.])" % re.escape(doi), _pdf_text(pdf_path)):
+        raise ZenodoError(
+            "%s does not contain the reserved DOI %s; refusing to publish a PDF "
+            "that is not this article's camera-ready build (rebuild the site "
+            "after 'reserve', then publish that PDF)" % (pdf_path, doi))
     with open(pdf_path, "rb") as fh:
         pdf = fh.read()
     name = os.path.basename(pdf_path)
@@ -194,7 +239,8 @@ def main(args):
     try:
         token = _token(args.token)
         if args.action == "reserve":
-            return reserve(args.article_dir, args.journal, base, token)
+            return reserve(args.article_dir, args.journal, base, token,
+                           replace=args.replace)
         return publish(args.article_dir, args.pdf, base, token)
     except ZenodoError as exc:
         print("zenodo error: %s" % exc, file=sys.stderr)

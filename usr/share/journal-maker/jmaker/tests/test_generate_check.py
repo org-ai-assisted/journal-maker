@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -Bsu
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 
@@ -207,6 +208,152 @@ class TestZenodo(unittest.TestCase):
             self.assertIn('doi = "10.5281/zenodo.123"', text)
             self.assertNotIn('doi = ""', text)
 
+    def test_build_metadata_sets_prereserve_doi(self):
+        # reserve() reads the reserved DOI back from metadata.prereserve_doi.doi;
+        # the request must ask Zenodo to reserve one.
+        from jmaker import zenodo
+        out = zenodo.build_metadata(dict(META), JOURNAL, "x")["metadata"]
+        self.assertIs(out["prereserve_doi"], True)
+
+    def test_pdf_reader_disables_raw_attribute(self):
+        # A fenced ```{=latex} / ```{=html} block must not pass through to the
+        # engine; the PDF reader disables raw_attribute like the HTML reader.
+        from jmaker import zenodo  # noqa: F401 (keep import parity with class)
+        captured = {}
+
+        def fake_run(argv, **kw):
+            captured["argv"] = argv
+            class R:
+                stdout = ""
+            return R()
+        orig = g._run
+        g._run = fake_run
+        self.addCleanup(lambda: setattr(g, "_run", orig))
+        m = dict(META)
+        m["doi"] = ""
+        m["_body_md"] = "body\n"
+        m["_dir"] = "/nonexistent"
+        g.md_to_pdf(m, JOURNAL, "/dev/null")
+        argv = captured["argv"]
+        fmt = argv[argv.index("-f") + 1]
+        self.assertIn("-raw_attribute", fmt)
+
+    def test_reserve_refuses_second_reservation(self):
+        # A second reserve would orphan the first deposition; refuse it and never
+        # hit the API.
+        from jmaker import zenodo
+
+        def boom(*a, **k):
+            raise RuntimeError("_api must not be called when refusing")
+        orig = zenodo._api
+        zenodo._api = boom
+        self.addCleanup(lambda: setattr(zenodo, "_api", orig))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
+                json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.1"}, fh)
+            with self.assertRaises(zenodo.ZenodoError) as cm:
+                zenodo.reserve(d, "journal.toml", zenodo.SANDBOX, "tok")
+            self.assertIn("already records", str(cm.exception))
+
+    def test_publish_rejects_pdf_without_doi(self):
+        # Publishing is irreversible; a PDF lacking the reserved DOI is refused
+        # before any API call.
+        from jmaker import zenodo
+
+        def boom(*a, **k):
+            raise RuntimeError("_api must not be called when refusing")
+        orig_api, orig_txt = zenodo._api, zenodo._pdf_text
+        zenodo._api = boom
+        zenodo._pdf_text = lambda p: "unrelated text, no doi here"
+        self.addCleanup(lambda: setattr(zenodo, "_api", orig_api))
+        self.addCleanup(lambda: setattr(zenodo, "_pdf_text", orig_txt))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
+                json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.123",
+                           "bucket": "https://sandbox.zenodo.org/api/files/x",
+                           "base": zenodo.SANDBOX}, fh)
+            pdf = os.path.join(d, "a.pdf")
+            with open(pdf, "wb") as fh:
+                fh.write(b"%PDF-1.4 dummy")
+            with self.assertRaises(zenodo.ZenodoError) as cm:
+                zenodo.publish(d, pdf, zenodo.SANDBOX, "tok")
+            self.assertIn("reserved DOI", str(cm.exception))
+
+    def test_publish_accepts_pdf_with_doi(self):
+        # The matching PDF passes the guard and the upload + publish calls run.
+        from jmaker import zenodo
+        calls = []
+
+        def rec(method, url, token, **k):
+            calls.append((method, url))
+            return {"doi": "10.5281/zenodo.123"}
+        orig_api, orig_txt = zenodo._api, zenodo._pdf_text
+        zenodo._api = rec
+        zenodo._pdf_text = lambda p: "title ... DOI: 10.5281/zenodo.123 ... body"
+        self.addCleanup(lambda: setattr(zenodo, "_api", orig_api))
+        self.addCleanup(lambda: setattr(zenodo, "_pdf_text", orig_txt))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
+                json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.123",
+                           "bucket": "https://sandbox.zenodo.org/api/files/x",
+                           "base": zenodo.SANDBOX}, fh)
+            pdf = os.path.join(d, "a.pdf")
+            with open(pdf, "wb") as fh:
+                fh.write(b"%PDF-1.4 dummy")
+            self.assertEqual(zenodo.publish(d, pdf, zenodo.SANDBOX, "tok"), 0)
+        self.assertEqual(len(calls), 2)
+
+    def test_publish_rejects_prefix_doi(self):
+        # A PDF whose only DOI-like token is a SUPERSTRING of the reserved DOI
+        # (10.5281/zenodo.123 vs ...1234) must not be accepted.
+        from jmaker import zenodo
+
+        def boom(*a, **k):
+            raise RuntimeError("_api must not be called when refusing")
+        orig_api, orig_txt = zenodo._api, zenodo._pdf_text
+        zenodo._api = boom
+        zenodo._pdf_text = lambda p: "DOI: 10.5281/zenodo.1234\n"
+        self.addCleanup(lambda: setattr(zenodo, "_api", orig_api))
+        self.addCleanup(lambda: setattr(zenodo, "_pdf_text", orig_txt))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
+                json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.123",
+                           "bucket": "https://sandbox.zenodo.org/api/files/x",
+                           "base": zenodo.SANDBOX}, fh)
+            pdf = os.path.join(d, "a.pdf")
+            with open(pdf, "wb") as fh:
+                fh.write(b"%PDF-1.4 dummy")
+            with self.assertRaises(zenodo.ZenodoError):
+                zenodo.publish(d, pdf, zenodo.SANDBOX, "tok")
+
+    def test_pdf_text_timeout_is_zenodo_error(self):
+        # A hung pdftotext raises TimeoutExpired (not an OSError); it must surface
+        # as a ZenodoError, not an uncaught traceback.
+        from jmaker import zenodo
+
+        def timeout(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="pdftotext", timeout=120)
+        orig = subprocess.run
+        subprocess.run = timeout
+        self.addCleanup(lambda: setattr(subprocess, "run", orig))
+        with self.assertRaises(zenodo.ZenodoError):
+            zenodo._pdf_text("/nonexistent.pdf")
+
+    def test_pdf_text_nonzero_exit_fails_closed(self):
+        # A nonzero pdftotext exit must raise, not return partial text that could
+        # pass the DOI guard before an irreversible publish.
+        from jmaker import zenodo
+
+        class R:
+            returncode = 1
+            stdout = "DOI: 10.5281/zenodo.123"
+            stderr = "Syntax Error: broken xref"
+        orig = subprocess.run
+        subprocess.run = lambda *a, **k: R()
+        self.addCleanup(lambda: setattr(subprocess, "run", orig))
+        with self.assertRaises(zenodo.ZenodoError):
+            zenodo._pdf_text("/some.pdf")
+
 
 class TestLoading(unittest.TestCase):
     def _article(self, d, meta_toml):
@@ -238,6 +385,16 @@ class TestLoading(unittest.TestCase):
             ad = os.path.join(d, "art")
             self._article(ad, 'volume = 1\nissue = 1\ndate = "2026-10-24"\n'
                               'authors = [{name = ""}]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_non_string_keyword_rejected(self):
+        # A non-string keyword would crash JSON-LD/meta rendering later; reject
+        # it at load with a clean error.
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'volume = 1\nissue = 1\ndate = "2026-10-24"\n'
+                              'authors = [{name = "A"}]\nkeywords = ["ok", 1]\n')
             with self.assertRaises(g.BuildError):
                 g.load_article(ad)
 
@@ -474,10 +631,24 @@ class TestStatus(unittest.TestCase):
     def test_jsonld_has_status_and_escapes(self):
         j = g._jsonld({"title": "A <b> title", "authors": [{"name": "A"}],
                        "date": "2026-10-24", "status": "draft"},
-                      {"title": "J"}, "https://e.example/x/")
+                      {"title": "J", "publisher": "University Press"},
+                      "https://e.example/x/")
         self.assertIn('"creativeWorkStatus": "Draft"', j)
         self.assertNotIn("<b>", j)            # breakout chars neutralized
         self.assertIn("\\u003c", j)
+        self.assertIn('"name": "University Press"', j)   # publisher, not title
+
+    def test_corrected_with_todo_marker_errors(self):
+        # corrected is a version of record too, so unresolved notes are rejected.
+        page = self._META % "corrected" + (
+            '<aside class="status-banner status-corrected">x</aside>'
+            "<p><strong>TODO:</strong> verify</p>")
+        self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
+    def test_todo_group_prose_not_flagged(self):
+        # "TODO Group" (the FOSS org) in bold prose is not an edit-marker.
+        page = self._META % "published" + "<p><strong>TODO Group</strong> x</p>"
+        self.assertEqual(self._lint(page), [])
 
     def _lint(self, page):
         f = c.Findings()
@@ -489,6 +660,27 @@ class TestStatus(unittest.TestCase):
     def test_published_with_todo_marker_errors(self):
         page = self._META % "published" + "<p><strong>TODO:</strong> fix</p>"
         self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
+    def test_published_with_nonbold_todo_marker_errors(self):
+        # Regression: a marker that lost its bold (here in a heading) must still
+        # block a publish -- the old bold-only gate missed exactly this.
+        page = self._META % "published" + "<h3>TODO: resolve the DOI</h3>"
+        self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
+    def test_published_plaintext_todo_marker_errors(self):
+        page = self._META % "published" + "<p>TODO(editorial): tighten this</p>"
+        self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
+    def test_published_todo_in_code_example_ok(self):
+        # A genuine "# TODO:" inside a code example is not an unresolved note.
+        page = (self._META % "published"
+                + "<pre><code># TODO: handle EOF</code></pre>")
+        self.assertEqual(self._lint(page), [])
+
+    def test_published_todo_group_plaintext_not_flagged(self):
+        # Non-bold "TODO Group" (the FOSS org) must still pass the broadened scan.
+        page = self._META % "published" + "<p>maintained by the TODO Group.</p>"
+        self.assertEqual(self._lint(page), [])
 
     def test_published_clean_ok(self):
         page = self._META % "published" + "<p>clean body</p>"
@@ -530,6 +722,11 @@ class TestEnDash(unittest.TestCase):
         self.assertEqual(g._endash_md("run `foo -- bar` now -- then"),
                          "run `foo -- bar` now " + chr(0x2013) + " then")
 
+    def test_md_tilde_fence_preserved(self):
+        out = g._endash_md("~~~sh\ncmd -- arg\n~~~\na -- b")
+        self.assertIn("cmd -- arg", out)            # tilde-fenced: untouched
+        self.assertIn("a " + chr(0x2013) + " b", out)
+
 
 class TestRefLinksAndMeta(unittest.TestCase):
     def test_citation_backlink_and_anchor(self):
@@ -554,6 +751,52 @@ class TestRefLinksAndMeta(unittest.TestCase):
                "<p>[1] Title. doi: 10.1109/ABC.2020.123.</p>")
         out = g._linkify_citations(src)
         self.assertIn('href="https://doi.org/10.1109/ABC.2020.123"', out)
+
+    def test_reference_url_href_escaped(self):
+        # A '"' in a reference URL must be escaped, not smuggle an attribute past
+        # the sanitizer (linkify runs after _sanitize_html).
+        src = ('<p>x [1].</p><h2>References</h2>'
+               '<p>[1] P. https://e.example/x"onmouseover=alert(1)</p>')
+        out = g._linkify_citations(src)
+        self.assertNotIn('"onmouseover=', out)
+        self.assertIn("&quot;onmouseover=", out)
+
+    def test_reference_url_balanced_paren(self):
+        # A ')' that closes a '(' in the URL stays inside the link.
+        src = ("<p>x [1].</p><h2>References</h2>"
+               "<p>[1] P. https://en.wikipedia.org/wiki/Foo_(bar)</p>")
+        out = g._linkify_citations(src)
+        self.assertIn('href="https://en.wikipedia.org/wiki/Foo_(bar)"', out)
+
+    def test_linkify_citations_skips_code(self):
+        # An array index inside <code> is not a citation.
+        src = ('<p>claim [1]. <code>arr[2]</code></p>'
+               '<h2>References</h2><p>[1] A.</p>')
+        out = g._linkify_citations(src)
+        self.assertIn('href="#ref-1"', out)
+        self.assertNotIn('href="#ref-2"', out)
+        self.assertIn("<code>arr[2]</code>", out)
+
+    def test_linkify_citations_prose_range_not_linkified(self):
+        # A bracketed number RANGE/LIST in prose (a byte range, a coordinate) is
+        # ambiguous with a combined citation, so it must NOT be auto-linkified --
+        # doing so would invent dangling citations and fail the parity gate.
+        src = ("<p>bytes [0-15] and entry [3, 4].</p>"
+               "<h2>References</h2><p>[1] A.</p>")
+        out = g._linkify_citations(src)
+        self.assertNotIn('href="#ref-0"', out)
+        self.assertNotIn('href="#ref-3"', out)
+        self.assertIn("[0-15]", out)       # left as plain prose
+        self.assertIn("[3, 4]", out)
+
+    def test_anchor_does_not_double_escape(self):
+        # pandoc already entity-escaped '&'; _anchor must not turn &amp; into
+        # &amp;amp;.
+        src = ("<p>x [1].</p><h2>References</h2>"
+               "<p>[1] P. https://e.example/s?a=1&amp;b=2</p>")
+        out = g._linkify_citations(src)
+        self.assertIn('href="https://e.example/s?a=1&amp;b=2"', out)
+        self.assertNotIn("&amp;amp;", out)
 
     def test_csp_meta_present(self):
         page = g.render_homepage([], dict(JOURNAL), [])

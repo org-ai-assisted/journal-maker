@@ -77,9 +77,14 @@ _TAG_RE = re.compile(r'<[^>]+>')
 _CODE_RE = re.compile(r'<(pre|code)\b[^>]*>.*?</\1>', re.I | re.S)
 _DATE_RE = re.compile(r'^\d{4}(/\d{1,2}(/\d{1,2})?)?$')
 _STATUS_RE = re.compile(r'<meta\s+name="article_status"\s+content="([a-z]+)">', re.I)
-# Our edit-markers render as bold TODO (**TODO:** / **TODO(editorial):**); the
-# bold form avoids matching the literal word TODO inside a code sample.
-_EDIT_MARKER_RE = re.compile(r'<strong>\s*TODO', re.I)
+# Unresolved edit-marker: an uppercase TODO immediately followed by ':' or '(',
+# matching our **TODO:** / **TODO(editorial):** notes in bold OR plain text (a
+# marker that lost its bold -- in a heading, list, or prose -- must still block a
+# publish). The ':'/'(' requirement lets ordinary text like "TODO Group" (the
+# FOSS org) pass; case-sensitivity keeps Spanish "todo:" and the like out. It is
+# matched against tag-stripped, code-free text, so a genuine "# TODO:" inside a
+# code example is not mistaken for an unresolved note.
+_EDIT_MARKER_RE = re.compile(r'\bTODO\s*[:(]')
 _ALLOWED_STATUS = {"draft", "published", "corrected"}
 
 
@@ -224,9 +229,14 @@ def check_release_state(page, page_path, f):
     status = smo.group(1).lower()
     if status not in _ALLOWED_STATUS:
         f.err(page_path, "unknown article_status: %r" % status)
-    if status == "published" and _EDIT_MARKER_RE.search(page):
-        f.err(page_path, "published article still has TODO edit-marker(s); "
-              "resolve them or keep status=draft")
+    # A version of record (published OR corrected) must carry no unresolved notes,
+    # in ANY form -- scan the tag-stripped, code-free text so a bold-dropped marker
+    # is caught and a code example's "# TODO:" is not.
+    if status in ("published", "corrected"):
+        marker_text = _text_only(_CODE_RE.sub(" ", page))
+        if _EDIT_MARKER_RE.search(marker_text):
+            f.err(page_path, "%s article still has TODO edit-marker(s); "
+                  "resolve them or keep status=draft" % status)
     if status == "draft" and "status-banner status-draft" not in page:
         f.err(page_path, "draft article missing the not-peer-reviewed banner")
     if status == "corrected" and "status-banner status-corrected" not in page:

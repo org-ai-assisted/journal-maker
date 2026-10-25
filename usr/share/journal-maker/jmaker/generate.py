@@ -233,8 +233,9 @@ def load_article(adir):
         m[key] = int(val)
         if m[key] < 1:
             raise BuildError("%s/meta.toml: %s must be a positive integer" % (adir, key))
-    if "keywords" in m and not isinstance(m["keywords"], list):
-        raise BuildError("%s/meta.toml: keywords must be a list" % adir)
+    if "keywords" in m and (not isinstance(m["keywords"], list)
+                            or not all(isinstance(k, str) for k in m["keywords"])):
+        raise BuildError("%s/meta.toml: keywords must be a list of strings" % adir)
     if "subjects" in m and not isinstance(m["subjects"], list):
         raise BuildError("%s/meta.toml: subjects must be a list" % adir)
     for a in m["authors"]:
@@ -354,7 +355,7 @@ def _sanitize_html(frag):
 # prose, not a plaintext double hyphen). Skip code so a " -- " argument separator
 # in a sample survives. Pandoc's smart stays OFF so quotes are left straight.
 _HTML_CODE_RE = re.compile(r"<(pre|code)\b[^>]*>.*?</\1>", re.I | re.S)
-_MD_CODE_RE = re.compile(r"```.*?```|`[^`\n]+`", re.S)
+_MD_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.S)
 _EN_DASH = chr(0x2013)  # literal only at runtime; source byte sequence is ASCII
 
 
@@ -415,11 +416,14 @@ def md_to_pdf(m, journal, out_pdf):
     doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
     doc = _endash_md(meta_block + doi_line + m["_body_md"])
     # -raw_tex: author raw TeX (e.g. \input{/etc/passwd}) is not passed to the
-    # engine. openin_any/openout_any=p additionally bar the engine from reading
-    # or writing files outside the tree, in case any TeX slips through.
+    # engine. -raw_attribute: a fenced ```{=latex} / ```{=html} block is literal
+    # text, not a raw passthrough to the engine (disabling raw_tex alone does not
+    # cover the raw_attribute syntax). Mirrors md_to_html_fragment's reader.
+    # openin_any/openout_any=p additionally bar the engine from reading or
+    # writing files outside the tree, in case any TeX slips through.
     env = dict(os.environ, openin_any="p", openout_any="p")
     _run([
-        "pandoc", "-f", "markdown-raw_tex-smart", "-o", out_pdf,
+        "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute", "-o", out_pdf,
         "--pdf-engine=pdflatex",
         "--resource-path", m["_dir"],
         "-V", "geometry:margin=1in",
@@ -598,19 +602,43 @@ def _page(lang, head_title, description, canonical, extra_head, body,
 _REF_URL_RE = re.compile(r'(?<![">])(https?://[^\s<]+)')
 
 
+def _anchor(href_url, text=None, trail=""):
+    # Linkify runs AFTER _sanitize_html on pandoc output, so '&', '<', '>' are
+    # already entity-escaped -- re-escaping would double them (&amp; -> &amp;amp;).
+    # Only '"' is left literal by pandoc in body text, and an unescaped '"' here
+    # would close the href early and smuggle an attribute past the sanitizer, so
+    # neutralize just that one.
+    if text is None:
+        text = href_url
+
+    def q(s):
+        return s.replace('"', "&quot;")
+    return '<a href="%s">%s</a>%s' % (q(href_url), q(text), trail)
+
+
 def _linkify_refs(refs):
     """Turn plain-text DOIs and URLs in reference entries into links."""
     refs = re.sub(
         r'\bdoi:\s*(10\.[^\s<]+)',
-        lambda x: 'doi: <a href="https://doi.org/%s">%s</a>'
-        % (x.group(1).rstrip("."), x.group(1).rstrip(".")), refs, flags=re.I)
+        lambda x: 'doi: ' + _anchor("https://doi.org/" + x.group(1).rstrip("."),
+                                    x.group(1).rstrip(".")), refs, flags=re.I)
 
     def _url(x):
         url, trail = x.group(1), ""
-        while url and url[-1] in ").,;":
-            trail = url[-1] + trail
-            url = url[:-1]
-        return '<a href="%s">%s</a>%s' % (url, url, trail)
+        # Strip trailing sentence punctuation, but keep a ')' that closes a '('
+        # inside the URL itself (e.g. a Wikipedia '..._(disambiguation)' link).
+        while url:
+            ch = url[-1]
+            if ch in ".,;":
+                trail = ch + trail
+                url = url[:-1]
+                continue
+            if ch == ")" and url.count("(") < url.count(")"):
+                trail = ch + trail
+                url = url[:-1]
+                continue
+            break
+        return _anchor(url, trail=trail)
     return _REF_URL_RE.sub(_url, refs)
 
 
@@ -630,7 +658,13 @@ def _linkify_citations(body_html):
         seen.add(n)
         return ('<a class="cite" id="cite-%s" href="#ref-%s">[%s]</a>'
                 % (n, n, n))
-    head = re.sub(r'\[(\d+)\]', _cite, head)
+    # Only a lone [n] is a citation, and only OUTSIDE code spans -- so an array
+    # index such as arr[2] in a <code> block is not linkified. Combined/range
+    # forms ([1, 2], [1-3]) are intentionally NOT auto-linkified: they are
+    # indistinguishable from an ordinary prose number range (a byte range
+    # [0-15], a coordinate [3, 4]) and guessing wrong fails the build.
+    head = _sub_outside(_HTML_CODE_RE,
+                        lambda s: re.sub(r"\[(\d+)\]", _cite, s), head)
 
     def _refp(x):
         n = x.group(1)
@@ -715,7 +749,7 @@ def _jsonld(m, journal, landing_url):
         "datePublished": m["date"],
         "creativeWorkStatus": _STATUS_SCHEMA[m["status"]],
         "isAccessibleForFree": True,
-        "publisher": {"@type": "Organization", "name": journal["title"]},
+        "publisher": {"@type": "Organization", "name": journal["publisher"]},
         "url": landing_url,
     }
     if m.get("doi"):
