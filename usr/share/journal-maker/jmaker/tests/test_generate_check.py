@@ -554,6 +554,12 @@ class TestRefLinksAndMeta(unittest.TestCase):
         out = g._linkify_citations(src)
         self.assertIn('href="https://doi.org/10.1109/ABC.2020.123"', out)
 
+    def test_csp_meta_present(self):
+        page = g.render_homepage([], dict(JOURNAL), [])
+        self.assertIn("Content-Security-Policy", page)
+        self.assertIn("default-src 'none'", page)
+        self.assertIn("style-src 'self'", page)
+
     def test_opengraph_tags(self):
         og = g._opengraph({"title": "T"}, {"title": "J"}, "https://e.example/x/",
                           "An abstract.")
