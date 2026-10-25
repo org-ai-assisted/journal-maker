@@ -677,6 +677,13 @@ class TestStatus(unittest.TestCase):
                 + "<pre><code># TODO: handle EOF</code></pre>")
         self.assertEqual(self._lint(page), [])
 
+    def test_published_numeric_entity_todo_marker_errors(self):
+        # Regression: a visible marker whose colon is a numeric entity (TODO&#58;,
+        # as a browser renders "TODO:") must still block -- the scan decodes
+        # numeric entities, not just the fixed named set in _unescape.
+        page = self._META % "published" + "<p><strong>TODO&#58;</strong> fix</p>"
+        self.assertTrue(any("TODO edit-marker" in m for m in self._lint(page)))
+
     def test_published_todo_group_plaintext_not_flagged(self):
         # Non-bold "TODO Group" (the FOSS org) must still pass the broadened scan.
         page = self._META % "published" + "<p>maintained by the TODO Group.</p>"

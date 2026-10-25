@@ -21,6 +21,7 @@ does not false-positive and hex-encoded names are normalized. qpdf is required;
 its absence is an ERROR (cannot verify), never a silent pass.
 """
 
+import html
 import json
 import os
 import re
@@ -233,7 +234,10 @@ def check_release_state(page, page_path, f):
     # in ANY form -- scan the tag-stripped, code-free text so a bold-dropped marker
     # is caught and a code example's "# TODO:" is not.
     if status in ("published", "corrected"):
-        marker_text = _text_only(_CODE_RE.sub(" ", page))
+        # html.unescape decodes numeric AND named entities, so an encoded colon
+        # (TODO&#58;) in a visible marker cannot slip past the regex; _text_only's
+        # _unescape covers only a fixed named-entity set.
+        marker_text = html.unescape(_text_only(_CODE_RE.sub(" ", page)))
         if _EDIT_MARKER_RE.search(marker_text):
             f.err(page_path, "%s article still has TODO edit-marker(s); "
                   "resolve them or keep status=draft" % status)
