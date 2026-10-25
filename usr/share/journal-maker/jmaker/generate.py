@@ -603,13 +603,17 @@ _REF_URL_RE = re.compile(r'(?<![">])(https?://[^\s<]+)')
 
 
 def _anchor(href_url, text=None, trail=""):
-    # Escape the URL into BOTH the href attribute and the visible text: linkify
-    # runs AFTER _sanitize_html, so an unescaped '"' here would close the href
-    # early and smuggle an event-handler attribute past the sanitizer.
+    # Linkify runs AFTER _sanitize_html on pandoc output, so '&', '<', '>' are
+    # already entity-escaped -- re-escaping would double them (&amp; -> &amp;amp;).
+    # Only '"' is left literal by pandoc in body text, and an unescaped '"' here
+    # would close the href early and smuggle an attribute past the sanitizer, so
+    # neutralize just that one.
     if text is None:
         text = href_url
-    return '<a href="%s">%s</a>%s' % (html.escape(href_url, quote=True),
-                                      html.escape(text, quote=True), trail)
+
+    def q(s):
+        return s.replace('"', "&quot;")
+    return '<a href="%s">%s</a>%s' % (q(href_url), q(text), trail)
 
 
 def _linkify_refs(refs):
@@ -647,47 +651,20 @@ def _linkify_citations(body_html):
     refs = "" if mo is None else body_html[mo.start():]
     seen: set = set()
 
-    def _one(n, bracket):
-        # bracket=True keeps the historical single-cite form <a>[n]</a>; False
-        # links just the number, for use inside a combined [1, 2] / [1-3] group.
-        show = "[%s]" % n if bracket else n
-        if n in seen:
-            return '<a class="cite" href="#ref-%s">%s</a>' % (n, show)
-        seen.add(n)
-        return ('<a class="cite" id="cite-%s" href="#ref-%s">%s</a>'
-                % (n, n, show))
-
     def _cite(x):
-        inner = x.group(1)
-        if re.fullmatch(r"\d+", inner):
-            return _one(inner, True)
-        # Combined/range bracket (e.g. [1, 2] or [1-3]): linkify each number,
-        # expanding N-M ranges, preserving the original separators.
-        out = []
-        for part in re.split(r"(\s*,\s*)", inner):
-            rng = re.fullmatch(r"(\s*)(\d+)\s*-\s*(\d+)(\s*)", part)
-            if rng:
-                lo, hi = int(rng.group(2)), int(rng.group(3))
-                if lo <= hi <= lo + 50:
-                    out.append(rng.group(1)
-                               + "-".join(_one(str(i), False)
-                                          for i in range(lo, hi + 1))
-                               + rng.group(4))
-                    continue
-            num = re.fullmatch(r"(\s*)(\d+)(\s*)", part)
-            if num:
-                out.append(num.group(1) + _one(num.group(2), False)
-                           + num.group(3))
-                continue
-            out.append(part)  # a separator, or an unexpected token
-        return "[" + "".join(out) + "]"
-
-    # Only OUTSIDE code spans, so an array index such as arr[2] in a <code>
-    # block is never turned into a citation.
-    head = _sub_outside(
-        _HTML_CODE_RE,
-        lambda s: re.sub(r"\[\s*(\d+(?:\s*[,\-]\s*\d+)*)\s*\]", _cite, s),
-        head)
+        n = x.group(1)
+        if n in seen:
+            return '<a class="cite" href="#ref-%s">[%s]</a>' % (n, n)
+        seen.add(n)
+        return ('<a class="cite" id="cite-%s" href="#ref-%s">[%s]</a>'
+                % (n, n, n))
+    # Only a lone [n] is a citation, and only OUTSIDE code spans -- so an array
+    # index such as arr[2] in a <code> block is not linkified. Combined/range
+    # forms ([1, 2], [1-3]) are intentionally NOT auto-linkified: they are
+    # indistinguishable from an ordinary prose number range (a byte range
+    # [0-15], a coordinate [3, 4]) and guessing wrong fails the build.
+    head = _sub_outside(_HTML_CODE_RE,
+                        lambda s: re.sub(r"\[(\d+)\]", _cite, s), head)
 
     def _refp(x):
         n = x.group(1)

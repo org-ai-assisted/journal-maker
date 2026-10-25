@@ -173,7 +173,9 @@ def _pdf_text(pdf_path):
     try:
         r = subprocess.run(["pdftotext", "-q", pdf_path, "-"],
                            capture_output=True, text=True, timeout=120)
-    except OSError as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
+        # SubprocessError covers TimeoutExpired (a hung pdftotext); it is NOT an
+        # OSError, so it must be named explicitly or it escapes as a traceback.
         raise ZenodoError("pdftotext failed on %s: %s" % (pdf_path, exc))
     return r.stdout
 
@@ -208,7 +210,9 @@ def publish(article_dir, pdf_path, base, token):
     doi = state.get("doi", "")
     if not doi:
         raise ZenodoError("no reserved DOI in .zenodo.json; re-run 'zenodo reserve'")
-    if doi not in _pdf_text(pdf_path):
+    # Whole-token match so a reserved DOI (e.g. ...zenodo.123) is not satisfied by
+    # a different one that merely contains it (...zenodo.1234).
+    if not re.search(r"(?<![\w.])%s(?![\w.])" % re.escape(doi), _pdf_text(pdf_path)):
         raise ZenodoError(
             "%s does not contain the reserved DOI %s; refusing to publish a PDF "
             "that is not this article's camera-ready build (rebuild the site "

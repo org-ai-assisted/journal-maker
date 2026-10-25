@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -Bsu
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 
@@ -301,6 +302,42 @@ class TestZenodo(unittest.TestCase):
                 fh.write(b"%PDF-1.4 dummy")
             self.assertEqual(zenodo.publish(d, pdf, zenodo.SANDBOX, "tok"), 0)
         self.assertEqual(len(calls), 2)
+
+    def test_publish_rejects_prefix_doi(self):
+        # A PDF whose only DOI-like token is a SUPERSTRING of the reserved DOI
+        # (10.5281/zenodo.123 vs ...1234) must not be accepted.
+        from jmaker import zenodo
+
+        def boom(*a, **k):
+            raise RuntimeError("_api must not be called when refusing")
+        orig_api, orig_txt = zenodo._api, zenodo._pdf_text
+        zenodo._api = boom
+        zenodo._pdf_text = lambda p: "DOI: 10.5281/zenodo.1234\n"
+        self.addCleanup(lambda: setattr(zenodo, "_api", orig_api))
+        self.addCleanup(lambda: setattr(zenodo, "_pdf_text", orig_txt))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
+                json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.123",
+                           "bucket": "https://sandbox.zenodo.org/api/files/x",
+                           "base": zenodo.SANDBOX}, fh)
+            pdf = os.path.join(d, "a.pdf")
+            with open(pdf, "wb") as fh:
+                fh.write(b"%PDF-1.4 dummy")
+            with self.assertRaises(zenodo.ZenodoError):
+                zenodo.publish(d, pdf, zenodo.SANDBOX, "tok")
+
+    def test_pdf_text_timeout_is_zenodo_error(self):
+        # A hung pdftotext raises TimeoutExpired (not an OSError); it must surface
+        # as a ZenodoError, not an uncaught traceback.
+        from jmaker import zenodo
+
+        def timeout(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="pdftotext", timeout=120)
+        orig = subprocess.run
+        subprocess.run = timeout
+        self.addCleanup(lambda: setattr(subprocess, "run", orig))
+        with self.assertRaises(zenodo.ZenodoError):
+            zenodo._pdf_text("/nonexistent.pdf")
 
 
 class TestLoading(unittest.TestCase):
@@ -725,16 +762,26 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertNotIn('href="#ref-2"', out)
         self.assertIn("<code>arr[2]</code>", out)
 
-    def test_linkify_citations_combined_and_range(self):
-        # [1, 2] and [3-5] linkify every number so parity sees them cited.
-        src = ("<p>a [1, 2] b [3-5].</p><h2>References</h2>"
-               "<p>[1] A.</p><p>[2] B.</p><p>[3] C.</p><p>[4] D.</p><p>[5] E.</p>")
+    def test_linkify_citations_prose_range_not_linkified(self):
+        # A bracketed number RANGE/LIST in prose (a byte range, a coordinate) is
+        # ambiguous with a combined citation, so it must NOT be auto-linkified --
+        # doing so would invent dangling citations and fail the parity gate.
+        src = ("<p>bytes [0-15] and entry [3, 4].</p>"
+               "<h2>References</h2><p>[1] A.</p>")
         out = g._linkify_citations(src)
-        for n in ("1", "2", "3", "4", "5"):
-            self.assertIn('href="#ref-%s"' % n, out)
-        f = c.Findings()
-        c.check_citation_parity(out, "p", f)
-        self.assertEqual(f.errors, [])
+        self.assertNotIn('href="#ref-0"', out)
+        self.assertNotIn('href="#ref-3"', out)
+        self.assertIn("[0-15]", out)       # left as plain prose
+        self.assertIn("[3, 4]", out)
+
+    def test_anchor_does_not_double_escape(self):
+        # pandoc already entity-escaped '&'; _anchor must not turn &amp; into
+        # &amp;amp;.
+        src = ("<p>x [1].</p><h2>References</h2>"
+               "<p>[1] P. https://e.example/s?a=1&amp;b=2</p>")
+        out = g._linkify_citations(src)
+        self.assertIn('href="https://e.example/s?a=1&amp;b=2"', out)
+        self.assertNotIn("&amp;amp;", out)
 
     def test_csp_meta_present(self):
         page = g.render_homepage([], dict(JOURNAL), [])
