@@ -363,10 +363,42 @@ def check_no_internal_refs(out_dir, f):
                           "published output (journal is vendor-neutral)" % tok)
 
 
+# Project names the journal stays neutral about: no mention in served content
+# unless the exact phrase is allow-listed (journal.toml allow_vendor_mentions,
+# emitted to _site/.github/vendor-allowlist.txt by the build).
+_VENDOR_TOKENS = ("kicksecure", "whonix")
+
+
+def check_no_vendor_refs(out_dir, f):
+    """Fail on any Kicksecure/Whonix mention in served text that is not covered
+    by an allow-listed phrase (de-project-ification is enforced, not trusted)."""
+    allow = []
+    ap = os.path.join(out_dir, ".github", "vendor-allowlist.txt")
+    if os.path.isfile(ap):
+        with open(ap, encoding="utf-8") as fh:
+            allow = [ln.strip().lower() for ln in fh if ln.strip()]
+    for root, _dirs, files in os.walk(out_dir):
+        for name in files:
+            if os.path.splitext(name)[1].lower() not in _TEXT_EXT:
+                continue
+            path = os.path.join(root, name)
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                low = fh.read().lower()
+            for phrase in allow:            # remove allow-listed phrases first
+                low = low.replace(phrase, " ")
+            for tok in _VENDOR_TOKENS:
+                if tok in low:
+                    f.err(path, "non-allowlisted mention of %r in published "
+                          "output (journal is vendor-neutral; add the exact "
+                          "phrase to journal.toml allow_vendor_mentions if "
+                          "intended)" % tok)
+
+
 def check_site(out_dir):
     f = Findings()
     check_ascii(out_dir, f)
     check_no_internal_refs(out_dir, f)
+    check_no_vendor_refs(out_dir, f)
     if not os.path.isfile(os.path.join(out_dir, "index.html")):
         f.err(out_dir, "missing homepage index.html")
     if not os.path.isfile(os.path.join(out_dir, "robots.txt")):

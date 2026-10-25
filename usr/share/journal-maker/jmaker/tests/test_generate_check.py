@@ -777,6 +777,39 @@ class TestFooterNav(unittest.TestCase):
             self.assertEqual(len(g.load_journal(jt)["footer_links"]), 1)
 
 
+class TestNoVendorRefs(unittest.TestCase):
+    def _run(self, text, allow=()):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".github"))
+            with open(os.path.join(d, ".github", "vendor-allowlist.txt"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("".join(a + "\n" for a in allow))
+            with open(os.path.join(d, "index.html"), "w", encoding="utf-8") as fh:
+                fh.write(text)
+            f = c.Findings()
+            c.check_no_vendor_refs(d, f)
+            return [m for _l, _p, m in f.errors]
+
+    def test_whonix_mention_flagged(self):
+        self.assertTrue(self._run("<p>built on Whonix</p>"))
+
+    def test_kicksecure_mention_flagged(self):
+        self.assertTrue(self._run("<p>see Kicksecure</p>"))
+
+    def test_allowlisted_phrase_passes(self):
+        self.assertEqual(
+            self._run('<p>cites the Whonix security guide [3]</p>',
+                      allow=["Whonix security guide"]), [])
+
+    def test_standalone_still_flagged_despite_allowlist(self):
+        # an allow-listed phrase does not pardon a separate bare mention
+        self.assertTrue(self._run("<p>Whonix security guide. Also Whonix.</p>",
+                                  allow=["Whonix security guide"]))
+
+    def test_clean_passes(self):
+        self.assertEqual(self._run("<p>neutral android content</p>"), [])
+
+
 class TestNoInternalRefs(unittest.TestCase):
     def _run(self, text):
         with tempfile.TemporaryDirectory() as d:
