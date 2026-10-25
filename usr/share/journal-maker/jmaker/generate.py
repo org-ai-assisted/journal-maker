@@ -410,6 +410,11 @@ def md_to_pdf(m, journal, out_pdf):
         "date: %s\n"
         "abstract: %s\n"
         "documentclass: article\n"
+        # lmodern gives Type-1 (vector) glyphs; without it pdflatex can fall back
+        # to Type-3 bitmap fonts that render poorly and defeat text extraction /
+        # Scholar indexing (check.py's pdffonts gate rejects Type 3).
+        "header-includes:\n"
+        "  - \\usepackage{lmodern}\n"
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
@@ -666,13 +671,24 @@ def _linkify_citations(body_html):
     head = _sub_outside(_HTML_CODE_RE,
                         lambda s: re.sub(r"\[(\d+)\]", _cite, s), head)
 
-    def _refp(x):
-        n = x.group(1)
-        back = ('<a class="backref" href="#cite-%s" '
-                'aria-label="back to citation">&#8617;</a>' % n) if n in seen \
-            else ""
-        return '<p id="ref-%s">[%s] %s' % (n, n, back)
-    refs = re.sub(r'<p>\s*\[(\d+)\]', _refp, refs)
+    def _refs_to_ol(m):
+        def _li(x):
+            n = x.group(1)
+            content = x.group(2).rstrip()
+            back = ('<a class="backref" href="#cite-%s" '
+                    'aria-label="back to citation">&#8617;</a> ' % n) if n in seen \
+                else ""
+            # Emit the visible "[n]" as literal text, NOT a CSS list counter, so the
+            # displayed number always equals the citation key n -- even when the
+            # reference list is not authored in 1,2,3 order.
+            return '<li id="ref-%s">[%s] %s%s</li>' % (n, n, back, content)
+        lis = re.sub(r'<p>\s*\[(\d+)\]\s*(.*?)</p>\s*', _li, m.group(0), flags=re.S)
+        return '\n<ol class="references">\n' + lis.rstrip() + '\n</ol>\n'
+    # Convert ONLY the first consecutive run of reference paragraphs (the block
+    # right after the References heading) into one <ol>; a stray "[k]" paragraph
+    # elsewhere is not pulled in, and no reference <li> is ever left outside a list.
+    refs = re.sub(r'(?:<p>\s*\[\d+\]\s*.*?</p>\s*)+', _refs_to_ol, refs,
+                  count=1, flags=re.S)
     return head + _linkify_refs(refs)
 
 
@@ -1148,9 +1164,12 @@ def _is_within(path, parent):
         return False
 
 
-def build(articles_dir, journal_toml, out_dir, skip_pdf=False, no_index=False):
+def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     journal = load_journal(journal_toml)
-    journal["_no_index"] = no_index
+    # Non-indexable by DEFAULT: a draft or interim host must never be crawled.
+    # Indexability is an explicit, trust-bearing opt-in (--publish) for the
+    # canonical host only.
+    journal["_no_index"] = not publish
 
     # The output dir is wiped (rmtree); refuse only when that would DELETE a
     # source -- out == / contains articles or the content root, or out is inside

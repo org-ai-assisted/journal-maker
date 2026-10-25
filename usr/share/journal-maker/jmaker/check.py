@@ -254,7 +254,7 @@ def check_citation_parity(page, page_path, f):
     a duplicate reference id. Works on linkified anchors, falling back to the
     visible [n] markers in the body when a page has no reference links.
     """
-    defined = re.findall(r'<p id="ref-(\d+)">', page)
+    defined = re.findall(r'<li id="ref-(\d+)">', page)
     dups = sorted({n for n in defined if defined.count(n) > 1}, key=int)
     if dups:
         f.err(page_path, "duplicate reference id(s): %s"
@@ -282,6 +282,18 @@ def check_citation_parity(page, page_path, f):
               % ", ".join("[%s]" % n for n in uncited))
 
 
+def _has_type3_font(pdffonts_output):
+    """True if pdffonts output lists any Type 3 (bitmap) font.
+
+    pdffonts prints a two-line header then one row per font; the 'type' column
+    reads 'Type 3' for a bitmap font (vector fonts read 'Type 1', 'Type 1C',
+    'TrueType', 'CID ...'). Pure, so the detection is unit-testable without a
+    crafted Type-3 PDF.
+    """
+    rows = pdffonts_output.splitlines()[2:]
+    return any(re.search(r"\bType 3\b", row) for row in rows)
+
+
 def check_pdf(path, f):
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
@@ -302,6 +314,22 @@ def check_pdf(path, f):
             f.err(path, "PDF has little/no extractable text (not searchable?)")
     else:
         f.warn(path, "pdftotext absent; cannot verify searchable text")
+
+    # Type-3 (bitmap) fonts render poorly and break text extraction / Scholar
+    # indexing. A camera-ready PDF must embed only vector fonts (the LaTeX build
+    # pins lmodern). pdffonts ships with poppler-utils, as pdftotext does.
+    if shutil.which("pdffonts"):
+        r = subprocess.run(["pdffonts", path], capture_output=True, text=True)
+        if r.returncode != 0:
+            # Fail closed: an errored pdffonts leaves empty stdout, which would
+            # otherwise read as "no Type 3 font" and bypass the gate.
+            f.err(path, "pdffonts exited %d; cannot verify font types (fail closed)"
+                        % r.returncode)
+        elif _has_type3_font(r.stdout):
+            f.err(path, "PDF embeds a Type 3 (bitmap) font; rebuild with lmodern "
+                        "(vector fonts) so the PDF stays searchable/indexable")
+    else:
+        f.warn(path, "pdffonts absent; cannot verify font types")
 
     # supply-chain: no active content. Parse the STRUCTURE (qpdf --json) and walk
     # for dangerous dictionary keys / auto-exec action types -- NOT a substring
@@ -418,6 +446,48 @@ def check_no_vendor_refs(out_dir, f):
                           "or journal.toml page_allow_vendor_mentions)" % tok)
 
 
+def check_index_policy(out_dir, f):
+    """robots.txt and the pages' noindex meta must agree, and a PUBLISHED
+    (indexable) site must carry no leftover TODO edit-marker on ANY page
+    (articles AND standalone pages). A mismatch between the two signals, or an
+    indexable site shipping an unresolved note, is a hard error."""
+    robots_path = os.path.join(out_dir, "robots.txt")
+    home = os.path.join(out_dir, "index.html")
+    if not (os.path.isfile(robots_path) and os.path.isfile(home)):
+        return  # the missing-file errors are raised by check_site already
+    with open(robots_path, encoding="utf-8") as fh:
+        robots = fh.read()
+    with open(home, encoding="utf-8") as fh:
+        noindexed = 'name="robots" content="noindex"' in fh.read()
+    allows = re.search(r"(?mi)^Allow: /\s*$", robots) is not None
+    disallows = re.search(r"(?mi)^Disallow: /\s*$", robots) is not None
+    if noindexed:
+        if allows or not disallows:
+            f.err(robots_path, "pages carry a noindex meta but robots.txt does "
+                               "not Disallow: / -- index policy is inconsistent")
+        return
+    if disallows or not allows:
+        f.err(robots_path, "no noindex meta (indexable build) but robots.txt "
+                           "does not Allow: / -- index policy is inconsistent")
+    # An indexable, published site must not ship unresolved edit-markers on its
+    # STANDALONE pages. Article pages carry article_status and are governed by
+    # check_release_state (status-aware: a draft article may legitimately keep
+    # TODO notes under its not-peer-reviewed banner), so skip them here.
+    for root, _dirs, files in os.walk(out_dir):
+        for name in files:
+            if not name.endswith(".html"):
+                continue
+            p = os.path.join(root, name)
+            with open(p, encoding="utf-8") as fh:
+                page = fh.read()
+            if _STATUS_RE.search(page):
+                continue
+            marker = html.unescape(_text_only(_CODE_RE.sub(" ", page)))
+            if _EDIT_MARKER_RE.search(marker):
+                f.err(p, "published (indexable) site still has a TODO edit-marker on "
+                         "a standalone page; resolve it or build without --publish")
+
+
 def check_site(out_dir):
     f = Findings()
     check_ascii(out_dir, f)
@@ -434,6 +504,7 @@ def check_site(out_dir):
         with open(sitemap, "r", encoding="utf-8") as fh:
             if "<loc>" not in fh.read():
                 f.err(sitemap, "sitemap.xml lists no URLs")
+    check_index_policy(out_dir, f)
 
     found = 0
     for root, _dirs, files in os.walk(out_dir):
