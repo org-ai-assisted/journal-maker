@@ -85,7 +85,9 @@ class TestChecker(unittest.TestCase):
                    '<p>[5] Foo.</p>')
         out = g._linkify_citations(html_in)
         self.assertIn('href="#ref-5">[5]</a>', out)
-        self.assertIn('<p id="ref-5">[5] Foo.', out)
+        self.assertIn('<p id="ref-5">[5] ', out)
+        self.assertIn('href="#cite-5"', out)   # backlink to first mention
+        self.assertIn("Foo.", out)
 
     def test_build_toc(self):
         body = ('<h2 id="a">1. Intro</h2><h2 id="b">2. Bg</h2>'
@@ -504,6 +506,70 @@ class TestStatus(unittest.TestCase):
     def test_missing_status_meta_errors(self):
         self.assertTrue(any("missing article_status" in m
                             for m in self._lint("<p>no meta</p>")))
+
+
+class TestEnDash(unittest.TestCase):
+    def test_html_prose_dash(self):
+        self.assertEqual(g._endash_html("<p>a -- b</p>"), "<p>a &ndash; b</p>")
+
+    def test_html_code_preserved(self):
+        out = g._endash_html("<code>cmd -- arg</code> x -- y")
+        self.assertIn("<code>cmd -- arg</code>", out)
+        self.assertIn("x &ndash; y", out)
+
+    def test_md_prose_dash(self):
+        self.assertEqual(g._endash_md("a -- b"), "a " + chr(0x2013) + " b")
+
+    def test_md_fence_preserved(self):
+        out = g._endash_md("```\nx -- y\n```\na -- b")
+        self.assertIn("x -- y", out)            # fenced: untouched
+        self.assertIn("a " + chr(0x2013) + " b", out)
+
+    def test_md_inline_code_preserved(self):
+        self.assertEqual(g._endash_md("run `foo -- bar` now -- then"),
+                         "run `foo -- bar` now " + chr(0x2013) + " then")
+
+
+class TestRefLinksAndMeta(unittest.TestCase):
+    def test_citation_backlink_and_anchor(self):
+        src = ("<p>see [1] and again [1].</p>"
+               "<h2>References</h2><p>[1] A. Author. Title.</p>")
+        out = g._linkify_citations(src)
+        self.assertIn('id="cite-1"', out)          # first mention anchored
+        self.assertEqual(out.count('id="cite-1"'), 1)
+        self.assertIn('href="#ref-1"', out)        # forward link
+        self.assertIn('href="#cite-1"', out)        # backlink from the entry
+        self.assertIn('<p id="ref-1">', out)
+
+    def test_reference_url_linkified(self):
+        src = ("<p>x [1].</p><h2>References</h2>"
+               "<p>[1] Title. https://e.example/a/b (accessed).</p>")
+        out = g._linkify_citations(src)
+        self.assertIn('<a href="https://e.example/a/b">https://e.example/a/b</a>',
+                      out)
+
+    def test_reference_doi_linkified(self):
+        src = ("<p>x [1].</p><h2>References</h2>"
+               "<p>[1] Title. doi: 10.1109/ABC.2020.123.</p>")
+        out = g._linkify_citations(src)
+        self.assertIn('href="https://doi.org/10.1109/ABC.2020.123"', out)
+
+    def test_opengraph_tags(self):
+        og = g._opengraph({"title": "T"}, {"title": "J"}, "https://e.example/x/",
+                          "An abstract.")
+        self.assertIn('property="og:title" content="T"', og)
+        self.assertIn('name="twitter:card" content="summary"', og)
+
+    def test_write_feed(self):
+        with tempfile.TemporaryDirectory() as d:
+            arts = [{"volume": 1, "issue": 1, "slug": "x", "title": "T",
+                     "date": "2026-10-24", "abstract": "A long enough abstract."}]
+            g.write_feed(arts, dict(JOURNAL), d)
+            with open(os.path.join(d, "feed.xml"), encoding="utf-8") as fh:
+                xml = fh.read()
+            self.assertIn("<item>", xml)
+            self.assertIn("<title>T</title>", xml)
+            self.assertIn("2026", xml)
 
 
 if __name__ == "__main__":
