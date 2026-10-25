@@ -1040,20 +1040,20 @@ def render_homepage(articles, journal, pages):
     for m in articles:
         by_vol.setdefault(int(m["volume"]), []).append(m)
     for vol in sorted(by_vol, reverse=True):
-        items.append('<li><a href="v%d/index.html">Volume %d</a> '
+        items.append('<li><a href="v%d/">Volume %d</a> '
                      '(%d article%s)</li>'
                      % (vol, vol, len(by_vol[vol]),
                         "" if len(by_vol[vol]) == 1 else "s"))
     page_nav = ""
     if pages:
-        links = "\n".join('<li><a href="%s/index.html">%s</a></li>'
+        links = "\n".join('<li><a href="%s/">%s</a></li>'
                           % (slug, html.escape(title)) for slug, title in pages)
         page_nav = "<h2>About</h2>\n<ul>\n%s\n</ul>\n" % links
     body = (
         '<main id="main">\n<h1>%s</h1>\n'
         "<p>An open-access journal of computer-security research.</p>\n"
         "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n"
-        '<p><a href="browse/index.html">Browse by keyword and author</a></p>\n'
+        '<p><a href="browse/">Browse by keyword and author</a></p>\n'
         "%s</main>"
     ) % (html.escape(journal["title"]), "\n".join(items), page_nav)
     return _page(journal["language"], journal["title"],
@@ -1102,7 +1102,7 @@ def render_volume(vol, metas, journal):
         # so the relative link drops the leading volume segment and NO '../'.
         rel_from_volume = "/".join(rel.split("/")[1:])
         lis.append(
-            '<li><div class="atitle"><a href="%s/index.html">%s</a></div>'
+            '<li><div class="atitle"><a href="%s/">%s</a></div>'
             '<div class="ameta">%s &middot; Issue %s</div></li>'
             % (rel_from_volume, html.escape(m["title"]),
                authors, html.escape(str(m["issue"]))))
