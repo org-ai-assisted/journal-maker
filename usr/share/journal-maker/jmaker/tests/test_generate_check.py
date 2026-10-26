@@ -251,7 +251,7 @@ class TestZenodo(unittest.TestCase):
                 stdout = ""
             return R()
         orig = g._run
-        g._run = fake_run
+        setattr(g, "_run", fake_run)
         self.addCleanup(lambda: setattr(g, "_run", orig))
         m = dict(META)
         m["doi"] = ""
@@ -297,8 +297,8 @@ class TestZenodo(unittest.TestCase):
                            "bucket": "https://sandbox.zenodo.org/api/files/x",
                            "base": zenodo.SANDBOX}, fh)
             pdf = os.path.join(d, "a.pdf")
-            with open(pdf, "wb") as fh:
-                fh.write(b"%PDF-1.4 dummy")
+            with open(pdf, "wb") as pf:
+                pf.write(b"%PDF-1.4 dummy")
             with self.assertRaises(zenodo.ZenodoError) as cm:
                 zenodo.publish(d, pdf, zenodo.SANDBOX, "tok")
             self.assertIn("reserved DOI", str(cm.exception))
@@ -312,8 +312,9 @@ class TestZenodo(unittest.TestCase):
             calls.append((method, url))
             return {"doi": "10.5281/zenodo.123"}
         orig_api, orig_txt = zenodo._api, zenodo._pdf_text
-        zenodo._api = rec
-        zenodo._pdf_text = lambda p: "title ... DOI: 10.5281/zenodo.123 ... body"
+        setattr(zenodo, "_api", rec)
+        setattr(zenodo, "_pdf_text",
+                lambda p: "title ... DOI: 10.5281/zenodo.123 ... body")
         self.addCleanup(lambda: setattr(zenodo, "_api", orig_api))
         self.addCleanup(lambda: setattr(zenodo, "_pdf_text", orig_txt))
         with tempfile.TemporaryDirectory() as d:
@@ -322,8 +323,8 @@ class TestZenodo(unittest.TestCase):
                            "bucket": "https://sandbox.zenodo.org/api/files/x",
                            "base": zenodo.SANDBOX}, fh)
             pdf = os.path.join(d, "a.pdf")
-            with open(pdf, "wb") as fh:
-                fh.write(b"%PDF-1.4 dummy")
+            with open(pdf, "wb") as pf:
+                pf.write(b"%PDF-1.4 dummy")
             self.assertEqual(zenodo.publish(d, pdf, zenodo.SANDBOX, "tok"), 0)
         self.assertEqual(len(calls), 2)
 
@@ -345,8 +346,8 @@ class TestZenodo(unittest.TestCase):
                            "bucket": "https://sandbox.zenodo.org/api/files/x",
                            "base": zenodo.SANDBOX}, fh)
             pdf = os.path.join(d, "a.pdf")
-            with open(pdf, "wb") as fh:
-                fh.write(b"%PDF-1.4 dummy")
+            with open(pdf, "wb") as pf:
+                pf.write(b"%PDF-1.4 dummy")
             with self.assertRaises(zenodo.ZenodoError):
                 zenodo.publish(d, pdf, zenodo.SANDBOX, "tok")
 
@@ -373,7 +374,7 @@ class TestZenodo(unittest.TestCase):
             stdout = "DOI: 10.5281/zenodo.123"
             stderr = "Syntax Error: broken xref"
         orig = subprocess.run
-        subprocess.run = lambda *a, **k: R()
+        setattr(subprocess, "run", lambda *a, **k: R())
         self.addCleanup(lambda: setattr(subprocess, "run", orig))
         with self.assertRaises(zenodo.ZenodoError):
             zenodo._pdf_text("/some.pdf")

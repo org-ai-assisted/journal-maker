@@ -94,7 +94,10 @@ def _api(method, url, token, payload=None, raw=None, ctype=None):
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        # url is an internally-built https Zenodo API endpoint (a SANDBOX/
+        # production constant or a Zenodo bucket URL from its own response),
+        # never a user- or file-scheme input -- so B310 does not apply.
+        with urllib.request.urlopen(req, timeout=120) as resp:  # nosec B310
             body = resp.read()
     except urllib.error.HTTPError as exc:
         raise ZenodoError("%s %s -> HTTP %s: %s"
