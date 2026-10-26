@@ -2,7 +2,7 @@
 """journal-maker command-line entry point.
 
 Subcommands:
-  build    articles/ + journal.toml -> static site (HTML + PDF + meta + sitemap)
+  build    articles/ + site.toml -> static site (HTML + PDF + meta + sitemap)
   check    gate a built site: Scholar compliance + PDF sanity + PDF security
   vtscan   VirusTotal every built asset before publishing (checklist + results)
   dewiki   MediaWiki source -> Markdown drafting starting point
@@ -79,7 +79,7 @@ def build_parser():
 
     pbuild = sub.add_parser("build", help="build the static site")
     pbuild.add_argument("--articles", default="articles")
-    pbuild.add_argument("--journal", default="journal.toml")
+    pbuild.add_argument("--journal", default="site.toml")
     pbuild.add_argument("--out", default="_site")
     pbuild.add_argument("--skip-pdf", action="store_true",
                         help="skip PDF generation (fast HTML-only iteration)")
@@ -107,7 +107,7 @@ def build_parser():
     pz = sub.add_parser("zenodo", help="mint a Zenodo DOI for an article")
     pz.add_argument("action", choices=["reserve", "publish"])
     pz.add_argument("article_dir")
-    pz.add_argument("--journal", default="journal.toml")
+    pz.add_argument("--journal", default="site.toml")
     pz.add_argument("--pdf", default=None, help="PDF to upload (publish action)")
     pz.add_argument("--sandbox", action="store_true",
                     help="use sandbox.zenodo.org for a dry run")

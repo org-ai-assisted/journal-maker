@@ -409,7 +409,7 @@ def check_no_internal_refs(out_dir, f):
 # Project names the journal stays neutral about: no mention in served content
 # unless the exact phrase is allow-listed. The allowlist is PER FILE -- a
 # manifest {dir-key -> [phrases]} emitted to _site/.github/vendor-allowlist.json
-# (article meta.toml allow_vendor_mentions + journal.toml page_allow_vendor_mentions).
+# (article meta.toml allow_vendor_mentions + site.toml page_allow_vendor_mentions).
 _VENDOR_TOKENS = ("kicksecure", "whonix")
 
 
@@ -444,7 +444,7 @@ def check_no_vendor_refs(out_dir, f):
                     f.err(path, "non-allowlisted mention of %r in published "
                           "output (journal is vendor-neutral; add the exact "
                           "phrase to this article's meta.toml allow_vendor_mentions "
-                          "or journal.toml page_allow_vendor_mentions)" % tok)
+                          "or site.toml page_allow_vendor_mentions)" % tok)
 
 
 def check_index_policy(out_dir, f):
