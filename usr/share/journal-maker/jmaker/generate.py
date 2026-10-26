@@ -1192,6 +1192,23 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
 
     articles = [load_article(d) for d in adirs]
 
+    # Flat routes share one <slug>/ namespace, so an article slug must not
+    # collide with another article, a standalone page, or the browse/assets
+    # routes -- the build would otherwise overwrite one with another and the
+    # homepage/sitemap would point at the wrong target. Reject up front.
+    page_slugs = [fn[:-3] for fn in sorted(os.listdir(pages_abs))
+                  if fn.endswith(".md")] if os.path.isdir(pages_abs) else []
+    route_owner = {}
+    claims = ([("reserved route", r) for r in ("browse", "assets")]
+              + [(m["_dir"], _rel_dir(m)) for m in articles]
+              + [("page %s.md" % s, s) for s in page_slugs])
+    for owner, route in claims:
+        if route in route_owner:
+            raise BuildError("route collision at %r: %s and %s"
+                             % (route, route_owner[route], owner))
+        route_owner[route] = owner
+    article_routes = [_rel_dir(m) for m in articles]
+
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir)
@@ -1203,13 +1220,8 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     for i, a in enumerate(ordered):
         nbr[_rel_dir(a)] = (ordered[i - 1] if i > 0 else None,
                             ordered[i + 1] if i < len(ordered) - 1 else None)
-    seen = {}
     for m in articles:
         rel_dir, pdf_name, page = render_article(m, journal, nbr.get(_rel_dir(m)))
-        if rel_dir in seen:
-            raise BuildError("duplicate route %s from %s and %s"
-                             % (rel_dir, seen[rel_dir], m["_dir"]))
-        seen[rel_dir] = m["_dir"]
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
@@ -1301,6 +1313,12 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     with open(os.path.join(gh_dir, "vendor-allowlist.json"), "w",
               encoding="utf-8") as fh:
         json.dump(vendor_manifest, fh)
+    # Article-route manifest: check.py discovers article landing pages from this,
+    # NOT from an in-page marker, so discovery never depends on the very
+    # article_status meta that check_article validates (a page that lost the meta
+    # must be a HARD error, not a silently-skipped non-article).
+    with open(os.path.join(gh_dir, "articles.json"), "w", encoding="utf-8") as fh:
+        json.dump(sorted(article_routes), fh)
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
     return len(articles), out_dir

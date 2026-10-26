@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -Bsu
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -1247,28 +1248,67 @@ class TestNoIndexDefault(unittest.TestCase):
 
 
 class TestCheckSiteDiscovery(unittest.TestCase):
+    def _site(self, d, article_slug="art", pages=None):
+        jt = os.path.join(d, "journal.toml")
+        with open(jt, "w", encoding="utf-8") as fh:
+            fh.write('title = "J"\nbase_url = "https://e.example"\n'
+                     'publisher = "P"\nlicense = "All rights reserved"\n'
+                     'license_url = ""\nlanguage = "en"\n'
+                     'footer_links = [{ title = "Home", href = "./" }]\n')
+        ad = os.path.join(d, "articles", article_slug)
+        os.makedirs(ad)
+        with open(os.path.join(ad, "meta.toml"), "w", encoding="utf-8") as fh:
+            fh.write('authors = [{ name = "A" }]\ndate = "2026-10-24"\n')
+        with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+            fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                     "validation purposes here.\n\n## 1. Intro\n\nBody.\n")
+        for slug in (pages or []):
+            pdir = os.path.join(d, "pages")
+            os.makedirs(pdir, exist_ok=True)
+            with open(os.path.join(pdir, slug + ".md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# %s\n\nBody.\n" % slug)
+        return jt
+
     def test_discovers_flat_article(self):
         # Article landing pages live at a FLAT <slug>/index.html (no v<N>/i<M>);
-        # check_site must find them by their article_status meta, not by path.
+        # check_site must discover them from the build manifest, not by path.
         with tempfile.TemporaryDirectory() as d:
-            jt = os.path.join(d, "journal.toml")
-            with open(jt, "w", encoding="utf-8") as fh:
-                fh.write('title = "J"\nbase_url = "https://e.example"\n'
-                         'publisher = "P"\nlicense = "All rights reserved"\n'
-                         'license_url = ""\nlanguage = "en"\n'
-                         'footer_links = [{ title = "Home", href = "./" }]\n')
-            ad = os.path.join(d, "articles", "art")
-            os.makedirs(ad)
-            with open(os.path.join(ad, "meta.toml"), "w", encoding="utf-8") as fh:
-                fh.write('authors = [{ name = "A" }]\ndate = "2026-10-24"\n')
-            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
-                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
-                         "validation purposes here.\n\n## 1. Intro\n\nBody.\n")
+            jt = self._site(d)
             out = os.path.join(d, "s")
             g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
             self.assertTrue(os.path.isfile(os.path.join(out, "art", "index.html")))
+            self.assertTrue(os.path.isfile(
+                os.path.join(out, ".github", "articles.json")))
             _f, found = c.check_site(out)
             self.assertEqual(found, 1)
+
+    def test_discovery_independent_of_status_marker(self):
+        # An article page that LOST its article_status meta must still be
+        # discovered (via the manifest) and reported, never silently skipped --
+        # discovery cannot depend on the marker check_article validates.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            page = os.path.join(out, "art", "index.html")
+            with open(page, encoding="utf-8") as fh:
+                html_text = fh.read()
+            html_text = re.sub(r'<meta name="article_status"[^>]*>', "", html_text)
+            with open(page, "w", encoding="utf-8") as fh:
+                fh.write(html_text)
+            f, found = c.check_site(out)
+            self.assertEqual(found, 1)  # still discovered, not skipped
+            self.assertTrue(any("article_status" in m for _l, _p, m in f.items))
+
+    def test_rejects_article_slug_colliding_with_page(self):
+        # Flat namespace: an article slug that equals a standalone page slug
+        # would overwrite it -- the build must refuse.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d, article_slug="about", pages=["about"])
+            out = os.path.join(d, "s")
+            with self.assertRaises(g.BuildError):
+                g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
 
 
 if __name__ == "__main__":
