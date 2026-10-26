@@ -496,15 +496,23 @@ def check_site(out_dir):
     check_no_vendor_refs(out_dir, f)
     if not os.path.isfile(os.path.join(out_dir, "index.html")):
         f.err(out_dir, "missing homepage index.html")
-    if not os.path.isfile(os.path.join(out_dir, "robots.txt")):
+    robots_path = os.path.join(out_dir, "robots.txt")
+    no_index = False
+    if not os.path.isfile(robots_path):
         f.err(out_dir, "missing robots.txt")
+    else:
+        with open(robots_path, "r", encoding="utf-8") as fh:
+            no_index = "Disallow: /" in fh.read()
     sitemap = os.path.join(out_dir, "sitemap.xml")
     if not os.path.isfile(sitemap):
         f.err(out_dir, "missing sitemap.xml")
     else:
         with open(sitemap, "r", encoding="utf-8") as fh:
-            if "<loc>" not in fh.read():
-                f.err(sitemap, "sitemap.xml lists no URLs")
+            has_urls = "<loc>" in fh.read()
+        # A no-index site advertises no crawlable URL, so an empty sitemap is
+        # correct; only an INDEXABLE site must list its pages.
+        if not has_urls and not no_index:
+            f.err(sitemap, "sitemap.xml lists no URLs")
     check_index_policy(out_dir, f)
 
     # Article landing pages are listed in the build manifest, NOT discovered by
