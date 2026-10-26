@@ -1329,6 +1329,21 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertEqual(found, 1)  # still discovered, not skipped
             self.assertTrue(any("article_status" in m for _l, _p, m in f.items))
 
+    def test_noindex_empty_sitemap_ok_indexable_errors(self):
+        # A no-index build (default) has an empty sitemap + Disallow robots --
+        # correct, so check_site must NOT flag "lists no URLs". Flipping robots to
+        # the indexable Allow form makes the empty sitemap an error.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            f, _ = c.check_site(out)
+            self.assertFalse(any("lists no URLs" in m for _l, _p, m in f.items))
+            with open(os.path.join(out, "robots.txt"), "w", encoding="utf-8") as fh:
+                fh.write("User-agent: *\nAllow: /\n\nSitemap: s/sitemap.xml\n")
+            f2, _ = c.check_site(out)
+            self.assertTrue(any("lists no URLs" in m for _l, _p, m in f2.items))
+
     def test_rejects_article_slug_colliding_with_page(self):
         # Flat namespace: an article slug that equals a standalone page slug
         # would overwrite it -- the build must refuse.
