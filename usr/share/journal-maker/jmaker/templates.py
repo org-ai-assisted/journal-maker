@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -Bsu
-"""Static HTML skeleton + CSS for the journal site.
+"""Static HTML skeleton + CSS for the site.
 
 ASCII only. Pages are composed in generate.py; this module holds the shared
 chrome (stylesheet, site header/footer). Visual spec follows common scholarly
@@ -379,7 +379,7 @@ def site_footer(journal, root_rel):
             items.append('<a href="%s">%s</a>'
                          % (html.escape(href, quote=True),
                             html.escape(link["title"])))
-        nav = ('<nav class="footer-nav" aria-label="Journal">%s</nav>\n'
+        nav = ('<nav class="footer-nav" aria-label="Footer">%s</nav>\n'
                % " ".join(items))
     return (
         '<footer class="site">%s<p>%s.%s</p></footer>'

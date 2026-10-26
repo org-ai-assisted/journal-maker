@@ -1004,15 +1004,16 @@ def render_article(m, journal, neighbors=None):
         "%s"                                   # status line
         '<p class="actions"><a href="%s">Download PDF</a> '
         '<a class="checksum" href="%s.sha256">SHA-256</a></p>\n'
+        "%s"                                   # cite box (beside the download action)
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
-        "%s%s"                                 # toc, cite box
+        "%s"                                   # toc
         '<article class="body">\n%s\n</article>\n'
         "%s"                                   # statements (data/funding/COI)
         "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
          doi_bit, history, subjects, ccs, status_line, pdf_name, pdf_name,
-         abstract_html, toc, cite_box, body_html, statements,
+         cite_box, abstract_html, toc, body_html, statements,
          _article_nav(neighbors, root_rel), license_bit)
 
     page = _page(
@@ -1136,7 +1137,8 @@ def write_feed(articles, journal, out_dir):
            "%s\n</channel></rss>\n"
            % (html.escape(journal["title"]),
               html.escape(journal["base_url"] + "/", quote=True),
-              html.escape("Open-access computer-security research journal."),
+              html.escape("Occasional computer-security research previews, "
+                          "posted for public commentary."),
               "\n".join(items)))
     with open(os.path.join(out_dir, "feed.xml"), "w", encoding="utf-8") as fh:
         fh.write(xml)
