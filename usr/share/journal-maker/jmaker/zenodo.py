@@ -96,8 +96,10 @@ def _api(method, url, token, payload=None, raw=None, ctype=None):
     try:
         # url is an internally-built https Zenodo API endpoint (a SANDBOX/
         # production constant or a Zenodo bucket URL from its own response),
-        # never a user- or file-scheme input -- so B310 does not apply.
-        with urllib.request.urlopen(req, timeout=120) as resp:  # nosec B310
+        # never a user- or file-scheme input -- so B310 does not apply. Bare
+        # '# nosec' so the CI bandit (1.6.2) that ignores a per-test-id suffix
+        # still honors it.
+        with urllib.request.urlopen(req, timeout=120) as resp:  # nosec
             body = resp.read()
     except urllib.error.HTTPError as exc:
         raise ZenodoError("%s %s -> HTTP %s: %s"
