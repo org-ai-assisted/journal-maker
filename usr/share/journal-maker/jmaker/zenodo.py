@@ -63,9 +63,11 @@ def build_metadata(m, journal, abstract):
         # the (now orphaned) deposition.
         "prereserve_doi": True,
         "journal_title": journal["title"],
-        "journal_volume": str(m["volume"]),
-        "journal_issue": str(m["issue"]),
     }
+    if m.get("volume") is not None:
+        meta["journal_volume"] = str(m["volume"])
+    if m.get("issue") is not None:
+        meta["journal_issue"] = str(m["issue"])
     lic = m.get("license", journal.get("license", ""))
     if lic:
         meta["license"] = _LICENSE_MAP.get(lic, lic.lower())

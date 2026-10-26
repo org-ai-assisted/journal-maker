@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -Bsu
-"""Build a static, Google-Scholar-indexable journal site from Markdown.
+"""Build a static site of occasional research previews from Markdown.
 
 Contract per article:
   articles/<slug>/paper.md   -- the paper in Markdown: the H1 ('# Title') and a
@@ -8,15 +8,14 @@ Contract per article:
                                  the first section heading after the abstract.
                                  (title/abstract are parsed here, NOT meta.toml.)
   articles/<slug>/meta.toml  -- the remaining bibliographic metadata (authors,
-                                 dates, volume/issue, doi, keywords, license).
+                                 dates, doi, keywords, license).
   articles/<slug>/source.mw  -- optional pristine wiki fork (ignored by build)
   articles/<slug>/figures/   -- optional images, copied verbatim
 
 Output tree (served at the site root):
-  index.html                 -- journal homepage
-  v<N>/index.html            -- per-volume browse (every article <=2 links from home)
-  v<N>/i<M>/<slug>/index.html-- article landing page == full HTML article + meta
-  v<N>/i<M>/<slug>/<slug>.pdf-- camera-ready PDF in the SAME directory
+  index.html                 -- homepage (newest-first preview list)
+  <slug>/index.html          -- article landing page == full HTML article + meta
+  <slug>/<slug>.pdf          -- camera-ready PDF in the SAME directory
   assets/style.css, robots.txt, sitemap.xml, .nojekyll
 
 PDF and HTML both derive from meta.toml + paper.md, so citation_title always
@@ -41,20 +40,20 @@ class BuildError(Exception):
     pass
 
 
-# Publication-status model (NISO JAV subset). Default is "draft" so a new
-# article is honestly labeled not-peer-reviewed until an author DELIBERATELY
-# promotes it to "published" -- that promotion is what turns on the release-state
-# lint (no leftover TODO edit-markers). The safe state needs nothing remembered.
+# Posting-status model. Default is "draft" so a new piece is honestly labeled
+# not-peer-reviewed until an author DELIBERATELY promotes it to "posted" -- that
+# promotion is what turns on the release-state lint (no leftover TODO edit-markers).
+# The safe state needs nothing remembered. These are our own previews, posted for
+# public commentary: there is no review board and no peer review.
 STATUS_LABELS = {
     "draft": "Draft -- not peer reviewed",
-    "published": ("Published (version of record) -- editorial review only, "
-                  "not peer reviewed"),
-    "corrected": "Corrected version of record -- see correction notice",
+    "published": "Posted for comment -- not peer reviewed",
+    "corrected": "Corrected -- see correction notice",
 }
 # Short badge text per status (keep it a state keyword, not a sentence).
 _STATUS_PILL = {
     "draft": "Draft",
-    "published": "Version of record",
+    "published": "Posted",
     "corrected": "Corrected",
 }
 # schema.org creativeWorkStatus value (corrected is still a published VoR).
@@ -413,16 +412,30 @@ def md_to_pdf(m, journal, out_pdf):
     # openin_any/openout_any=p additionally bar the engine from reading or
     # writing files outside the tree, in case any TeX slips through.
     env = dict(os.environ, openin_any="p", openout_any="p")
-    # lmodern gives Type-1 (vector) glyphs instead of the Type-3 bitmaps that defeat
-    # text extraction / Scholar indexing (check.py's pdffonts gate rejects Type 3). It
-    # MUST go through --include-in-header, which inserts it into the LaTeX preamble
-    # VERBATIM: the reader runs with raw_tex disabled, so the same \usepackage via a
-    # header-includes metadata value is escaped to literal text -- not loaded, and
-    # printed as visible garbage in the PDF.
+    # Preamble additions MUST go through --include-in-header, which inserts them
+    # into the LaTeX preamble VERBATIM: the reader runs with raw_tex disabled, so
+    # the same \usepackage via a header-includes metadata value is escaped to
+    # literal text -- not loaded, and printed as visible garbage in the PDF.
+    #   - lmodern: Type-1 (vector) glyphs for sans/mono instead of Type-3 bitmaps
+    #     that defeat text extraction (check.py's pdffonts gate rejects Type 3).
+    #   - mathpazo: Palatino roman + matching math; stock texlive, no extra CI dep.
+    #     Loaded AFTER lmodern so its Palatino roman wins while sans/mono stay LM.
+    #   - \UrlBreaks / \Urlmuskip: let long bibliography URLs wrap instead of
+    #     overflowing the right margin. url's registers exist only once the package
+    #     is loaded, and pandoc inserts these header-includes BEFORE it loads
+    #     hyperref (which pulls in url) -- so the config is deferred with
+    #     \AtBeginDocument, by when url is loaded and nothing overrides it again.
     hdr = tempfile.NamedTemporaryFile(mode="w", suffix=".tex", delete=False,
                                       encoding="utf-8")
     try:
-        hdr.write("\\usepackage{lmodern}\n")
+        hdr.write(
+            "\\usepackage{lmodern}\n"
+            "\\usepackage{mathpazo}\n"
+            "\\AtBeginDocument{%\n"
+            "  \\Urlmuskip=0mu plus 1mu\\relax\n"
+            "  \\def\\UrlBreaks{\\do\\/\\do\\-\\do\\.\\do\\_\\do\\?"
+            "\\do\\&\\do\\=\\do\\#\\do\\%\\do\\;\\do\\:}%\n"
+            "}\n")
         hdr.close()
         _run([
             "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute", "-o", out_pdf,
@@ -827,6 +840,16 @@ def _subjects_line(m):
             % "; ".join(html.escape(str(s)) for s in subs))
 
 
+def _ccs_line(m):
+    # ACM CCS concept paths, kept SEPARATE from the arXiv subject class so the
+    # two taxonomies are not blended under one label.
+    concepts = m.get("ccs_concepts") or []
+    if not concepts:
+        return ""
+    return ('<p class="subjects">CCS Concepts: %s</p>\n'
+            % "; ".join(html.escape(str(c)) for c in concepts))
+
+
 def _license_footer(m, journal):
     lic = m.get("license", journal.get("license", ""))
     if not lic:
@@ -959,6 +982,7 @@ def render_article(m, journal, neighbors=None):
             html.escape(m["doi"], quote=True), html.escape(m["doi"]))
     history = _history_line(m)
     subjects = _subjects_line(m)
+    ccs = _ccs_line(m)
     cite_box = _cite_box(m, journal, landing_url, year)
     statements = _statements(m)
     license_bit = _license_footer(m, journal)
@@ -973,6 +997,7 @@ def render_article(m, journal, neighbors=None):
         '<p class="venue">%s%s</p>\n'
         "%s"                                   # article history
         "%s"                                   # subjects
+        "%s"                                   # ccs concepts
         "%s"                                   # status line
         '<p class="actions"><a href="%s">Download PDF</a> '
         '<a class="checksum" href="%s.sha256">SHA-256</a></p>\n'
@@ -983,7 +1008,7 @@ def render_article(m, journal, neighbors=None):
         "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
-         doi_bit, history, subjects, status_line, pdf_name, pdf_name,
+         doi_bit, history, subjects, ccs, status_line, pdf_name, pdf_name,
          abstract_html, toc, cite_box, body_html, statements,
          _article_nav(neighbors, root_rel), license_bit)
 

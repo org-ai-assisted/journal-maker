@@ -890,6 +890,14 @@ class TestIdentityAndCite(unittest.TestCase):
         self.assertIn("cs.CR", g._subjects_line({"subjects": ["cs.CR"]}))
         self.assertEqual(g._subjects_line({}), "")
 
+    def test_ccs_line(self):
+        # CCS concepts render under their OWN label, kept separate from subjects.
+        out = g._ccs_line({"ccs_concepts": ["Security and privacy -> X"]})
+        self.assertIn("CCS Concepts:", out)
+        self.assertIn("Security and privacy -&gt; X", out)
+        self.assertNotIn("Subjects:", out)
+        self.assertEqual(g._ccs_line({}), "")
+
     def test_license_footer(self):
         out = g._license_footer(self._M, {"license": "CC-BY-4.0",
                                           "license_url": "https://e.example/by"})
@@ -1236,6 +1244,31 @@ class TestNoIndexDefault(unittest.TestCase):
                 r = fh.read()
             self.assertIn("Allow: /", r)
             self.assertIn("Sitemap:", r)
+
+
+class TestCheckSiteDiscovery(unittest.TestCase):
+    def test_discovers_flat_article(self):
+        # Article landing pages live at a FLAT <slug>/index.html (no v<N>/i<M>);
+        # check_site must find them by their article_status meta, not by path.
+        with tempfile.TemporaryDirectory() as d:
+            jt = os.path.join(d, "journal.toml")
+            with open(jt, "w", encoding="utf-8") as fh:
+                fh.write('title = "J"\nbase_url = "https://e.example"\n'
+                         'publisher = "P"\nlicense = "All rights reserved"\n'
+                         'license_url = ""\nlanguage = "en"\n'
+                         'footer_links = [{ title = "Home", href = "./" }]\n')
+            ad = os.path.join(d, "articles", "art")
+            os.makedirs(ad)
+            with open(os.path.join(ad, "meta.toml"), "w", encoding="utf-8") as fh:
+                fh.write('authors = [{ name = "A" }]\ndate = "2026-10-24"\n')
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation purposes here.\n\n## 1. Intro\n\nBody.\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            self.assertTrue(os.path.isfile(os.path.join(out, "art", "index.html")))
+            _f, found = c.check_site(out)
+            self.assertEqual(found, 1)
 
 
 if __name__ == "__main__":
