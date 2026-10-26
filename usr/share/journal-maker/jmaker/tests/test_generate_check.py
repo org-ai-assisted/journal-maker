@@ -28,8 +28,8 @@ class TestGenerateHelpers(unittest.TestCase):
         self.assertEqual(g._scholar_date("2026"), "2026")
 
     def test_rel_dir_and_root_rel(self):
-        self.assertEqual(g._rel_dir(META), "v1/i1/x")
-        self.assertEqual(g._root_rel("v1/i1/x"), "../../../")
+        self.assertEqual(g._rel_dir(META), "x")
+        self.assertEqual(g._root_rel("x"), "../")
 
     def test_yaml_dq_escapes(self):
         self.assertEqual(g._yaml_dq('a"b\\c'), '"a\\"b\\\\c"')
@@ -438,22 +438,6 @@ class TestLoading(unittest.TestCase):
                 fh.write('title = "J"\nbase_url = "https:///"\n')
             with self.assertRaises(g.BuildError):
                 g.load_journal(jt)
-
-    def test_float_volume_rejected(self):
-        with tempfile.TemporaryDirectory() as d:
-            ad = os.path.join(d, "art")
-            self._article(ad, 'volume = 1.5\nissue = 1\ndate = "2026-10-24"\n'
-                              'authors = [{name = "A"}]\n')
-            with self.assertRaises(g.BuildError):
-                g.load_article(ad)
-
-    def test_negative_volume_rejected(self):
-        with tempfile.TemporaryDirectory() as d:
-            ad = os.path.join(d, "art")
-            self._article(ad, 'volume = -1\nissue = 1\ndate = "2026-10-24"\n'
-                              'authors = [{name = "A"}]\n')
-            with self.assertRaises(g.BuildError):
-                g.load_article(ad)
 
     def test_remote_image_rejected(self):
         with tempfile.TemporaryDirectory() as d:
@@ -977,9 +961,9 @@ class TestBrowseNav(unittest.TestCase):
     def test_article_nav_both(self):
         prev = self._art("a", 1, 1, [], "X")
         nxt = self._art("c", 1, 3, [], "Z")
-        out = g._article_nav((prev, nxt), "../../../")
-        self.assertIn('rel="prev" href="../../../v1/i1/a/"', out)
-        self.assertIn('rel="next" href="../../../v1/i3/c/"', out)
+        out = g._article_nav((prev, nxt), "../")
+        self.assertIn('rel="prev" href="../a/"', out)
+        self.assertIn('rel="next" href="../c/"', out)
 
     def test_article_nav_alone(self):
         self.assertEqual(g._article_nav(None, "../../../"), "")
@@ -992,7 +976,7 @@ class TestBrowseNav(unittest.TestCase):
         self.assertIn("By keyword", page)
         self.assertIn("By author", page)
         self.assertIn("<strong>mobile</strong>", page)
-        self.assertIn('href="../v1/i1/a/"', page)
+        self.assertIn('href="../a/"', page)
 
 
 class TestHeaderNavRoot(unittest.TestCase):

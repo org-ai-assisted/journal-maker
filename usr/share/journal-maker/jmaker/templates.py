@@ -376,6 +376,6 @@ def site_footer(journal, root_rel):
         nav = ('<nav class="footer-nav" aria-label="Journal">%s</nav>\n'
                % " ".join(items))
     return (
-        '<footer class="site">%s<p>%s.%s Open access.</p></footer>'
+        '<footer class="site">%s<p>%s.%s</p></footer>'
         % (nav, t, issn_bit)
     )

@@ -213,7 +213,7 @@ def load_article(adir):
                          % (adir, m["slug"]))
     m["title"] = title
     m["abstract"] = abstract
-    for req in ("authors", "date", "volume", "issue"):
+    for req in ("authors", "date"):
         if not m.get(req):
             raise BuildError("%s/meta.toml missing required key: %s" % (adir, req))
     if not isinstance(m["authors"], list) or not m["authors"]:
@@ -224,16 +224,6 @@ def load_article(adir):
                 or not author["name"].strip()):
             raise BuildError("%s/meta.toml: each author needs a non-empty string "
                              "name" % adir)
-    for key in ("volume", "issue"):
-        val = m[key]
-        # bool is an int subclass; a float (1.5) or a non-digit string is not a
-        # valid volume/issue. Coerce the accepted forms to a real int.
-        if isinstance(val, bool) or not (isinstance(val, int)
-                or (isinstance(val, str) and val.isdigit())):
-            raise BuildError("%s/meta.toml: %s must be an integer" % (adir, key))
-        m[key] = int(val)
-        if m[key] < 1:
-            raise BuildError("%s/meta.toml: %s must be a positive integer" % (adir, key))
     if "keywords" in m and (not isinstance(m["keywords"], list)
                             or not all(isinstance(k, str) for k in m["keywords"])):
         raise BuildError("%s/meta.toml: keywords must be a list of strings" % adir)
@@ -320,7 +310,7 @@ def _scholar_date(iso):
 
 
 def _rel_dir(m):
-    return "v%d/i%d/%s" % (int(m["volume"]), int(m["issue"]), m["slug"])
+    return m["slug"]
 
 
 def _root_rel(rel_dir):
@@ -468,8 +458,6 @@ def citation_meta(m, journal, landing_url, pdf_url):
     add("citation_journal_title", journal["title"])
     if journal.get("issn"):
         add("citation_issn", journal["issn"])
-    add("citation_volume", m["volume"])
-    add("citation_issue", m["issue"])
     if m.get("firstpage"):
         add("citation_firstpage", m["firstpage"])
     if m.get("lastpage"):
@@ -730,8 +718,6 @@ def _bibtex(m, journal, landing_url):
         ("title", m["title"]),
         ("journal", journal["title"]),
         ("year", m["date"][:4]),
-        ("volume", str(m["volume"])),
-        ("number", str(m["issue"])),
     ]
     fields.append(("doi", m["doi"]) if m.get("doi") else ("url", landing_url))
     body = ",\n".join("  %s = {%s}" % (k, v) for k, v in fields)
@@ -872,8 +858,7 @@ def _ris(m, journal, landing_url):
     lines = ["TY  - JOUR"]
     lines += ["AU  - " + a["name"] for a in m["authors"]]
     lines += ["TI  - " + m["title"], "JO  - " + journal["title"],
-              "PY  - " + m["date"][:4], "VL  - " + str(m["volume"]),
-              "IS  - " + str(m["issue"])]
+              "PY  - " + m["date"][:4]]
     if m.get("article_number"):
         lines.append("M1  - " + m["article_number"])
     if m.get("doi"):
@@ -888,9 +873,8 @@ def _apa(m, journal, year):
     authors = ", ".join(a["name"] for a in m["authors"])
     art = (", Article %s" % m["article_number"]) if m.get("article_number") else ""
     src = (" https://doi.org/%s" % m["doi"]) if m.get("doi") else ""
-    return "%s (%s). %s. %s, %s(%s)%s.%s" % (
-        authors, year, m["title"], journal["title"], m["volume"], m["issue"],
-        art, src)
+    return "%s (%s). %s. %s%s.%s" % (
+        authors, year, m["title"], journal["title"], art, src)
 
 
 def _ieee_cite(m, journal, year):
@@ -898,9 +882,8 @@ def _ieee_cite(m, journal, year):
     artno = (", Art. no. %s" % m["article_number"]) if m.get("article_number") \
         else ""
     tail = (", doi: %s" % m["doi"]) if m.get("doi") else ""
-    return '%s, "%s," %s, vol. %s, no. %s%s, %s%s.' % (
-        authors, m["title"], journal["title"], m["volume"], m["issue"], artno,
-        year, tail)
+    return '%s, "%s," %s%s, %s%s.' % (
+        authors, m["title"], journal["title"], artno, year, tail)
 
 
 def _cite_box(m, journal, landing_url, year):
@@ -919,9 +902,8 @@ def _cite_box(m, journal, landing_url, year):
 
 
 def _order_key(m):
-    """Stable reading order: volume, then issue, then article number or slug."""
-    return (int(m["volume"]), int(m["issue"]),
-            m.get("article_number") or m["slug"])
+    """Stable reading order: by date (newest handled by caller), then slug."""
+    return (str(m.get("date", "")), m["slug"])
 
 
 def _article_nav(neighbors, root_rel):
@@ -968,9 +950,7 @@ def render_article(m, journal, neighbors=None):
     affil_bit = ('<p class="affil">%s</p>\n'
                  % "; ".join(html.escape(x) for x in affils)) if affils else ""
     year = m["date"][:4]
-    venue = "%s, Volume %s, Issue %s (%s)" % (
-        html.escape(journal["title"]), html.escape(str(m["volume"])),
-        html.escape(str(m["issue"])), html.escape(year))
+    venue = "%s (%s)" % (html.escape(journal["title"]), html.escape(year))
     if m.get("article_number"):
         venue += ", Article %s" % html.escape(m["article_number"])
     doi_bit = ""
@@ -1035,15 +1015,15 @@ def render_page(slug, md_text, journal):
 
 
 def render_homepage(articles, journal, pages):
+    ordered = sorted(articles,
+                     key=lambda m: (str(m.get("date", "")), m["title"]),
+                     reverse=True)
     items = []
-    by_vol: dict = {}
-    for m in articles:
-        by_vol.setdefault(int(m["volume"]), []).append(m)
-    for vol in sorted(by_vol, reverse=True):
-        items.append('<li><a href="v%d/">Volume %d</a> '
-                     '(%d article%s)</li>'
-                     % (vol, vol, len(by_vol[vol]),
-                        "" if len(by_vol[vol]) == 1 else "s"))
+    for m in ordered:
+        date = html.escape(str(m.get("date", "")))
+        items.append('<li><a href="%s/">%s</a>%s</li>'
+                     % (_rel_dir(m), html.escape(m["title"]),
+                        (' <span class="date">%s</span>' % date) if date else ""))
     page_nav = ""
     if pages:
         links = "\n".join('<li><a href="%s/">%s</a></li>'
@@ -1051,13 +1031,15 @@ def render_homepage(articles, journal, pages):
         page_nav = "<h2>About</h2>\n<ul>\n%s\n</ul>\n" % links
     body = (
         '<main id="main">\n<h1>%s</h1>\n'
-        "<p>An open-access journal of computer-security research.</p>\n"
-        "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n"
+        "<p>Occasional computer-security research previews, posted for public "
+        "commentary.</p>\n"
+        '<h2>Previews</h2>\n<ul class="previews">\n%s\n</ul>\n'
         '<p><a href="browse/">Browse by keyword and author</a></p>\n'
         "%s</main>"
     ) % (html.escape(journal["title"]), "\n".join(items), page_nav)
     return _page(journal["language"], journal["title"],
-                 "Open-access computer-security research journal.",
+                 "Occasional computer-security research previews for public "
+                 "commentary.",
                  journal["base_url"] + "/", "", body, journal, "")
 
 
@@ -1089,30 +1071,6 @@ def render_browse(articles, journal):
     return _page(journal["language"], "Browse -- %s" % journal["title"],
                  "Browse articles by keyword and author.",
                  journal["base_url"] + "/browse/", "", body, journal, "../")
-
-
-def render_volume(vol, metas, journal):
-    metas = sorted(metas, key=lambda m: (int(m["issue"]),
-                                         int(m.get("firstpage", 0) or 0)))
-    lis = []
-    for m in metas:
-        rel = _rel_dir(m)
-        authors = ", ".join(html.escape(a["name"]) for a in m["authors"])
-        # From /v<N>/index.html the article is at i<M>/<slug>/ (same volume dir),
-        # so the relative link drops the leading volume segment and NO '../'.
-        rel_from_volume = "/".join(rel.split("/")[1:])
-        lis.append(
-            '<li><div class="atitle"><a href="%s/">%s</a></div>'
-            '<div class="ameta">%s &middot; Issue %s</div></li>'
-            % (rel_from_volume, html.escape(m["title"]),
-               authors, html.escape(str(m["issue"]))))
-    body = (
-        '<main id="main">\n<h1>Volume %d</h1>\n<ol class="articles">\n%s\n</ol>\n'
-        "</main>"
-    ) % (vol, "\n".join(lis))
-    return _page(journal["language"], "Volume %d -- %s" % (vol, journal["title"]),
-                 "Volume %d." % vol, "%s/v%d/" % (journal["base_url"], vol),
-                 "", body, journal, "../")
 
 
 def write_sitemap(urls, journal, out_dir):
@@ -1252,16 +1210,6 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
             with open(pdf_path + ".sha256", "w", encoding="utf-8") as sf:
                 sf.write("%s  %s\n" % (h.hexdigest(), pdf_name))  # sha256sum format
             urls.append("%s/%s/%s" % (journal["base_url"], rel_dir, pdf_name))
-
-    by_vol: dict = {}
-    for m in articles:
-        by_vol.setdefault(int(m["volume"]), []).append(m)
-    for vol, metas in by_vol.items():
-        vdir = os.path.join(out_dir, "v%d" % vol)
-        os.makedirs(vdir, exist_ok=True)
-        with open(os.path.join(vdir, "index.html"), "w", encoding="utf-8") as fh:
-            fh.write(render_volume(vol, metas, journal))
-        urls.append("%s/v%d/" % (journal["base_url"], vol))
 
     # Standalone pages (about, policies, license) from <content>/pages/*.md.
     pages = []
