@@ -21,6 +21,10 @@ STYLE_CSS = """\
   --fg: #1b1b1b;
   --muted: #58585a;
   --accent: #0b5cad;
+  /* Foreground for filled accent surfaces (skip-link, PDF button). The dark
+     accent is a LIGHT blue, so white text fails WCAG AA on it -- use a dark
+     on-accent there instead. */
+  --on-accent: #ffffff;
   --visited: #6b3fa0;
   --rule: #d9d9d4;
   --measure: 38rem;
@@ -34,6 +38,7 @@ STYLE_CSS = """\
     --fg: #e4e4e0;
     --muted: #a3a7ae;
     --accent: #7db4f0;
+    --on-accent: #15171b;
     --visited: #b79be0;
     --rule: #32363e;
     --warn-bg: #3a300f; --warn-fg: #f0d78a; --warn-rule: #7a6420;
@@ -46,6 +51,7 @@ STYLE_CSS = """\
   --fg: #e4e4e0;
   --muted: #a3a7ae;
   --accent: #7db4f0;
+  --on-accent: #15171b;
   --visited: #b79be0;
   --rule: #32363e;
   --warn-bg: #3a300f; --warn-fg: #f0d78a; --warn-rule: #7a6420;
@@ -53,7 +59,7 @@ STYLE_CSS = """\
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-.skip-link { position: absolute; left: -9999px; top: 0; background: var(--accent); color: #ffffff; padding: 0.5rem 0.9rem; border-radius: 0 0 4px 0; font-family: var(--sans); z-index: 10; }
+.skip-link { position: absolute; left: -9999px; top: 0; background: var(--accent); color: var(--on-accent); padding: 0.5rem 0.9rem; border-radius: 0 0 4px 0; font-family: var(--sans); z-index: 10; }
 .skip-link:focus { left: 0; }
 a.backref { text-decoration: none; font-size: 0.85em; }
 body {
@@ -97,7 +103,7 @@ p.affil { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); marg
 p.venue, p.actions { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); margin: 0.2rem 0; }
 p.actions a {
   display: inline-block; margin-top: 0.4rem; padding: 0.35rem 0.8rem;
-  background: var(--accent); color: #ffffff; border-radius: 4px;
+  background: var(--accent); color: var(--on-accent); border-radius: 4px;
   text-decoration: none; font-size: 0.9rem;
 }
 p.actions a.checksum { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.8rem; }
@@ -376,6 +382,6 @@ def site_footer(journal, root_rel):
         nav = ('<nav class="footer-nav" aria-label="Journal">%s</nav>\n'
                % " ".join(items))
     return (
-        '<footer class="site">%s<p>%s.%s Open access.</p></footer>'
+        '<footer class="site">%s<p>%s.%s</p></footer>'
         % (nav, t, issn_bit)
     )

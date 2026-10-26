@@ -506,11 +506,25 @@ def check_site(out_dir):
                 f.err(sitemap, "sitemap.xml lists no URLs")
     check_index_policy(out_dir, f)
 
+    # Article landing pages are listed in the build manifest, NOT discovered by
+    # an in-page marker: discovery must not depend on the very article_status
+    # meta that check_article validates, or a page that lost its meta would be
+    # silently skipped instead of flagged.
+    manifest = os.path.join(out_dir, ".github", "articles.json")
+    if not os.path.isfile(manifest):
+        f.err(out_dir, "missing .github/articles.json build manifest")
+        return f, 0
+    with open(manifest, encoding="utf-8") as fh:
+        routes = json.load(fh)
     found = 0
-    for root, _dirs, files in os.walk(out_dir):
-        if "index.html" in files and re.search(r"/v\d+/i\d+/[^/]+$", root):
-            found += 1
-            check_article(os.path.join(root, "index.html"), f, out_dir)
+    for route in routes:
+        page_path = os.path.join(out_dir, route, "index.html")
+        if not os.path.isfile(page_path):
+            f.err(out_dir, "article route %r in manifest has no index.html"
+                  % route)
+            continue
+        found += 1
+        check_article(page_path, f, out_dir)
     if found == 0:
         f.err(out_dir, "no article landing pages found")
     return f, found

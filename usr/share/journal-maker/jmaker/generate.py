@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -Bsu
-"""Build a static, Google-Scholar-indexable journal site from Markdown.
+"""Build a static site of occasional research previews from Markdown.
 
 Contract per article:
   articles/<slug>/paper.md   -- the paper in Markdown: the H1 ('# Title') and a
@@ -8,15 +8,14 @@ Contract per article:
                                  the first section heading after the abstract.
                                  (title/abstract are parsed here, NOT meta.toml.)
   articles/<slug>/meta.toml  -- the remaining bibliographic metadata (authors,
-                                 dates, volume/issue, doi, keywords, license).
+                                 dates, doi, keywords, license).
   articles/<slug>/source.mw  -- optional pristine wiki fork (ignored by build)
   articles/<slug>/figures/   -- optional images, copied verbatim
 
 Output tree (served at the site root):
-  index.html                 -- journal homepage
-  v<N>/index.html            -- per-volume browse (every article <=2 links from home)
-  v<N>/i<M>/<slug>/index.html-- article landing page == full HTML article + meta
-  v<N>/i<M>/<slug>/<slug>.pdf-- camera-ready PDF in the SAME directory
+  index.html                 -- homepage (newest-first preview list)
+  <slug>/index.html          -- article landing page == full HTML article + meta
+  <slug>/<slug>.pdf          -- camera-ready PDF in the SAME directory
   assets/style.css, robots.txt, sitemap.xml, .nojekyll
 
 PDF and HTML both derive from meta.toml + paper.md, so citation_title always
@@ -41,20 +40,20 @@ class BuildError(Exception):
     pass
 
 
-# Publication-status model (NISO JAV subset). Default is "draft" so a new
-# article is honestly labeled not-peer-reviewed until an author DELIBERATELY
-# promotes it to "published" -- that promotion is what turns on the release-state
-# lint (no leftover TODO edit-markers). The safe state needs nothing remembered.
+# Posting-status model. Default is "draft" so a new piece is honestly labeled
+# not-peer-reviewed until an author DELIBERATELY promotes it to "posted" -- that
+# promotion is what turns on the release-state lint (no leftover TODO edit-markers).
+# The safe state needs nothing remembered. These are our own previews, posted for
+# public commentary: there is no review board and no peer review.
 STATUS_LABELS = {
     "draft": "Draft -- not peer reviewed",
-    "published": ("Published (version of record) -- editorial review only, "
-                  "not peer reviewed"),
-    "corrected": "Corrected version of record -- see correction notice",
+    "published": "Posted for comment -- not peer reviewed",
+    "corrected": "Corrected -- see correction notice",
 }
 # Short badge text per status (keep it a state keyword, not a sentence).
 _STATUS_PILL = {
     "draft": "Draft",
-    "published": "Version of record",
+    "published": "Posted",
     "corrected": "Corrected",
 }
 # schema.org creativeWorkStatus value (corrected is still a published VoR).
@@ -213,7 +212,7 @@ def load_article(adir):
                          % (adir, m["slug"]))
     m["title"] = title
     m["abstract"] = abstract
-    for req in ("authors", "date", "volume", "issue"):
+    for req in ("authors", "date"):
         if not m.get(req):
             raise BuildError("%s/meta.toml missing required key: %s" % (adir, req))
     if not isinstance(m["authors"], list) or not m["authors"]:
@@ -224,16 +223,6 @@ def load_article(adir):
                 or not author["name"].strip()):
             raise BuildError("%s/meta.toml: each author needs a non-empty string "
                              "name" % adir)
-    for key in ("volume", "issue"):
-        val = m[key]
-        # bool is an int subclass; a float (1.5) or a non-digit string is not a
-        # valid volume/issue. Coerce the accepted forms to a real int.
-        if isinstance(val, bool) or not (isinstance(val, int)
-                or (isinstance(val, str) and val.isdigit())):
-            raise BuildError("%s/meta.toml: %s must be an integer" % (adir, key))
-        m[key] = int(val)
-        if m[key] < 1:
-            raise BuildError("%s/meta.toml: %s must be a positive integer" % (adir, key))
     if "keywords" in m and (not isinstance(m["keywords"], list)
                             or not all(isinstance(k, str) for k in m["keywords"])):
         raise BuildError("%s/meta.toml: keywords must be a list of strings" % adir)
@@ -320,7 +309,7 @@ def _scholar_date(iso):
 
 
 def _rel_dir(m):
-    return "v%d/i%d/%s" % (int(m["volume"]), int(m["issue"]), m["slug"])
+    return m["slug"]
 
 
 def _root_rel(rel_dir):
@@ -423,16 +412,30 @@ def md_to_pdf(m, journal, out_pdf):
     # openin_any/openout_any=p additionally bar the engine from reading or
     # writing files outside the tree, in case any TeX slips through.
     env = dict(os.environ, openin_any="p", openout_any="p")
-    # lmodern gives Type-1 (vector) glyphs instead of the Type-3 bitmaps that defeat
-    # text extraction / Scholar indexing (check.py's pdffonts gate rejects Type 3). It
-    # MUST go through --include-in-header, which inserts it into the LaTeX preamble
-    # VERBATIM: the reader runs with raw_tex disabled, so the same \usepackage via a
-    # header-includes metadata value is escaped to literal text -- not loaded, and
-    # printed as visible garbage in the PDF.
+    # Preamble additions MUST go through --include-in-header, which inserts them
+    # into the LaTeX preamble VERBATIM: the reader runs with raw_tex disabled, so
+    # the same \usepackage via a header-includes metadata value is escaped to
+    # literal text -- not loaded, and printed as visible garbage in the PDF.
+    #   - lmodern: Type-1 (vector) glyphs for sans/mono instead of Type-3 bitmaps
+    #     that defeat text extraction (check.py's pdffonts gate rejects Type 3).
+    #   - mathpazo: Palatino roman + matching math; stock texlive, no extra CI dep.
+    #     Loaded AFTER lmodern so its Palatino roman wins while sans/mono stay LM.
+    #   - \UrlBreaks / \Urlmuskip: let long bibliography URLs wrap instead of
+    #     overflowing the right margin. url's registers exist only once the package
+    #     is loaded, and pandoc inserts these header-includes BEFORE it loads
+    #     hyperref (which pulls in url) -- so the config is deferred with
+    #     \AtBeginDocument, by when url is loaded and nothing overrides it again.
     hdr = tempfile.NamedTemporaryFile(mode="w", suffix=".tex", delete=False,
                                       encoding="utf-8")
     try:
-        hdr.write("\\usepackage{lmodern}\n")
+        hdr.write(
+            "\\usepackage{lmodern}\n"
+            "\\usepackage{mathpazo}\n"
+            "\\AtBeginDocument{%\n"
+            "  \\Urlmuskip=0mu plus 1mu\\relax\n"
+            "  \\def\\UrlBreaks{\\do\\/\\do\\-\\do\\.\\do\\_\\do\\?"
+            "\\do\\&\\do\\=\\do\\#\\do\\%\\do\\;\\do\\:}%\n"
+            "}\n")
         hdr.close()
         _run([
             "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute", "-o", out_pdf,
@@ -468,8 +471,6 @@ def citation_meta(m, journal, landing_url, pdf_url):
     add("citation_journal_title", journal["title"])
     if journal.get("issn"):
         add("citation_issn", journal["issn"])
-    add("citation_volume", m["volume"])
-    add("citation_issue", m["issue"])
     if m.get("firstpage"):
         add("citation_firstpage", m["firstpage"])
     if m.get("lastpage"):
@@ -730,8 +731,6 @@ def _bibtex(m, journal, landing_url):
         ("title", m["title"]),
         ("journal", journal["title"]),
         ("year", m["date"][:4]),
-        ("volume", str(m["volume"])),
-        ("number", str(m["issue"])),
     ]
     fields.append(("doi", m["doi"]) if m.get("doi") else ("url", landing_url))
     body = ",\n".join("  %s = {%s}" % (k, v) for k, v in fields)
@@ -841,6 +840,16 @@ def _subjects_line(m):
             % "; ".join(html.escape(str(s)) for s in subs))
 
 
+def _ccs_line(m):
+    # ACM CCS concept paths, kept SEPARATE from the arXiv subject class so the
+    # two taxonomies are not blended under one label.
+    concepts = m.get("ccs_concepts") or []
+    if not concepts:
+        return ""
+    return ('<p class="subjects">CCS Concepts: %s</p>\n'
+            % "; ".join(html.escape(str(c)) for c in concepts))
+
+
 def _license_footer(m, journal):
     lic = m.get("license", journal.get("license", ""))
     if not lic:
@@ -872,8 +881,7 @@ def _ris(m, journal, landing_url):
     lines = ["TY  - JOUR"]
     lines += ["AU  - " + a["name"] for a in m["authors"]]
     lines += ["TI  - " + m["title"], "JO  - " + journal["title"],
-              "PY  - " + m["date"][:4], "VL  - " + str(m["volume"]),
-              "IS  - " + str(m["issue"])]
+              "PY  - " + m["date"][:4]]
     if m.get("article_number"):
         lines.append("M1  - " + m["article_number"])
     if m.get("doi"):
@@ -888,9 +896,8 @@ def _apa(m, journal, year):
     authors = ", ".join(a["name"] for a in m["authors"])
     art = (", Article %s" % m["article_number"]) if m.get("article_number") else ""
     src = (" https://doi.org/%s" % m["doi"]) if m.get("doi") else ""
-    return "%s (%s). %s. %s, %s(%s)%s.%s" % (
-        authors, year, m["title"], journal["title"], m["volume"], m["issue"],
-        art, src)
+    return "%s (%s). %s. %s%s.%s" % (
+        authors, year, m["title"], journal["title"], art, src)
 
 
 def _ieee_cite(m, journal, year):
@@ -898,9 +905,8 @@ def _ieee_cite(m, journal, year):
     artno = (", Art. no. %s" % m["article_number"]) if m.get("article_number") \
         else ""
     tail = (", doi: %s" % m["doi"]) if m.get("doi") else ""
-    return '%s, "%s," %s, vol. %s, no. %s%s, %s%s.' % (
-        authors, m["title"], journal["title"], m["volume"], m["issue"], artno,
-        year, tail)
+    return '%s, "%s," %s%s, %s%s.' % (
+        authors, m["title"], journal["title"], artno, year, tail)
 
 
 def _cite_box(m, journal, landing_url, year):
@@ -919,9 +925,8 @@ def _cite_box(m, journal, landing_url, year):
 
 
 def _order_key(m):
-    """Stable reading order: volume, then issue, then article number or slug."""
-    return (int(m["volume"]), int(m["issue"]),
-            m.get("article_number") or m["slug"])
+    """Stable reading order: by date (newest handled by caller), then slug."""
+    return (str(m.get("date", "")), m["slug"])
 
 
 def _article_nav(neighbors, root_rel):
@@ -968,9 +973,7 @@ def render_article(m, journal, neighbors=None):
     affil_bit = ('<p class="affil">%s</p>\n'
                  % "; ".join(html.escape(x) for x in affils)) if affils else ""
     year = m["date"][:4]
-    venue = "%s, Volume %s, Issue %s (%s)" % (
-        html.escape(journal["title"]), html.escape(str(m["volume"])),
-        html.escape(str(m["issue"])), html.escape(year))
+    venue = "%s (%s)" % (html.escape(journal["title"]), html.escape(year))
     if m.get("article_number"):
         venue += ", Article %s" % html.escape(m["article_number"])
     doi_bit = ""
@@ -979,6 +982,7 @@ def render_article(m, journal, neighbors=None):
             html.escape(m["doi"], quote=True), html.escape(m["doi"]))
     history = _history_line(m)
     subjects = _subjects_line(m)
+    ccs = _ccs_line(m)
     cite_box = _cite_box(m, journal, landing_url, year)
     statements = _statements(m)
     license_bit = _license_footer(m, journal)
@@ -993,6 +997,7 @@ def render_article(m, journal, neighbors=None):
         '<p class="venue">%s%s</p>\n'
         "%s"                                   # article history
         "%s"                                   # subjects
+        "%s"                                   # ccs concepts
         "%s"                                   # status line
         '<p class="actions"><a href="%s">Download PDF</a> '
         '<a class="checksum" href="%s.sha256">SHA-256</a></p>\n'
@@ -1003,7 +1008,7 @@ def render_article(m, journal, neighbors=None):
         "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
-         doi_bit, history, subjects, status_line, pdf_name, pdf_name,
+         doi_bit, history, subjects, ccs, status_line, pdf_name, pdf_name,
          abstract_html, toc, cite_box, body_html, statements,
          _article_nav(neighbors, root_rel), license_bit)
 
@@ -1035,15 +1040,15 @@ def render_page(slug, md_text, journal):
 
 
 def render_homepage(articles, journal, pages):
+    ordered = sorted(articles,
+                     key=lambda m: (str(m.get("date", "")), m["title"]),
+                     reverse=True)
     items = []
-    by_vol: dict = {}
-    for m in articles:
-        by_vol.setdefault(int(m["volume"]), []).append(m)
-    for vol in sorted(by_vol, reverse=True):
-        items.append('<li><a href="v%d/">Volume %d</a> '
-                     '(%d article%s)</li>'
-                     % (vol, vol, len(by_vol[vol]),
-                        "" if len(by_vol[vol]) == 1 else "s"))
+    for m in ordered:
+        date = html.escape(str(m.get("date", "")))
+        items.append('<li><a href="%s/">%s</a>%s</li>'
+                     % (_rel_dir(m), html.escape(m["title"]),
+                        (' <span class="date">%s</span>' % date) if date else ""))
     page_nav = ""
     if pages:
         links = "\n".join('<li><a href="%s/">%s</a></li>'
@@ -1051,13 +1056,15 @@ def render_homepage(articles, journal, pages):
         page_nav = "<h2>About</h2>\n<ul>\n%s\n</ul>\n" % links
     body = (
         '<main id="main">\n<h1>%s</h1>\n'
-        "<p>An open-access journal of computer-security research.</p>\n"
-        "<h2>Volumes</h2>\n<ul>\n%s\n</ul>\n"
+        "<p>Occasional computer-security research previews, posted for public "
+        "commentary.</p>\n"
+        '<h2>Previews</h2>\n<ul class="previews">\n%s\n</ul>\n'
         '<p><a href="browse/">Browse by keyword and author</a></p>\n'
         "%s</main>"
     ) % (html.escape(journal["title"]), "\n".join(items), page_nav)
     return _page(journal["language"], journal["title"],
-                 "Open-access computer-security research journal.",
+                 "Occasional computer-security research previews for public "
+                 "commentary.",
                  journal["base_url"] + "/", "", body, journal, "")
 
 
@@ -1089,30 +1096,6 @@ def render_browse(articles, journal):
     return _page(journal["language"], "Browse -- %s" % journal["title"],
                  "Browse articles by keyword and author.",
                  journal["base_url"] + "/browse/", "", body, journal, "../")
-
-
-def render_volume(vol, metas, journal):
-    metas = sorted(metas, key=lambda m: (int(m["issue"]),
-                                         int(m.get("firstpage", 0) or 0)))
-    lis = []
-    for m in metas:
-        rel = _rel_dir(m)
-        authors = ", ".join(html.escape(a["name"]) for a in m["authors"])
-        # From /v<N>/index.html the article is at i<M>/<slug>/ (same volume dir),
-        # so the relative link drops the leading volume segment and NO '../'.
-        rel_from_volume = "/".join(rel.split("/")[1:])
-        lis.append(
-            '<li><div class="atitle"><a href="%s/">%s</a></div>'
-            '<div class="ameta">%s &middot; Issue %s</div></li>'
-            % (rel_from_volume, html.escape(m["title"]),
-               authors, html.escape(str(m["issue"]))))
-    body = (
-        '<main id="main">\n<h1>Volume %d</h1>\n<ol class="articles">\n%s\n</ol>\n'
-        "</main>"
-    ) % (vol, "\n".join(lis))
-    return _page(journal["language"], "Volume %d -- %s" % (vol, journal["title"]),
-                 "Volume %d." % vol, "%s/v%d/" % (journal["base_url"], vol),
-                 "", body, journal, "../")
 
 
 def write_sitemap(urls, journal, out_dir):
@@ -1209,6 +1192,23 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
 
     articles = [load_article(d) for d in adirs]
 
+    # Flat routes share one <slug>/ namespace, so an article slug must not
+    # collide with another article, a standalone page, or the browse/assets
+    # routes -- the build would otherwise overwrite one with another and the
+    # homepage/sitemap would point at the wrong target. Reject up front.
+    page_slugs = [fn[:-3] for fn in sorted(os.listdir(pages_abs))
+                  if fn.endswith(".md")] if os.path.isdir(pages_abs) else []
+    route_owner = {}
+    claims = ([("reserved route", r) for r in ("browse", "assets")]
+              + [(m["_dir"], _rel_dir(m)) for m in articles]
+              + [("page %s.md" % s, s) for s in page_slugs])
+    for owner, route in claims:
+        if route in route_owner:
+            raise BuildError("route collision at %r: %s and %s"
+                             % (route, route_owner[route], owner))
+        route_owner[route] = owner
+    article_routes = [_rel_dir(m) for m in articles]
+
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir)
@@ -1220,13 +1220,8 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     for i, a in enumerate(ordered):
         nbr[_rel_dir(a)] = (ordered[i - 1] if i > 0 else None,
                             ordered[i + 1] if i < len(ordered) - 1 else None)
-    seen = {}
     for m in articles:
         rel_dir, pdf_name, page = render_article(m, journal, nbr.get(_rel_dir(m)))
-        if rel_dir in seen:
-            raise BuildError("duplicate route %s from %s and %s"
-                             % (rel_dir, seen[rel_dir], m["_dir"]))
-        seen[rel_dir] = m["_dir"]
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
@@ -1252,16 +1247,6 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
             with open(pdf_path + ".sha256", "w", encoding="utf-8") as sf:
                 sf.write("%s  %s\n" % (h.hexdigest(), pdf_name))  # sha256sum format
             urls.append("%s/%s/%s" % (journal["base_url"], rel_dir, pdf_name))
-
-    by_vol: dict = {}
-    for m in articles:
-        by_vol.setdefault(int(m["volume"]), []).append(m)
-    for vol, metas in by_vol.items():
-        vdir = os.path.join(out_dir, "v%d" % vol)
-        os.makedirs(vdir, exist_ok=True)
-        with open(os.path.join(vdir, "index.html"), "w", encoding="utf-8") as fh:
-            fh.write(render_volume(vol, metas, journal))
-        urls.append("%s/v%d/" % (journal["base_url"], vol))
 
     # Standalone pages (about, policies, license) from <content>/pages/*.md.
     pages = []
@@ -1328,6 +1313,12 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     with open(os.path.join(gh_dir, "vendor-allowlist.json"), "w",
               encoding="utf-8") as fh:
         json.dump(vendor_manifest, fh)
+    # Article-route manifest: check.py discovers article landing pages from this,
+    # NOT from an in-page marker, so discovery never depends on the very
+    # article_status meta that check_article validates (a page that lost the meta
+    # must be a HARD error, not a silently-skipped non-article).
+    with open(os.path.join(gh_dir, "articles.json"), "w", encoding="utf-8") as fh:
+        json.dump(sorted(article_routes), fh)
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
 
     return len(articles), out_dir

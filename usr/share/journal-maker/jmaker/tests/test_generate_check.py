@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -Bsu
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -28,8 +29,8 @@ class TestGenerateHelpers(unittest.TestCase):
         self.assertEqual(g._scholar_date("2026"), "2026")
 
     def test_rel_dir_and_root_rel(self):
-        self.assertEqual(g._rel_dir(META), "v1/i1/x")
-        self.assertEqual(g._root_rel("v1/i1/x"), "../../../")
+        self.assertEqual(g._rel_dir(META), "x")
+        self.assertEqual(g._root_rel("x"), "../")
 
     def test_yaml_dq_escapes(self):
         self.assertEqual(g._yaml_dq('a"b\\c'), '"a\\"b\\\\c"')
@@ -438,22 +439,6 @@ class TestLoading(unittest.TestCase):
                 fh.write('title = "J"\nbase_url = "https:///"\n')
             with self.assertRaises(g.BuildError):
                 g.load_journal(jt)
-
-    def test_float_volume_rejected(self):
-        with tempfile.TemporaryDirectory() as d:
-            ad = os.path.join(d, "art")
-            self._article(ad, 'volume = 1.5\nissue = 1\ndate = "2026-10-24"\n'
-                              'authors = [{name = "A"}]\n')
-            with self.assertRaises(g.BuildError):
-                g.load_article(ad)
-
-    def test_negative_volume_rejected(self):
-        with tempfile.TemporaryDirectory() as d:
-            ad = os.path.join(d, "art")
-            self._article(ad, 'volume = -1\nissue = 1\ndate = "2026-10-24"\n'
-                              'authors = [{name = "A"}]\n')
-            with self.assertRaises(g.BuildError):
-                g.load_article(ad)
 
     def test_remote_image_rejected(self):
         with tempfile.TemporaryDirectory() as d:
@@ -906,6 +891,14 @@ class TestIdentityAndCite(unittest.TestCase):
         self.assertIn("cs.CR", g._subjects_line({"subjects": ["cs.CR"]}))
         self.assertEqual(g._subjects_line({}), "")
 
+    def test_ccs_line(self):
+        # CCS concepts render under their OWN label, kept separate from subjects.
+        out = g._ccs_line({"ccs_concepts": ["Security and privacy -> X"]})
+        self.assertIn("CCS Concepts:", out)
+        self.assertIn("Security and privacy -&gt; X", out)
+        self.assertNotIn("Subjects:", out)
+        self.assertEqual(g._ccs_line({}), "")
+
     def test_license_footer(self):
         out = g._license_footer(self._M, {"license": "CC-BY-4.0",
                                           "license_url": "https://e.example/by"})
@@ -977,9 +970,9 @@ class TestBrowseNav(unittest.TestCase):
     def test_article_nav_both(self):
         prev = self._art("a", 1, 1, [], "X")
         nxt = self._art("c", 1, 3, [], "Z")
-        out = g._article_nav((prev, nxt), "../../../")
-        self.assertIn('rel="prev" href="../../../v1/i1/a/"', out)
-        self.assertIn('rel="next" href="../../../v1/i3/c/"', out)
+        out = g._article_nav((prev, nxt), "../")
+        self.assertIn('rel="prev" href="../a/"', out)
+        self.assertIn('rel="next" href="../c/"', out)
 
     def test_article_nav_alone(self):
         self.assertEqual(g._article_nav(None, "../../../"), "")
@@ -992,7 +985,7 @@ class TestBrowseNav(unittest.TestCase):
         self.assertIn("By keyword", page)
         self.assertIn("By author", page)
         self.assertIn("<strong>mobile</strong>", page)
-        self.assertIn('href="../v1/i1/a/"', page)
+        self.assertIn('href="../a/"', page)
 
 
 class TestHeaderNavRoot(unittest.TestCase):
@@ -1252,6 +1245,70 @@ class TestNoIndexDefault(unittest.TestCase):
                 r = fh.read()
             self.assertIn("Allow: /", r)
             self.assertIn("Sitemap:", r)
+
+
+class TestCheckSiteDiscovery(unittest.TestCase):
+    def _site(self, d, article_slug="art", pages=None):
+        jt = os.path.join(d, "journal.toml")
+        with open(jt, "w", encoding="utf-8") as fh:
+            fh.write('title = "J"\nbase_url = "https://e.example"\n'
+                     'publisher = "P"\nlicense = "All rights reserved"\n'
+                     'license_url = ""\nlanguage = "en"\n'
+                     'footer_links = [{ title = "Home", href = "./" }]\n')
+        ad = os.path.join(d, "articles", article_slug)
+        os.makedirs(ad)
+        with open(os.path.join(ad, "meta.toml"), "w", encoding="utf-8") as fh:
+            fh.write('authors = [{ name = "A" }]\ndate = "2026-10-24"\n')
+        with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+            fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                     "validation purposes here.\n\n## 1. Intro\n\nBody.\n")
+        for slug in (pages or []):
+            pdir = os.path.join(d, "pages")
+            os.makedirs(pdir, exist_ok=True)
+            with open(os.path.join(pdir, slug + ".md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# %s\n\nBody.\n" % slug)
+        return jt
+
+    def test_discovers_flat_article(self):
+        # Article landing pages live at a FLAT <slug>/index.html (no v<N>/i<M>);
+        # check_site must discover them from the build manifest, not by path.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            self.assertTrue(os.path.isfile(os.path.join(out, "art", "index.html")))
+            self.assertTrue(os.path.isfile(
+                os.path.join(out, ".github", "articles.json")))
+            _f, found = c.check_site(out)
+            self.assertEqual(found, 1)
+
+    def test_discovery_independent_of_status_marker(self):
+        # An article page that LOST its article_status meta must still be
+        # discovered (via the manifest) and reported, never silently skipped --
+        # discovery cannot depend on the marker check_article validates.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            page = os.path.join(out, "art", "index.html")
+            with open(page, encoding="utf-8") as fh:
+                html_text = fh.read()
+            html_text = re.sub(r'<meta name="article_status"[^>]*>', "", html_text)
+            with open(page, "w", encoding="utf-8") as fh:
+                fh.write(html_text)
+            f, found = c.check_site(out)
+            self.assertEqual(found, 1)  # still discovered, not skipped
+            self.assertTrue(any("article_status" in m for _l, _p, m in f.items))
+
+    def test_rejects_article_slug_colliding_with_page(self):
+        # Flat namespace: an article slug that equals a standalone page slug
+        # would overwrite it -- the build must refuse.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d, article_slug="about", pages=["about"])
+            out = os.path.join(d, "s")
+            with self.assertRaises(g.BuildError):
+                g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
 
 
 if __name__ == "__main__":
