@@ -857,13 +857,16 @@ def _license_footer(m, journal):
     lic_url = journal.get("license_url", "")
     copyr = "(c) %s %s." % (m["date"][:4],
                             html.escape(", ".join(a["name"] for a in m["authors"])))
+    # With a license URL it is a grant one is "licensed under" (e.g. CC BY 4.0).
+    # Without one it is a bare rights statement (e.g. "All rights reserved"),
+    # which reads wrong after "Licensed under" -- render it as the statement.
     if lic_url:
         badge = ('<a class="cc-badge" href="%s">%s</a>'
                  % (html.escape(lic_url, quote=True), html.escape(lic)))
+        rights = "Licensed under %s." % badge
     else:
-        badge = '<span class="cc-badge">%s</span>' % html.escape(lic)
-    return ('<footer class="license">%s Licensed under %s.</footer>'
-            % (copyr, badge))
+        rights = '<span class="cc-badge">%s</span>.' % html.escape(lic)
+    return '<footer class="license">%s %s</footer>' % (copyr, rights)
 
 
 def _statements(m):
