@@ -904,7 +904,16 @@ class TestIdentityAndCite(unittest.TestCase):
                                           "license_url": "https://e.example/by"})
         self.assertIn("cc-badge", out)
         self.assertIn("(c) 2026", out)
+        self.assertIn("Licensed under", out)
         self.assertEqual(g._license_footer(self._M, {}), "")
+
+    def test_license_footer_rights_statement(self):
+        # A bare rights statement (no license URL) is NOT "Licensed under X";
+        # it is rendered as the statement itself.
+        out = g._license_footer(self._M, {"license": "All rights reserved",
+                                          "license_url": ""})
+        self.assertIn("All rights reserved", out)
+        self.assertNotIn("Licensed under", out)
 
     def test_statements(self):
         out = g._statements({"data_availability": "No new data.",
