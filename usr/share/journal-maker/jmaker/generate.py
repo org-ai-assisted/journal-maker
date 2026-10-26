@@ -68,11 +68,11 @@ def load_journal(path):
         j = tomllib.load(fh)
     for req in ("title", "base_url"):
         if not j.get(req):
-            raise BuildError("journal.toml missing required key: %s" % req)
+            raise BuildError("site.toml missing required key: %s" % req)
     # base_url must be absolute (Scholar requires absolute citation_pdf_url) and
     # free of whitespace/newlines (it is interpolated into robots.txt + sitemap).
     if not re.fullmatch(r"https?://[^/\s]+(/[^\s]*)?", j["base_url"]):
-        raise BuildError("journal.toml: base_url must be an absolute http(s) URL "
+        raise BuildError("site.toml: base_url must be an absolute http(s) URL "
                          "with a host and no whitespace, got %r" % j["base_url"])
     j["base_url"] = j["base_url"].rstrip("/")
     j.setdefault("issn", "")
@@ -83,20 +83,20 @@ def load_journal(path):
     # Optional consistent footer navigation (same links/order on every page).
     j.setdefault("footer_links", [])
     if not isinstance(j["footer_links"], list):
-        raise BuildError("journal.toml: footer_links must be a list")
+        raise BuildError("site.toml: footer_links must be a list")
     for link in j["footer_links"]:
         if (not isinstance(link, dict)
                 or not isinstance(link.get("title"), str)
                 or not isinstance(link.get("href"), str)
                 or not link["title"].strip() or not link["href"].strip()):
-            raise BuildError("journal.toml: each footer_link needs a non-empty "
+            raise BuildError("site.toml: each footer_link needs a non-empty "
                              "string title and href")
         h = link["href"]
         if "://" in h and not h.startswith(("http://", "https://")):
-            raise BuildError("journal.toml: footer_link href scheme not allowed: "
+            raise BuildError("site.toml: footer_link href scheme not allowed: "
                              "%r" % h)
         if ".." in h or h.startswith("/"):
-            raise BuildError("journal.toml: footer_link href must be relative "
+            raise BuildError("site.toml: footer_link href must be relative "
                              "(no leading / or ..) or absolute http(s): %r" % h)
     # Per-PAGE vendor-mention allowlist: slug -> exact phrases, applied ONLY to
     # that page's files. Articles carry their own allow_vendor_mentions in
@@ -104,12 +104,12 @@ def load_journal(path):
     # one file, so it can never license a mention elsewhere.
     pav = j.setdefault("page_allow_vendor_mentions", {})
     if not isinstance(pav, dict):
-        raise BuildError("journal.toml: page_allow_vendor_mentions must be a "
+        raise BuildError("site.toml: page_allow_vendor_mentions must be a "
                          "table (slug -> list of phrases)")
     for slug, phrases in pav.items():
         if (not isinstance(phrases, list)
                 or not all(isinstance(x, str) and x.strip() for x in phrases)):
-            raise BuildError("journal.toml: page_allow_vendor_mentions[%r] must "
+            raise BuildError("site.toml: page_allow_vendor_mentions[%r] must "
                              "be a list of non-empty strings" % slug)
     return j
 
@@ -495,7 +495,7 @@ def citation_meta(m, journal, landing_url, pdf_url):
 def _csp_header():
     """Full policy for a header-capable host (carries frame-ancestors).
 
-    script-src 'self': ONE self-hosted bundle (assets/journal.js), no CDN, no
+    script-src 'self': ONE self-hosted bundle (assets/site.js), no CDN, no
     'unsafe-inline', no eval. Trusted Types stay enforced AND no policy may be
     created (trusted-types 'none') -- the bundle is written TT-safe (textContent
     / setAttribute / addEventListener only, never a TT sink), so it needs none.
@@ -598,7 +598,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         'href="%sfeed.xml">\n'
         "%s\n"
         '<link rel="stylesheet" href="%sassets/style.css">\n'
-        '<script src="%sassets/journal.js" defer></script>\n'
+        '<script src="%sassets/site.js" defer></script>\n'
         "</head>\n<body>\n"
         '<a class="skip-link" href="#main">Skip to content</a>\n'
         "%s\n%s\n%s\n</body>\n</html>\n"
@@ -1004,15 +1004,16 @@ def render_article(m, journal, neighbors=None):
         "%s"                                   # status line
         '<p class="actions"><a href="%s">Download PDF</a> '
         '<a class="checksum" href="%s.sha256">SHA-256</a></p>\n'
+        "%s"                                   # cite box (beside the download action)
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
-        "%s%s"                                 # toc, cite box
+        "%s"                                   # toc
         '<article class="body">\n%s\n</article>\n'
         "%s"                                   # statements (data/funding/COI)
         "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
          doi_bit, history, subjects, ccs, status_line, pdf_name, pdf_name,
-         abstract_html, toc, cite_box, body_html, statements,
+         cite_box, abstract_html, toc, body_html, statements,
          _article_nav(neighbors, root_rel), license_bit)
 
     page = _page(
@@ -1136,7 +1137,8 @@ def write_feed(articles, journal, out_dir):
            "%s\n</channel></rss>\n"
            % (html.escape(journal["title"]),
               html.escape(journal["base_url"] + "/", quote=True),
-              html.escape("Open-access computer-security research journal."),
+              html.escape("Occasional computer-security research previews, "
+                          "posted for public commentary."),
               "\n".join(items)))
     with open(os.path.join(out_dir, "feed.xml"), "w", encoding="utf-8") as fh:
         fh.write(xml)
@@ -1280,13 +1282,13 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     urls.append("%s/browse/" % journal["base_url"])
 
     os.makedirs(os.path.join(out_dir, "assets"), exist_ok=True)
-    from jmaker.templates import STYLE_CSS, JOURNAL_JS
+    from jmaker.templates import STYLE_CSS, SITE_JS
     with open(os.path.join(out_dir, "assets", "style.css"), "w",
               encoding="utf-8") as fh:
         fh.write(STYLE_CSS)
-    with open(os.path.join(out_dir, "assets", "journal.js"), "w",
+    with open(os.path.join(out_dir, "assets", "site.js"), "w",
               encoding="utf-8") as fh:
-        fh.write(JOURNAL_JS)
+        fh.write(SITE_JS)
 
     write_sitemap(urls, journal, out_dir)
     write_feed(articles, journal, out_dir)
@@ -1295,7 +1297,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
 
     # Carry the served-tree web-tests policy into the build so the consistency
     # suite reads it from _site/.github/web-tests.yml (else it defaults to the
-    # wrong policy). content_root is the dir holding journal.toml.
+    # wrong policy). content_root is the dir holding site.toml.
     gh_dir = os.path.join(out_dir, ".github")
     os.makedirs(gh_dir, exist_ok=True)
     wt_src = os.path.join(content_root, ".github", "web-tests.yml")

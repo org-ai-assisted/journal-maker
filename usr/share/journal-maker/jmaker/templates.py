@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -Bsu
-"""Static HTML skeleton + CSS for the journal site.
+"""Static HTML skeleton + CSS for the site.
 
 ASCII only. Pages are composed in generate.py; this module holds the shared
 chrome (stylesheet, site header/footer). Visual spec follows common scholarly
@@ -191,10 +191,9 @@ nav.article-nav { display: flex; justify-content: space-between; gap: 1rem; marg
 nav.article-nav .nav-next { margin-left: auto; text-align: right; }
 ul.browse { list-style: none; padding: 0; }
 ul.browse li { padding: 0.35rem 0; border-bottom: 1px solid var(--rule); font-family: var(--sans); font-size: 0.95rem; }
-ol.articles { list-style: none; padding: 0; }
-ol.articles li { padding: 0.8rem 0; border-bottom: 1px solid var(--rule); }
-ol.articles .atitle { font-size: 1.1rem; }
-ol.articles .ameta { color: var(--muted); font-size: 0.9rem; font-family: var(--sans); }
+ul.previews { list-style: none; padding: 0; }
+ul.previews li { padding: 0.6rem 0; border-bottom: 1px solid var(--rule); font-size: 1.05rem; }
+ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--sans); margin-left: 0.5rem; }
 @media print {
   :root { --bg: #ffffff; --fg: #000000; }
   a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.8em; word-break: break-all; }
@@ -222,7 +221,7 @@ def site_header(journal_title, site_root):
 # with no policy. Hover previews use the native title attribute (no positioned
 # tooltip) so no programmatic inline style is needed under style-src 'self'. The
 # page is fully usable with JS disabled -- every feature here is additive.
-JOURNAL_JS = r"""// Journal interactive enhancements. Trusted-Types-safe; progressive.
+SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
 (function () {
   "use strict";
 
@@ -281,7 +280,7 @@ JOURNAL_JS = r"""// Journal interactive enhancements. Trusted-Types-safe; progre
     card.appendChild(cbody); card.appendChild(cnav);
     document.body.appendChild(card);
 
-    var hideTimer = null, curIdx = -1, curAnchor = null;
+    var hideTimer = null, curIdx = -1, curAnchor = null, pinned = false;
     function refFragment(id) {
       var frag = document.createDocumentFragment();
       var r = document.getElementById(id);
@@ -315,13 +314,25 @@ JOURNAL_JS = r"""// Journal interactive enhancements. Trusted-Types-safe; progre
     }
     function show(anchor, idx) {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      pinned = false;            // a fresh hover/focus is transient again
       curAnchor = anchor;
       card.hidden = false;
       populate(idx);
       place(anchor);
     }
-    function hideSoon() { hideTimer = setTimeout(function () { card.hidden = true; }, 200); }
+    // Pinned (the user clicked a nav button) overrides hover-to-hide, so stepping
+    // through refs never auto-closes when the card resizes under the pointer.
+    function hideSoon() { if (pinned) { return; } hideTimer = setTimeout(function () { card.hidden = true; }, 200); }
     function cancelHide() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }
+    function dismiss() { card.hidden = true; pinned = false; cancelHide(); }
+    function step(delta) {
+      var ni = curIdx + delta;
+      if (ni < 0 || ni >= refOrder.length) { return; }
+      cancelHide();
+      pinned = true;
+      populate(ni);
+      if (curAnchor) { place(curAnchor); }
+    }
     for (var c = 0; c < cites.length; c++) {
       (function (a) {
         var h = a.getAttribute("href");
@@ -336,9 +347,14 @@ JOURNAL_JS = r"""// Journal interactive enhancements. Trusted-Types-safe; progre
     }
     card.addEventListener("mouseenter", cancelHide);
     card.addEventListener("mouseleave", hideSoon);
-    cprev.addEventListener("click", function () { if (curIdx > 0) { populate(curIdx - 1); } });
-    cnext.addEventListener("click", function () { if (curIdx < refOrder.length - 1) { populate(curIdx + 1); } });
-    document.addEventListener("keydown", function (e) { if (e.key === "Escape") { card.hidden = true; } });
+    cprev.addEventListener("click", function () { step(-1); });
+    cnext.addEventListener("click", function () { step(1); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") { dismiss(); } });
+    // A pinned card is dismissed by a click outside it (the nav click that pins
+    // is inside the card, so it never self-dismisses).
+    document.addEventListener("click", function (e) {
+      if (pinned && !card.hidden && !card.contains(e.target)) { dismiss(); }
+    });
   }
 
   // Figure lightbox: click a body image to view enlarged; click or Escape closes.
@@ -379,7 +395,7 @@ def site_footer(journal, root_rel):
             items.append('<a href="%s">%s</a>'
                          % (html.escape(href, quote=True),
                             html.escape(link["title"])))
-        nav = ('<nav class="footer-nav" aria-label="Journal">%s</nav>\n'
+        nav = ('<nav class="footer-nav" aria-label="Footer">%s</nav>\n'
                % " ".join(items))
     return (
         '<footer class="site">%s<p>%s.%s</p></footer>'

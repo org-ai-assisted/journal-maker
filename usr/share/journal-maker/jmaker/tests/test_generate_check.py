@@ -276,7 +276,7 @@ class TestZenodo(unittest.TestCase):
             with open(os.path.join(d, ".zenodo.json"), "w", encoding="utf-8") as fh:
                 json.dump({"deposition_id": 1, "doi": "10.5281/zenodo.1"}, fh)
             with self.assertRaises(zenodo.ZenodoError) as cm:
-                zenodo.reserve(d, "journal.toml", zenodo.SANDBOX, "tok")
+                zenodo.reserve(d, "site.toml", zenodo.SANDBOX, "tok")
             self.assertIn("already records", str(cm.exception))
 
     def test_publish_rejects_pdf_without_doi(self):
@@ -391,7 +391,7 @@ class TestLoading(unittest.TestCase):
 
     def test_base_url_must_be_absolute(self):
         with tempfile.TemporaryDirectory() as d:
-            jt = os.path.join(d, "journal.toml")
+            jt = os.path.join(d, "site.toml")
             with open(jt, "w", encoding="utf-8") as fh:
                 fh.write('title = "J"\nbase_url = "/journal"\n')
             with self.assertRaises(g.BuildError):
@@ -425,7 +425,7 @@ class TestLoading(unittest.TestCase):
 
     def test_out_overlapping_articles_refused(self):
         with tempfile.TemporaryDirectory() as d:
-            jt = os.path.join(d, "journal.toml")
+            jt = os.path.join(d, "site.toml")
             with open(jt, "w", encoding="utf-8") as fh:
                 fh.write('title = "J"\nbase_url = "https://e.example"\n')
             arts = os.path.join(d, "articles")
@@ -435,7 +435,7 @@ class TestLoading(unittest.TestCase):
 
     def test_base_url_requires_authority(self):
         with tempfile.TemporaryDirectory() as d:
-            jt = os.path.join(d, "journal.toml")
+            jt = os.path.join(d, "site.toml")
             with open(jt, "w", encoding="utf-8") as fh:
                 fh.write('title = "J"\nbase_url = "https:///"\n')
             with self.assertRaises(g.BuildError):
@@ -459,7 +459,7 @@ class TestLoading(unittest.TestCase):
         # a normal _site under the content root must NOT trip the guard; it fails
         # later (no articles), which is a different, expected error
         with tempfile.TemporaryDirectory() as d:
-            jt = os.path.join(d, "journal.toml")
+            jt = os.path.join(d, "site.toml")
             with open(jt, "w", encoding="utf-8") as fh:
                 fh.write('title = "J"\nbase_url = "https://e.example"\n')
             os.makedirs(os.path.join(d, "articles"))
@@ -823,7 +823,7 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn("trusted-types 'none'", page)
         self.assertNotIn("unsafe-inline", page)        # no inline escape hatch
         self.assertNotIn("unsafe-eval", page)          # no eval / wasm
-        self.assertIn("journal.js", page)              # bundle referenced
+        self.assertIn("site.js", page)                 # bundle referenced
         self.assertNotIn("frame-ancestors", g._csp_meta())  # meta cannot set it
 
     def test_security_headers_and_headers_file(self):
@@ -840,7 +840,7 @@ class TestRefLinksAndMeta(unittest.TestCase):
 
     def test_js_bundle_is_tt_safe(self):
         from jmaker import templates
-        js = templates.JOURNAL_JS
+        js = templates.SITE_JS
         # Trusted-Types-safe: no DOM-XSS sinks, so it runs under trusted-types 'none'.
         for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML",
                      "document.write", "eval(", "new Function"):
@@ -1031,7 +1031,7 @@ class TestFooterNav(unittest.TestCase):
         self.assertNotIn("footer-nav", out)
 
     def _journal(self, d, body):
-        jt = os.path.join(d, "journal.toml")
+        jt = os.path.join(d, "site.toml")
         with open(jt, "w", encoding="utf-8") as fh:
             fh.write('title="J"\nbase_url="https://e.example"\n' + body)
         return jt
@@ -1230,7 +1230,7 @@ class TestNoIndexDefault(unittest.TestCase):
 
     def test_default_build_non_indexable_publish_opts_in(self):
         with tempfile.TemporaryDirectory() as d:
-            jt = os.path.join(d, "journal.toml")
+            jt = os.path.join(d, "site.toml")
             with open(jt, "w", encoding="utf-8") as fh:
                 fh.write('title = "J"\nbase_url = "https://e.example"\n'
                          'publisher = "P"\nissn = ""\nlicense = "CC-BY-4.0"\n'
@@ -1259,7 +1259,7 @@ class TestNoIndexDefault(unittest.TestCase):
 
 class TestCheckSiteDiscovery(unittest.TestCase):
     def _site(self, d, article_slug="art", pages=None):
-        jt = os.path.join(d, "journal.toml")
+        jt = os.path.join(d, "site.toml")
         with open(jt, "w", encoding="utf-8") as fh:
             fh.write('title = "J"\nbase_url = "https://e.example"\n'
                      'publisher = "P"\nlicense = "All rights reserved"\n'
