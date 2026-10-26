@@ -1216,17 +1216,35 @@ class TestIndexPolicy(unittest.TestCase):
 
 class TestNoIndexDefault(unittest.TestCase):
     def test_write_robots_noindex_vs_publish(self):
+        # Exact bytes must match dist_ai.webcheck.site.render_robots (the webcheck
+        # 'previews' policy re-derives and compares).
         with tempfile.TemporaryDirectory() as d:
             g.write_robots({"_no_index": True, "base_url": "https://e.example"}, d)
             with open(os.path.join(d, "robots.txt"), encoding="utf-8") as fh:
-                txt = fh.read()
-            self.assertIn("Disallow: /", txt)
-            self.assertNotIn("Allow: /", txt)
+                self.assertEqual(fh.read(), "User-agent: *\nDisallow: /\n")
             g.write_robots({"_no_index": False, "base_url": "https://e.example"}, d)
             with open(os.path.join(d, "robots.txt"), encoding="utf-8") as fh:
-                txt = fh.read()
-            self.assertIn("Allow: /", txt)
-            self.assertIn("Sitemap:", txt)
+                self.assertEqual(
+                    fh.read(),
+                    "User-agent: *\nAllow: /\n\nSitemap: https://e.example/sitemap.xml\n")
+
+    def test_write_sitemap_noindex_is_empty(self):
+        # A no-index build advertises no crawlable URL -> empty urlset, byte-
+        # matching webcheck's render_sitemap (which excludes noindex pages).
+        urls = ["https://e.example/", "https://e.example/a/"]
+        with tempfile.TemporaryDirectory() as d:
+            g.write_sitemap(urls, {"_no_index": True}, d)
+            with open(os.path.join(d, "sitemap.xml"), encoding="utf-8") as fh:
+                self.assertEqual(
+                    fh.read(),
+                    '<?xml version="1.0" encoding="UTF-8"?>\n'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+                    '</urlset>\n')
+            g.write_sitemap(urls, {"_no_index": False}, d)
+            with open(os.path.join(d, "sitemap.xml"), encoding="utf-8") as fh:
+                out = fh.read()
+            self.assertIn("<loc>https://e.example/</loc>", out)
+            self.assertIn("<loc>https://e.example/a/</loc>", out)
 
     def test_default_build_non_indexable_publish_opts_in(self):
         with tempfile.TemporaryDirectory() as d:
