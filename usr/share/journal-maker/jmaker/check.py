@@ -340,7 +340,8 @@ def check_pdf(path, f):
         f.err(path, "qpdf absent; cannot verify PDF active content")
         return
     try:
-        r = subprocess.run([qpdf, "--json=latest", path], capture_output=True)
+        r = subprocess.run([qpdf, "--json=latest", path],
+                           capture_output=True, text=True)
     except Exception as exc:
         f.err(path, "qpdf failed: %s" % exc)
         return

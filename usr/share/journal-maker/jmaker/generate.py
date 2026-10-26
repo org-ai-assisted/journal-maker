@@ -1201,7 +1201,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     # homepage/sitemap would point at the wrong target. Reject up front.
     page_slugs = [fn[:-3] for fn in sorted(os.listdir(pages_abs))
                   if fn.endswith(".md")] if os.path.isdir(pages_abs) else []
-    route_owner = {}
+    route_owner: dict[str, str] = {}
     claims = ([("reserved route", r) for r in ("browse", "assets")]
               + [(m["_dir"], _rel_dir(m)) for m in articles]
               + [("page %s.md" % s, s) for s in page_slugs])
