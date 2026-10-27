@@ -518,7 +518,7 @@ def _csp_header():
     """
     return (
         "default-src 'none'; script-src 'self'; style-src 'self'; "
-        "img-src 'self'; base-uri 'none'; form-action 'none'; "
+        "img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; "
         "frame-ancestors 'none'; object-src 'none'; "
         "require-trusted-types-for 'script'; trusted-types 'none'")
 
@@ -528,7 +528,7 @@ def _csp_meta():
     meta tag cannot set."""
     return (
         "default-src 'none'; script-src 'self'; style-src 'self'; "
-        "img-src 'self'; base-uri 'none'; form-action 'none'; "
+        "img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; "
         "object-src 'none'; require-trusted-types-for 'script'; "
         "trusted-types 'none'")
 
@@ -595,6 +595,25 @@ def write_headers(out_dir):
 
 # ---------------------------------------------------------------- rendering
 
+def _icon_links(root_rel):
+    """Favicon + apple-touch + mask icons, theme-color (light/dark) and the PWA
+    manifest, emitted in every page head. All same-origin (img-src / manifest-src
+    'self'). The SVG scales to any size; the PNGs are rsvg renders for clients
+    that need raster. theme-color values track --bg (light #fdfdfc / dark #15171b)."""
+    a = root_rel + "assets/"
+    return (
+        '<link rel="icon" type="image/svg+xml" href="%(a)sfavicon.svg">\n'
+        '<link rel="icon" type="image/png" sizes="512x512" href="%(a)sfavicon.png">\n'
+        '<link rel="apple-touch-icon" href="%(a)sfavicon.png">\n'
+        '<link rel="mask-icon" href="%(a)sfavicon.svg" color="#0b5cad">\n'
+        '<meta name="theme-color" media="(prefers-color-scheme: light)" '
+        'content="#fdfdfc">\n'
+        '<meta name="theme-color" media="(prefers-color-scheme: dark)" '
+        'content="#15171b">\n'
+        '<link rel="manifest" href="%(a)smanifest.webmanifest">'
+    ) % {"a": a}
+
+
 def _page(lang, head_title, description, canonical, extra_head, body,
           journal, root_rel):
     from jmaker.templates import STYLE_CSS, site_header, site_footer  # noqa
@@ -613,7 +632,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         '<link rel="alternate" type="application/rss+xml" title="%s" '
         'href="%sfeed.xml">\n'
         "%s\n"
-        '<link rel="icon" type="image/svg+xml" href="%sassets/favicon.svg">\n'
+        "%s\n"
         '<link rel="stylesheet" href="%sassets/style.css">\n'
         '<script src="%sassets/site.js" defer></script>\n'
         "</head>\n<body>\n"
@@ -624,7 +643,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         html.escape(description),
         html.escape(canonical, quote=True),
         html.escape(journal["title"], quote=True), root_rel,
-        extra_head, root_rel, root_rel, root_rel,
+        extra_head, _icon_links(root_rel), root_rel, root_rel,
         site_header(journal["title"], _site_root(journal)), body,
         site_footer(journal, root_rel),
     )
@@ -823,6 +842,7 @@ def _opengraph(title, description, url, journal, og_type="website"):
     def t(key, content, attr="property"):
         return ('<meta %s="%s" content="%s">'
                 % (attr, key, html.escape(str(content), quote=True)))
+    img = journal["base_url"] + "/assets/og.png"
     return "\n".join([
         t("og:type", og_type),
         t("og:title", title),
@@ -830,9 +850,15 @@ def _opengraph(title, description, url, journal, og_type="website"):
         t("og:url", url),
         t("og:site_name", journal["title"]),
         t("og:locale", _og_locale(journal)),
-        t("twitter:card", "summary", attr="name"),
+        t("og:image", img),
+        t("og:image:width", "1200"),
+        t("og:image:height", "630"),
+        t("og:image:alt", journal["title"]),
+        t("twitter:card", "summary_large_image", attr="name"),
         t("twitter:title", title, attr="name"),
         t("twitter:description", description, attr="name"),
+        t("twitter:image", img, attr="name"),
+        t("twitter:image:alt", journal["title"], attr="name"),
     ])
 
 
@@ -1224,6 +1250,63 @@ def write_feed(articles, journal, out_dir):
         fh.write(xml)
 
 
+FAVICON_PNG_SIZE = 512  # == dist_ai.webcheck.site.FAVICON_SIZE (check_seo gate)
+
+
+def _rsvg_png(svg_path, size, dst):
+    # Rasterize an SVG to a square PNG via rsvg-convert -- the same tool the
+    # family sites' site-generate uses. PNG bytes are not reproducible across
+    # librsvg versions, so checks gate size + completeness, never bytes.
+    subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size),
+                    "-o", dst, svg_path], check=True)
+
+
+def write_icons(out_dir, journal):
+    """favicon (SVG + raster renders), the og.png social card, and the PWA
+    manifest. The SVG favicon is declared in every head so the browser never
+    probes /favicon.ico (a strict-CSP console error); the raster sizes feed
+    apple-touch + the manifest; og.png backs og:image / twitter:image."""
+    from jmaker.templates import FAVICON_SVG, OG_SVG
+    adir = os.path.join(out_dir, "assets")
+    svg = os.path.join(adir, "favicon.svg")
+    with open(svg, "w", encoding="utf-8") as fh:
+        fh.write(FAVICON_SVG)
+    _rsvg_png(svg, FAVICON_PNG_SIZE, os.path.join(adir, "favicon.png"))
+    _rsvg_png(svg, 192, os.path.join(adir, "icon-192.png"))
+    _rsvg_png(svg, 512, os.path.join(adir, "icon-maskable.png"))
+    # Transient og source (title interpolated), rasterized then dropped -- only
+    # og.png ships (the leading-dot name also keeps it out of any .svg scan).
+    og_svg = os.path.join(adir, ".og.svg")
+    with open(og_svg, "w", encoding="utf-8") as fh:
+        fh.write(OG_SVG % {"title": html.escape(journal["title"])})
+    subprocess.run(["rsvg-convert", "-w", "1200", "-h", "630",
+                    "-o", os.path.join(adir, "og.png"), og_svg], check=True)
+    os.remove(og_svg)
+    initials = "".join(w[0] for w in journal["title"].split() if w)[:4].upper()
+    manifest = {
+        "name": journal["title"],
+        "short_name": initials or journal["title"][:12],
+        "description": "Occasional computer-security research previews for "
+                       "public commentary.",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "theme_color": "#0b5cad",
+        "background_color": "#fdfdfc",
+        "icons": [
+            {"src": "favicon.svg", "type": "image/svg+xml", "sizes": "any"},
+            {"src": "icon-192.png", "type": "image/png", "sizes": "192x192"},
+            {"src": "favicon.png", "type": "image/png", "sizes": "512x512"},
+            {"src": "icon-maskable.png", "type": "image/png",
+             "sizes": "512x512", "purpose": "maskable"},
+        ],
+    }
+    with open(os.path.join(adir, "manifest.webmanifest"), "w",
+              encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+        fh.write("\n")
+
+
 def write_robots(journal, out_dir):
     # Byte-identical to dist_ai.webcheck.site.render_robots. Always allows
     # crawling HTML so each page's <meta noindex> is read (a crawler must fetch a
@@ -1366,18 +1449,14 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     urls.append("%s/browse/" % journal["base_url"])
 
     os.makedirs(os.path.join(out_dir, "assets"), exist_ok=True)
-    from jmaker.templates import STYLE_CSS, SITE_JS, FAVICON_SVG
+    from jmaker.templates import STYLE_CSS, SITE_JS
     with open(os.path.join(out_dir, "assets", "style.css"), "w",
               encoding="utf-8") as fh:
         fh.write(STYLE_CSS)
     with open(os.path.join(out_dir, "assets", "site.js"), "w",
               encoding="utf-8") as fh:
         fh.write(SITE_JS)
-    # Declared in every page head so the browser never probes /favicon.ico (a
-    # 404 that a strict-CSP page logs as a console error). SVG scales to any size.
-    with open(os.path.join(out_dir, "assets", "favicon.svg"), "w",
-              encoding="utf-8") as fh:
-        fh.write(FAVICON_SVG)
+    write_icons(out_dir, journal)
 
     write_sitemap(urls, out_dir)
     write_feed(articles, journal, out_dir)

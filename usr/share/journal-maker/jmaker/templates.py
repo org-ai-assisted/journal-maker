@@ -25,6 +25,27 @@ stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 """
 
+# Social-share card (og:image / twitter:image), 1200x630. Rasterized to og.png
+# at build via rsvg-convert. %(title)s is XML-escaped before interpolation.
+# Static shapes + system sans text; renders with a fallback font if the build
+# host lacks the named family (never fails the build).
+OG_SVG = """\
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#fdfdfc"/>
+  <rect y="606" width="1200" height="24" fill="#0b5cad"/>
+  <g transform="translate(90,80) scale(2.1)">
+    <path d="M32 11 L51 19 V33 C51 44.5 42.7 51.8 32 55 \
+C21.3 51.8 13 44.5 13 33 V19 Z" fill="#0b5cad"/>
+    <path d="M24.5 33 L30 38.5 L40.5 26.5" fill="none" stroke="#ffffff" \
+stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="90" y="360" font-family="sans-serif" font-size="70" \
+font-weight="700" fill="#15171b">%(title)s</text>
+  <text x="90" y="430" font-family="sans-serif" font-size="34" \
+fill="#5a5f66">Research previews, posted for public commentary</text>
+</svg>
+"""
+
 STYLE_CSS = """\
 :root {
   color-scheme: light dark;

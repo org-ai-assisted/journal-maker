@@ -884,11 +884,14 @@ class TestRefLinksAndMeta(unittest.TestCase):
 
     def test_opengraph_tags(self):
         og = g._opengraph("T", "An abstract.", "https://e.example/x/",
-                          {"title": "J", "language": "en"}, og_type="article")
+                          {"title": "J", "language": "en",
+                           "base_url": "https://e.example"}, og_type="article")
         self.assertIn('property="og:title" content="T"', og)
         self.assertIn('property="og:type" content="article"', og)
         self.assertIn('property="og:locale" content="en_US"', og)
-        self.assertIn('name="twitter:card" content="summary"', og)
+        self.assertIn('property="og:image" content="https://e.example/assets/og.png"', og)
+        self.assertIn('name="twitter:card" content="summary_large_image"', og)
+        self.assertIn('name="twitter:image"', og)
 
     def test_write_feed(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1437,6 +1440,30 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 self.assertIn('property="og:locale"', page, rel)
                 self.assertIn('name="twitter:card"', page, rel)
                 self.assertIn('"@type": "%s"' % ld_type, page, rel)
+
+    def test_pwa_icons_manifest_and_csp(self):
+        # Icon set + og card rasterized, manifest emitted + linked, CSP allows it
+        # (manifest-src 'self'), and every head carries the icon/PWA tags.
+        import json as _json
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            a = os.path.join(out, "assets")
+            for name in ("favicon.svg", "favicon.png", "icon-192.png",
+                         "icon-maskable.png", "og.png", "manifest.webmanifest"):
+                self.assertTrue(os.path.isfile(os.path.join(a, name)), name)
+            with open(os.path.join(a, "manifest.webmanifest"), encoding="utf-8") as fh:
+                man = _json.load(fh)
+            self.assertEqual(man["display"], "standalone")
+            self.assertTrue(any(i.get("purpose") == "maskable"
+                                for i in man["icons"]))
+            with open(os.path.join(out, "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+            for frag in ('rel="manifest"', 'rel="apple-touch-icon"',
+                         'rel="mask-icon"', 'name="theme-color"',
+                         'property="og:image"', "manifest-src 'self'"):
+                self.assertIn(frag, page, frag)
 
     def test_discovers_flat_article(self):
         # Article landing pages live at a FLAT <slug>/index.html (no v<N>/i<M>);
