@@ -1243,6 +1243,14 @@ class TestIndexPolicy(unittest.TestCase):
         self.assertTrue(any("must not Disallow anything" in m for m in
                             self._check(robots, "<html>clean</html>")))
 
+    def test_published_empty_disallow_line_not_flagged(self):
+        # An empty "Disallow:" line is not a rule. The gate must not false-positive
+        # by letting \s* cross the newline to match the next line's token.
+        robots = ("User-agent: *\nAllow: /\nDisallow:\n\n"
+                  "Sitemap: https://e.example/sitemap.xml\n")
+        self.assertFalse(any("must not Disallow anything" in m for m in
+                             self._check(robots, "<html>clean</html>")))
+
     def test_published_page_with_noindex_meta_errors(self):
         # A published build must carry NO noindex meta on ANY page; an inner page
         # that still has one (homepage does not) is flagged.
@@ -1446,6 +1454,26 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # code, but the skip is explicit).
         self.assertNotIn("style=", g._sanitize_html('<col style="width: 50%">'))
         self.assertIn('style="x"', g._sanitize_html('<pre>a style="x" b</pre>'))
+
+    def test_sanitize_is_tag_scoped_not_prose_eating(self):
+        # The attribute strip must act only inside REAL tags, never on the literal
+        # sequence in running prose -- a security journal quotes these constantly,
+        # and a blind text regex silently deletes reader-visible text (the #33
+        # content-loss regression). Pandoc escapes '<'/'>' in text content, so a
+        # quoted-attribute phrase in a <p> body is plain text.
+        for prose in (
+                '<p>The payload sets style="width:0;height:0" to hide it.</p>',
+                "<p>Use the style='color:red' attribute, or onclick=\"f()\".</p>",
+                '<p>A link href="javascript:void(0)" in the sample.</p>'):
+            self.assertEqual(g._sanitize_html(prose), prose,
+                             "prose must survive verbatim: %r" % prose)
+        # A real tag still has its style / event / dangerous-URL attribute stripped,
+        # even when its quoted value contains a '>'.
+        self.assertEqual(g._sanitize_html('<td style="a>b">x</td>'), '<td>x</td>')
+        self.assertNotIn("onclick", g._sanitize_html('<a onclick="e()">x</a>'))
+        neutralized = g._sanitize_html('<a href="javascript:evil()">x</a>')
+        self.assertNotIn("javascript:", neutralized)
+        self.assertIn('href="#', neutralized)
 
     def test_og_and_jsonld_on_all_page_types(self):
         # Every page type carries OpenGraph + Twitter + og:locale + a JSON-LD

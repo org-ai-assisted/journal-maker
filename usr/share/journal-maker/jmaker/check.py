@@ -491,7 +491,10 @@ def check_index_policy(out_dir, f):
         return
     # PUBLISHED (indexable) build: robots must Disallow NOTHING (a published site
     # is fully crawlable + indexable), and NO page may carry a noindex meta.
-    if re.search(r"(?mi)^Disallow:\s*\S", robots):
+    # [ \t]* not \s*: \s crosses newlines, so an empty "Disallow:" line would match
+    # the next line's content -- a false positive. A real rule needs a token on the
+    # SAME line.
+    if re.search(r"(?mi)^Disallow:[ \t]*\S", robots):
         f.err(robots_path, "published (indexable) build must not Disallow anything in "
                            "robots.txt -- a published site is fully crawlable")
     # Per page: a published build must carry no noindex meta (anywhere), and no

@@ -342,19 +342,29 @@ _EVENT_ATTR_RE = re.compile(
 # Inline style attribute: blocked by the strict style-src 'self' CSP (never
 # applied, logs a console error), so strip it from pandoc output.
 _STYLE_ATTR_RE = re.compile(r'\s+style\s*=\s*("[^"]*"|\'[^\']*\')', re.I)
+# One HTML tag: '<' + a letter or '/', then attribute text where a quoted value
+# (which may itself contain '>') is consumed whole, up to the closing '>'. The
+# attribute strippers run ONLY inside a matched tag -- a blind whole-fragment
+# regex also eats the literal sequence style="..." / onX= from RUNNING PROSE (a
+# security journal routinely quotes such attributes), silently dropping reader-
+# visible text. Pandoc escapes '<'/'>' in text content, so every match here is a
+# real tag and a displayed HTML sample inside <pre>/<code> (its '<' escaped) is
+# never matched -- the per-tag scope subsumes the old code-span skip.
+_TAG_RE = re.compile(r'<[a-zA-Z/][^>"\']*(?:(?:"[^"]*"|\'[^\']*\')[^>"\']*)*>', re.S)
+
+
+def _strip_tag_attrs(tag):
+    tag = _DANGEROUS_URL_RE.sub(r"\1#", tag)
+    tag = _EVENT_ATTR_RE.sub("", tag)
+    # Strict CSP is style-src 'self': an inline style attribute is BLOCKED (never
+    # applied) and logs a console error. Pandoc emits them on table parts (col
+    # width, cell align); styling belongs in the stylesheet, so strip them.
+    tag = _STYLE_ATTR_RE.sub("", tag)
+    return tag
 
 
 def _sanitize_html(frag):
-    frag = _DANGEROUS_URL_RE.sub(r"\1#", frag)
-    frag = _EVENT_ATTR_RE.sub("", frag)
-    # Strict CSP is style-src 'self': an inline style attribute is BLOCKED (never
-    # applied) and logs a console error. Pandoc emits them on table parts (col
-    # width, cell align), so strip every inline style -- styling belongs in the
-    # stylesheet, and a blocked style was dead weight anyway. Skip code spans so a
-    # displayed HTML sample keeps its literal style="..." (pandoc entity-escapes
-    # quotes inside code, but guard explicitly).
-    frag = _sub_outside(_HTML_CODE_RE, lambda s: _STYLE_ATTR_RE.sub("", s), frag)
-    return frag
+    return _TAG_RE.sub(lambda m: _strip_tag_attrs(m.group(0)), frag)
 
 
 # Source stays ASCII " -- "; output renders a spaced en dash (idiomatic typeset
