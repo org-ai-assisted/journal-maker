@@ -64,10 +64,6 @@ def build_metadata(m, journal, abstract):
         "prereserve_doi": True,
         "journal_title": journal["title"],
     }
-    if m.get("volume") is not None:
-        meta["journal_volume"] = str(m["volume"])
-    if m.get("issue") is not None:
-        meta["journal_issue"] = str(m["issue"])
     lic = m.get("license", journal.get("license", ""))
     if lic:
         meta["license"] = _LICENSE_MAP.get(lic, lic.lower())
