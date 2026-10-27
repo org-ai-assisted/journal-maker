@@ -228,6 +228,8 @@ def load_article(adir):
         raise BuildError("%s/meta.toml: keywords must be a list of strings" % adir)
     if "subjects" in m and not isinstance(m["subjects"], list):
         raise BuildError("%s/meta.toml: subjects must be a list" % adir)
+    if "ccs_concepts" in m and not isinstance(m["ccs_concepts"], list):
+        raise BuildError("%s/meta.toml: ccs_concepts must be a list" % adir)
     for a in m["authors"]:
         oid = a.get("orcid")
         if oid is not None and not re.fullmatch(

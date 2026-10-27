@@ -423,6 +423,25 @@ class TestLoading(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.load_article(ad)
 
+    def test_ccs_concepts_string_rejected(self):
+        # A bare string is a truthy iterable: _ccs_line would walk it character
+        # by character and ship garbage. Reject non-list ccs_concepts at load.
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'date = "2026-10-24"\nauthors = [{name = "A"}]\n'
+                              'ccs_concepts = "Security and privacy"\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_ccs_concepts_scalar_rejected(self):
+        # A non-iterable scalar would raise an uncaught TypeError mid-build.
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'date = "2026-10-24"\nauthors = [{name = "A"}]\n'
+                              'ccs_concepts = 2026\n')
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
     def test_out_overlapping_articles_refused(self):
         with tempfile.TemporaryDirectory() as d:
             jt = os.path.join(d, "site.toml")
