@@ -1212,17 +1212,21 @@ class TestIndexPolicy(unittest.TestCase):
             return [m for _l, _p, m in f.errors]
 
     def test_noindex_consistent_ok(self):
-        self.assertEqual(self._check(self.DISALLOW, "<html>" + self.NOINDEX + "</html>"), [])
+        # A no-index build = per-page noindex meta + Allow robots (the crawler
+        # must be allowed to fetch the page to honor its meta).
+        self.assertEqual(self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>"), [])
 
     def test_indexable_consistent_ok(self):
         self.assertEqual(self._check(self.ALLOW, "<html>clean</html>"), [])
 
-    def test_noindex_meta_but_robots_allow_errors(self):
-        self.assertTrue(any("inconsistent" in m for m in
-                            self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>")))
+    def test_robots_disallow_with_noindex_errors(self):
+        # Disallow is always wrong: it blocks the crawler from reading the
+        # noindex meta, defeating it rather than reinforcing it.
+        self.assertTrue(any("must Allow" in m for m in
+                            self._check(self.DISALLOW, "<html>" + self.NOINDEX + "</html>")))
 
     def test_indexable_but_robots_disallow_errors(self):
-        self.assertTrue(any("inconsistent" in m for m in
+        self.assertTrue(any("must Allow" in m for m in
                             self._check(self.DISALLOW, "<html>clean</html>")))
 
     def test_published_todo_on_standalone_page_errors(self):
@@ -1242,42 +1246,40 @@ class TestIndexPolicy(unittest.TestCase):
         self.assertEqual(errs, [])
 
     def test_noindex_build_allows_todo(self):
-        errs = self._check(self.DISALLOW, "<html>" + self.NOINDEX + "</html>",
+        errs = self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>",
                            extra={"about/index.html": "<p><strong>TODO:</strong> finish</p>"})
         self.assertEqual(errs, [])
 
 
 class TestNoIndexDefault(unittest.TestCase):
-    def test_write_robots_noindex_vs_publish(self):
+    def test_write_robots_always_allow(self):
         # Exact bytes must match dist_ai.webcheck.site.render_robots (the webcheck
-        # 'previews' policy re-derives and compares).
+        # 'previews' policy re-derives and compares). robots is Allow + Sitemap
+        # regardless of _no_index -- no-index lives in the per-page meta.
+        expect = "User-agent: *\nAllow: /\n\nSitemap: https://e.example/sitemap.xml\n"
         with tempfile.TemporaryDirectory() as d:
-            g.write_robots({"_no_index": True, "base_url": "https://e.example"}, d)
-            with open(os.path.join(d, "robots.txt"), encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "User-agent: *\nDisallow: /\n")
-            g.write_robots({"_no_index": False, "base_url": "https://e.example"}, d)
-            with open(os.path.join(d, "robots.txt"), encoding="utf-8") as fh:
-                self.assertEqual(
-                    fh.read(),
-                    "User-agent: *\nAllow: /\n\nSitemap: https://e.example/sitemap.xml\n")
+            for noindex in (True, False):
+                g.write_robots({"_no_index": noindex,
+                                "base_url": "https://e.example"}, d)
+                with open(os.path.join(d, "robots.txt"), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), expect)
 
-    def test_write_sitemap_noindex_is_empty(self):
-        # A no-index build advertises no crawlable URL -> empty urlset, byte-
-        # matching webcheck's render_sitemap (which excludes noindex pages).
-        urls = ["https://e.example/", "https://e.example/a/"]
+    def test_write_sitemap_always_populated_and_sorted(self):
+        # The sitemap lists every page regardless of the no-index state (no-index
+        # lives in the per-page meta), SORTED to byte-match webcheck's
+        # render_sitemap (sorted(seo_page_urls(...))). Feed unsorted input.
+        urls = ["https://e.example/b/", "https://e.example/", "https://e.example/a/"]
         with tempfile.TemporaryDirectory() as d:
-            g.write_sitemap(urls, {"_no_index": True}, d)
+            g.write_sitemap(urls, d)
             with open(os.path.join(d, "sitemap.xml"), encoding="utf-8") as fh:
                 self.assertEqual(
                     fh.read(),
                     '<?xml version="1.0" encoding="UTF-8"?>\n'
                     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+                    '  <url><loc>https://e.example/</loc></url>\n'
+                    '  <url><loc>https://e.example/a/</loc></url>\n'
+                    '  <url><loc>https://e.example/b/</loc></url>\n'
                     '</urlset>\n')
-            g.write_sitemap(urls, {"_no_index": False}, d)
-            with open(os.path.join(d, "sitemap.xml"), encoding="utf-8") as fh:
-                out = fh.read()
-            self.assertIn("<loc>https://e.example/</loc>", out)
-            self.assertIn("<loc>https://e.example/a/</loc>", out)
 
     def test_default_build_non_indexable_publish_opts_in(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1297,15 +1299,21 @@ class TestNoIndexDefault(unittest.TestCase):
                          "validation purposes here.\n\n## 1. Intro\n\nBody.\n")
             arts = os.path.join(d, "articles")
             out1 = os.path.join(d, "s1")
-            g.build(arts, jt, out1, skip_pdf=True)                 # default
-            with open(os.path.join(out1, "robots.txt"), encoding="utf-8") as fh:
-                self.assertIn("Disallow: /", fh.read())
+            g.build(arts, jt, out1, skip_pdf=True)                 # default (no-index)
             out2 = os.path.join(d, "s2")
-            g.build(arts, jt, out2, skip_pdf=True, publish=True)   # opt in
-            with open(os.path.join(out2, "robots.txt"), encoding="utf-8") as fh:
-                r = fh.read()
-            self.assertIn("Allow: /", r)
-            self.assertIn("Sitemap:", r)
+            g.build(arts, jt, out2, skip_pdf=True, publish=True)   # opt in (publish)
+            # robots is Allow + Sitemap in BOTH; the ONLY difference is the
+            # per-page noindex meta (present by default, dropped on publish).
+            for out in (out1, out2):
+                with open(os.path.join(out, "robots.txt"), encoding="utf-8") as fh:
+                    r = fh.read()
+                self.assertIn("Allow: /", r)
+                self.assertIn("Sitemap:", r)
+                self.assertNotIn("Disallow: /", r)
+            with open(os.path.join(out1, "index.html"), encoding="utf-8") as fh:
+                self.assertIn('name="robots" content="noindex"', fh.read())
+            with open(os.path.join(out2, "index.html"), encoding="utf-8") as fh:
+                self.assertNotIn('name="robots" content="noindex"', fh.read())
 
 
 class TestCheckSiteDiscovery(unittest.TestCase):
@@ -1362,20 +1370,18 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertEqual(found, 1)  # still discovered, not skipped
             self.assertTrue(any("article_status" in m for _l, _p, m in f.items))
 
-    def test_noindex_empty_sitemap_ok_indexable_errors(self):
-        # A no-index build (default) has an empty sitemap + Disallow robots --
-        # correct, so check_site must NOT flag "lists no URLs". Flipping robots to
-        # the indexable Allow form makes the empty sitemap an error.
+    def test_noindex_build_sitemap_is_populated(self):
+        # A no-index build (default) still ships a POPULATED sitemap listing its
+        # real pages (no-index is a per-page meta concern), so check_site finds no
+        # "lists no URLs" error and the sitemap carries a <loc>.
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
             out = os.path.join(d, "s")
             g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
             f, _ = c.check_site(out)
             self.assertFalse(any("lists no URLs" in m for _l, _p, m in f.items))
-            with open(os.path.join(out, "robots.txt"), "w", encoding="utf-8") as fh:
-                fh.write("User-agent: *\nAllow: /\n\nSitemap: s/sitemap.xml\n")
-            f2, _ = c.check_site(out)
-            self.assertTrue(any("lists no URLs" in m for _l, _p, m in f2.items))
+            with open(os.path.join(out, "sitemap.xml"), encoding="utf-8") as fh:
+                self.assertIn("<loc>", fh.read())
 
     def test_rejects_article_slug_colliding_with_page(self):
         # Flat namespace: an article slug that equals a standalone page slug

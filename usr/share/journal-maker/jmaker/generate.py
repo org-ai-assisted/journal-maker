@@ -1108,16 +1108,17 @@ def render_browse(articles, journal):
                  journal["base_url"] + "/browse/", "", body, journal, "../")
 
 
-def write_sitemap(urls, journal, out_dir):
-    # Byte-identical to dist_ai.webcheck.site.render_sitemap/render_robots (the
-    # webcheck 'previews' policy re-derives and compares). A no-index build
-    # advertises NO crawlable URL, so its sitemap is empty (webcheck excludes
-    # noindex pages, so an all-noindex site yields an empty urlset).
-    entries = [] if journal.get("_no_index") else list(urls)
+def write_sitemap(urls, out_dir):
+    # Byte-identical to dist_ai.webcheck.site.render_sitemap (the webcheck
+    # 'previews' policy re-derives and compares). The sitemap lists every
+    # navigable page regardless of the temporary no-index state: no-index is a
+    # per-page <meta> concern, not a reason to drop a real page from the sitemap.
+    # sorted() to byte-match webcheck's render_sitemap, which emits
+    # sorted(seo_page_urls(...)); the build's own url order is incidental.
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
     lines += ["  <url><loc>%s</loc></url>" % html.escape(u, quote=False)
-              for u in entries]
+              for u in sorted(urls)]
     lines.append("</urlset>")
     xml = "\n".join(lines) + "\n"
     with open(os.path.join(out_dir, "sitemap.xml"), "w", encoding="utf-8") as fh:
@@ -1157,14 +1158,13 @@ def write_feed(articles, journal, out_dir):
 
 
 def write_robots(journal, out_dir):
-    if journal.get("_no_index"):
-        # Interim / non-canonical host: keep every URL out of all indexes, so
-        # no non-permanent address is ever crawled (Scholar forbids URL changes).
-        txt = "User-agent: *\nDisallow: /\n"
-    else:
-        # Blank line before Sitemap: matches webcheck's canonical render_robots.
-        txt = ("User-agent: *\nAllow: /\n\nSitemap: %s/sitemap.xml\n"
-               % journal["base_url"])
+    # Byte-identical to dist_ai.webcheck.site.render_robots. Always allows
+    # crawling and advertises the sitemap; a no-index page keeps itself out of
+    # indexes via its per-page <meta noindex> (which a crawler must be allowed to
+    # fetch to honor), so robots never Disallows. Blank line before Sitemap
+    # matches webcheck's canonical render_robots.
+    txt = ("User-agent: *\nAllow: /\n\nSitemap: %s/sitemap.xml\n"
+           % journal["base_url"])
     with open(os.path.join(out_dir, "robots.txt"), "w", encoding="utf-8") as fh:
         fh.write(txt)
 
@@ -1303,7 +1303,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
               encoding="utf-8") as fh:
         fh.write(SITE_JS)
 
-    write_sitemap(urls, journal, out_dir)
+    write_sitemap(urls, out_dir)
     write_feed(articles, journal, out_dir)
     write_headers(out_dir)
     write_robots(journal, out_dir)

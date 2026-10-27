@@ -448,10 +448,12 @@ def check_no_vendor_refs(out_dir, f):
 
 
 def check_index_policy(out_dir, f):
-    """robots.txt and the pages' noindex meta must agree, and a PUBLISHED
-    (indexable) site must carry no leftover TODO edit-marker on ANY page
-    (articles AND standalone pages). A mismatch between the two signals, or an
-    indexable site shipping an unresolved note, is a hard error."""
+    """robots.txt must always Allow crawling and never Disallow -- no-index is
+    expressed per-page via a noindex meta, which a crawler must be allowed to
+    fetch to honor, NOT by blocking crawling. Separately, a PUBLISHED (indexable,
+    no noindex meta) site must carry no leftover TODO edit-marker on a standalone
+    page. A Disallow robots, or an indexable site shipping an unresolved note, is
+    a hard error."""
     robots_path = os.path.join(out_dir, "robots.txt")
     home = os.path.join(out_dir, "index.html")
     if not (os.path.isfile(robots_path) and os.path.isfile(home)):
@@ -462,14 +464,17 @@ def check_index_policy(out_dir, f):
         noindexed = 'name="robots" content="noindex"' in fh.read()
     allows = re.search(r"(?mi)^Allow: /\s*$", robots) is not None
     disallows = re.search(r"(?mi)^Disallow: /\s*$", robots) is not None
-    if noindexed:
-        if allows or not disallows:
-            f.err(robots_path, "pages carry a noindex meta but robots.txt does "
-                               "not Disallow: / -- index policy is inconsistent")
-        return
+    # robots always Allows and never Disallows, independent of the noindex state:
+    # a no-index page is honored by a crawler only if it may fetch the page, so a
+    # Disallow would defeat the meta rather than reinforce it.
     if disallows or not allows:
-        f.err(robots_path, "no noindex meta (indexable build) but robots.txt "
-                           "does not Allow: / -- index policy is inconsistent")
+        f.err(robots_path, "robots.txt must Allow: / and not Disallow: / -- "
+                           "no-index is expressed by the per-page noindex meta, "
+                           "not by robots")
+    if noindexed:
+        # A no-index (interim) build may still carry unresolved TODO edit-markers;
+        # the TODO gate below applies only to a published (indexable) build.
+        return
     # An indexable, published site must not ship unresolved edit-markers on its
     # STANDALONE pages. Article pages carry article_status and are governed by
     # check_release_state (status-aware: a draft article may legitimately keep
@@ -496,23 +501,17 @@ def check_site(out_dir):
     check_no_vendor_refs(out_dir, f)
     if not os.path.isfile(os.path.join(out_dir, "index.html")):
         f.err(out_dir, "missing homepage index.html")
-    robots_path = os.path.join(out_dir, "robots.txt")
-    no_index = False
-    if not os.path.isfile(robots_path):
+    if not os.path.isfile(os.path.join(out_dir, "robots.txt")):
         f.err(out_dir, "missing robots.txt")
-    else:
-        with open(robots_path, "r", encoding="utf-8") as fh:
-            no_index = "Disallow: /" in fh.read()
     sitemap = os.path.join(out_dir, "sitemap.xml")
     if not os.path.isfile(sitemap):
         f.err(out_dir, "missing sitemap.xml")
     else:
+        # The sitemap lists every navigable page regardless of the temporary
+        # no-index state, so it is always populated -- an empty urlset is a bug.
         with open(sitemap, "r", encoding="utf-8") as fh:
-            has_urls = "<loc>" in fh.read()
-        # A no-index site advertises no crawlable URL, so an empty sitemap is
-        # correct; only an INDEXABLE site must list its pages.
-        if not has_urls and not no_index:
-            f.err(sitemap, "sitemap.xml lists no URLs")
+            if "<loc>" not in fh.read():
+                f.err(sitemap, "sitemap.xml lists no URLs")
     check_index_policy(out_dir, f)
 
     # Article landing pages are listed in the build manifest, NOT discovered by
