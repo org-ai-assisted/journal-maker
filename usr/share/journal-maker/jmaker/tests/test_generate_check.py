@@ -1367,6 +1367,34 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                     css += fh.read()
             self.assertIn("a.cite { text-decoration: underline dotted", css)
 
+    def test_inline_styles_stripped_and_favicon_linked(self):
+        # Strict CSP style-src 'self' blocks inline styles (pandoc emits them on
+        # aligned/sized table cells); the page must carry none. Every page links a
+        # favicon so the browser never probes /favicon.ico (a strict-CSP console
+        # error) -- the asset ships too.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with open(os.path.join(d, "articles", "art", "paper.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation purposes here.\n\n## 1. Intro\n\n"
+                         "| a | b |\n|:-:|:-:|\n| 1 | 2 |\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertNotIn("style=", page)
+            self.assertIn('rel="icon"', page)
+            self.assertTrue(
+                os.path.isfile(os.path.join(out, "assets", "favicon.svg")))
+
+    def test_sanitize_strips_style_outside_code_keeps_inside(self):
+        # A table col's inline style is stripped; a displayed HTML sample inside a
+        # code span keeps its literal style="..." (pandoc entity-escapes quotes in
+        # code, but the skip is explicit).
+        self.assertNotIn("style=", g._sanitize_html('<col style="width: 50%">'))
+        self.assertIn('style="x"', g._sanitize_html('<pre>a style="x" b</pre>'))
+
     def test_discovers_flat_article(self):
         # Article landing pages live at a FLAT <slug>/index.html (no v<N>/i<M>);
         # check_site must discover them from the build manifest, not by path.

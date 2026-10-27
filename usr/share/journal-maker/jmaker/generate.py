@@ -339,11 +339,21 @@ _DANGEROUS_URL_RE = re.compile(
     r'((?:href|src)\s*=\s*")\s*(?:javascript|vbscript|data)\s*:', re.I)
 _EVENT_ATTR_RE = re.compile(
     r'\son[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', re.I)
+# Inline style attribute: blocked by the strict style-src 'self' CSP (never
+# applied, logs a console error), so strip it from pandoc output.
+_STYLE_ATTR_RE = re.compile(r'\s+style\s*=\s*("[^"]*"|\'[^\']*\')', re.I)
 
 
 def _sanitize_html(frag):
     frag = _DANGEROUS_URL_RE.sub(r"\1#", frag)
     frag = _EVENT_ATTR_RE.sub("", frag)
+    # Strict CSP is style-src 'self': an inline style attribute is BLOCKED (never
+    # applied) and logs a console error. Pandoc emits them on table parts (col
+    # width, cell align), so strip every inline style -- styling belongs in the
+    # stylesheet, and a blocked style was dead weight anyway. Skip code spans so a
+    # displayed HTML sample keeps its literal style="..." (pandoc entity-escapes
+    # quotes inside code, but guard explicitly).
+    frag = _sub_outside(_HTML_CODE_RE, lambda s: _STYLE_ATTR_RE.sub("", s), frag)
     return frag
 
 
@@ -603,6 +613,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         '<link rel="alternate" type="application/rss+xml" title="%s" '
         'href="%sfeed.xml">\n'
         "%s\n"
+        '<link rel="icon" type="image/svg+xml" href="%sassets/favicon.svg">\n'
         '<link rel="stylesheet" href="%sassets/style.css">\n'
         '<script src="%sassets/site.js" defer></script>\n'
         "</head>\n<body>\n"
@@ -613,7 +624,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         html.escape(description),
         html.escape(canonical, quote=True),
         html.escape(journal["title"], quote=True), root_rel,
-        extra_head, root_rel, root_rel,
+        extra_head, root_rel, root_rel, root_rel,
         site_header(journal["title"], _site_root(journal)), body,
         site_footer(journal, root_rel),
     )
@@ -1296,13 +1307,18 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     urls.append("%s/browse/" % journal["base_url"])
 
     os.makedirs(os.path.join(out_dir, "assets"), exist_ok=True)
-    from jmaker.templates import STYLE_CSS, SITE_JS
+    from jmaker.templates import STYLE_CSS, SITE_JS, FAVICON_SVG
     with open(os.path.join(out_dir, "assets", "style.css"), "w",
               encoding="utf-8") as fh:
         fh.write(STYLE_CSS)
     with open(os.path.join(out_dir, "assets", "site.js"), "w",
               encoding="utf-8") as fh:
         fh.write(SITE_JS)
+    # Declared in every page head so the browser never probes /favicon.ico (a
+    # 404 that a strict-CSP page logs as a console error). SVG scales to any size.
+    with open(os.path.join(out_dir, "assets", "favicon.svg"), "w",
+              encoding="utf-8") as fh:
+        fh.write(FAVICON_SVG)
 
     write_sitemap(urls, out_dir)
     write_feed(articles, journal, out_dir)

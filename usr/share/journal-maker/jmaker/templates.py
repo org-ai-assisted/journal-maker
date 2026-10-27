@@ -10,6 +10,21 @@ references, light + dark via prefers-color-scheme.
 
 import html
 
+# Site icon: a shield (security) carrying a check (research/verification), on the
+# blue accent (--accent #0b5cad). Static shapes only -- no script/on*/external url
+# -- so it passes the SVG active-content safety check and serves same-origin under
+# img-src 'self'. One SVG scales to every size (favicon, tab, PWA icon).
+FAVICON_SVG = """\
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" \
+role="img" aria-label="Computer Security Research">
+  <rect width="64" height="64" rx="13" fill="#0b5cad"/>
+  <path d="M32 11 L51 19 V33 C51 44.5 42.7 51.8 32 55 \
+C21.3 51.8 13 44.5 13 33 V19 Z" fill="#ffffff"/>
+  <path d="M24.5 33 L30 38.5 L40.5 26.5" fill="none" stroke="#0b5cad" \
+stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+"""
+
 STYLE_CSS = """\
 :root {
   color-scheme: light dark;
