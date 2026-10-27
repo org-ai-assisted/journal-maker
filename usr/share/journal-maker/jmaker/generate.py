@@ -1288,8 +1288,10 @@ def write_icons(out_dir, journal):
         "short_name": initials or journal["title"][:12],
         "description": "Occasional computer-security research previews for "
                        "public commentary.",
-        "start_url": "/",
-        "scope": "/",
+        # Track base_url's path (via _site_root) so a subpath/project-page deploy
+        # (https://host/repo) launches + scopes to /repo/, not the origin root.
+        "start_url": _site_root(journal),
+        "scope": _site_root(journal),
         "display": "standalone",
         "theme_color": "#0b5cad",
         "background_color": "#fdfdfc",

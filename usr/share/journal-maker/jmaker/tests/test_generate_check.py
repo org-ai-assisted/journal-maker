@@ -1464,6 +1464,18 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                          'rel="mask-icon"', 'name="theme-color"',
                          'property="og:image"', "manifest-src 'self'"):
                 self.assertIn(frag, page, frag)
+            # start_url/scope track base_url's path: host-root -> "/", a
+            # subpath/project-page deploy -> "/repo/" (not the origin root).
+            self.assertEqual(man["start_url"], "/")
+            with tempfile.TemporaryDirectory() as sd:
+                os.makedirs(os.path.join(sd, "assets"))
+                g.write_icons(sd, {"title": "S", "publisher": "P",
+                                   "base_url": "https://ex.github.io/repo"})
+                with open(os.path.join(sd, "assets", "manifest.webmanifest"),
+                          encoding="utf-8") as fh:
+                    sub = _json.load(fh)
+                self.assertEqual(sub["start_url"], "/repo/")
+                self.assertEqual(sub["scope"], "/repo/")
 
     def test_discovers_flat_article(self):
         # Article landing pages live at a FLAT <slug>/index.html (no v<N>/i<M>);
