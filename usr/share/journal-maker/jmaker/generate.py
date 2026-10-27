@@ -1439,7 +1439,12 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
                     h.update(chunk)
             with open(pdf_path + ".sha256", "w", encoding="utf-8") as sf:
                 sf.write("%s  %s\n" % (h.hexdigest(), pdf_name))  # sha256sum format
-            urls.append("%s/%s/%s" % (journal["base_url"], rel_dir, pdf_name))
+            # The PDF is NOT added to the sitemap: it lists HTML navigable pages
+            # only (byte-identical to dist_ai.webcheck.site.seo_page_urls, which
+            # the 'previews' policy re-derives and compares). The PDF stays
+            # discoverable via its landing page's download link, and a no-index
+            # build's robots Disallows /*.pdf$ -- advertising it in the sitemap
+            # would contradict that.
 
     # Standalone pages (about, policies, license) from <content>/pages/*.md.
     pages = []

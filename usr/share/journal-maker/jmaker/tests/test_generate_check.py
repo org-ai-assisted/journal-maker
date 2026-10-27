@@ -1475,6 +1475,33 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertNotIn("javascript:", neutralized)
         self.assertIn('href="#', neutralized)
 
+    def test_sitemap_excludes_pdfs_in_full_build(self):
+        # The sitemap lists HTML navigable pages only -- byte-identical to
+        # dist_ai.webcheck.site.seo_page_urls, which the 'previews' policy
+        # re-derives and byte-compares. A full build still SERVES the PDF (+ its
+        # .sha256); it is simply not advertised in the sitemap, so a no-index
+        # build's robots Disallow: /*.pdf$ never contradicts the sitemap.
+        def _stub_pdf(_m, _journal, pdf_path):
+            with open(pdf_path, "wb") as fh:
+                fh.write(b"%PDF-1.4 stub\n")
+
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            orig = g.md_to_pdf
+            g.md_to_pdf = _stub_pdf
+            try:
+                out = os.path.join(d, "s")
+                g.build(os.path.join(d, "articles"), jt, out, skip_pdf=False)
+            finally:
+                g.md_to_pdf = orig
+            with open(os.path.join(out, "sitemap.xml"), encoding="utf-8") as fh:
+                sitemap = fh.read()
+            self.assertNotIn(".pdf", sitemap)
+            pdfs = [os.path.join(b, n) for b, _dirs, files in os.walk(out)
+                    for n in files if n.endswith(".pdf")]
+            self.assertTrue(pdfs, "a full build still generates the PDF")
+            self.assertTrue(os.path.isfile(pdfs[0] + ".sha256"))
+
     def test_og_and_jsonld_on_all_page_types(self):
         # Every page type carries OpenGraph + Twitter + og:locale + a JSON-LD
         # block of the right schema.org @type (not article-only).
