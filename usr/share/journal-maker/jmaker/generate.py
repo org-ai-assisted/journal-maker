@@ -968,7 +968,7 @@ def _article_nav(neighbors, root_rel):
             % "".join(parts))
 
 
-def render_article(m, journal, neighbors=None):
+def render_article(m, journal, neighbors=None, skip_pdf=False):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
@@ -1007,6 +1007,15 @@ def render_article(m, journal, neighbors=None):
     cite_box = _cite_box(m, journal, landing_url, year)
     statements = _statements(m)
     license_bit = _license_footer(m, journal)
+    # PDF + sha256 are generated only on a full build (build() gates them on
+    # skip_pdf); omit the download anchors in a skip-pdf tree so it carries no
+    # link to an artifact that was never produced.
+    if skip_pdf:
+        actions_bit = ""
+    else:
+        actions_bit = ('<p class="actions"><a href="%s">Download PDF</a> '
+                       '<a class="checksum" href="%s.sha256">SHA-256</a></p>\n'
+                       % (pdf_name, pdf_name))
 
     main = (
         '<main id="main" class="article">\n'
@@ -1020,8 +1029,7 @@ def render_article(m, journal, neighbors=None):
         "%s"                                   # subjects
         "%s"                                   # ccs concepts
         "%s"                                   # status line
-        '<p class="actions"><a href="%s">Download PDF</a> '
-        '<a class="checksum" href="%s.sha256">SHA-256</a></p>\n'
+        "%s"                                   # pdf download actions (omitted when skip_pdf)
         "%s"                                   # cite box (beside the download action)
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
         "%s"                                   # toc
@@ -1030,7 +1038,7 @@ def render_article(m, journal, neighbors=None):
         "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
-         doi_bit, history, subjects, ccs, status_line, pdf_name, pdf_name,
+         doi_bit, history, subjects, ccs, status_line, actions_bit,
          cite_box, abstract_html, toc, body_html, statements,
          _article_nav(neighbors, root_rel), license_bit)
 
@@ -1251,7 +1259,8 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         nbr[_rel_dir(a)] = (ordered[i - 1] if i > 0 else None,
                             ordered[i + 1] if i < len(ordered) - 1 else None)
     for m in articles:
-        rel_dir, pdf_name, page = render_article(m, journal, nbr.get(_rel_dir(m)))
+        rel_dir, pdf_name, page = render_article(
+            m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf)
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:

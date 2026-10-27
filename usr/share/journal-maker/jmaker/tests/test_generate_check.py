@@ -1408,6 +1408,30 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             _f, found = c.check_site(out)
             self.assertEqual(found, 1)
 
+    def test_skip_pdf_omits_pdf_download_anchors(self):
+        # build() gates PDF + sha256 generation on skip_pdf, so a --skip-pdf tree
+        # has neither file; the page must then carry NO <a> link to them, or a
+        # link-checker scanning the skip-pdf tree reports two dangling internal
+        # links (regression: the family-wide website-tests gate failed on exactly
+        # android-insecurity.pdf + .sha256). The citation_pdf_url meta (absolute,
+        # canonical) is a separate concern and stays.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertNotIn('href="art.pdf"', page)
+            self.assertNotIn('href="art.pdf.sha256"', page)
+            self.assertNotIn(">Download PDF</a>", page)
+            # render_article is the single source: a FULL build still offers both.
+            journal = g.load_journal(jt)
+            m = g.load_article(os.path.join(d, "articles", "art"))
+            _rel, _name, full = g.render_article(m, journal, skip_pdf=False)
+            self.assertIn('href="art.pdf"', full)
+            self.assertIn('href="art.pdf.sha256"', full)
+            self.assertIn(">Download PDF</a>", full)
+
     def test_discovery_independent_of_status_marker(self):
         # An article page that LOST its article_status meta must still be
         # discovered (via the manifest) and reported, never silently skipped --
