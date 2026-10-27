@@ -405,6 +405,20 @@ class TestLoading(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.load_article(ad)
 
+    def test_numeric_slug_coerced_to_str(self):
+        # A bare `slug = 123` passes the string-form regex but, left an int,
+        # reaches _rel_dir -> _root_rel (.count) and crashes rendering with
+        # AttributeError. load_article must coerce it to str.
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            self._article(ad, 'slug = 123\ndate = "2026-10-24"\n'
+                              'authors = [{name = "A"}]\n')
+            m = g.load_article(ad)
+            self.assertIsInstance(m["slug"], str)
+            self.assertEqual(m["slug"], "123")
+            # the crash site must tolerate the coerced slug
+            self.assertEqual(g._root_rel(g._rel_dir(m)), "../")
+
     def test_empty_author_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             ad = os.path.join(d, "art")

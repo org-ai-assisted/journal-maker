@@ -206,8 +206,12 @@ def load_article(adir):
                          "the image under figures/" % adir)
     m.setdefault("slug", slug_default)
     # Slug lands in filesystem paths and HTML attributes; keep it strict so it
-    # cannot traverse out of the output tree or inject into an href.
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(m["slug"])):
+    # cannot traverse out of the output tree or inject into an href. Coerce to
+    # str first: a bare `slug = 123` in meta.toml is an int that passes the
+    # string-form regex but then reaches _rel_dir/_root_rel (.count) as an int
+    # and crashes rendering -- store the validated string everywhere downstream.
+    m["slug"] = str(m["slug"])
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", m["slug"]):
         raise BuildError("%s/meta.toml: slug must match [a-z0-9][a-z0-9-]*, got %r"
                          % (adir, m["slug"]))
     m["title"] = title
