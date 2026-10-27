@@ -469,21 +469,24 @@ def check_index_policy(out_dir, f):
         f.err(robots_path, "robots.txt must Allow: / and never blanket Disallow: / "
                            "-- HTML de-indexing relies on the crawler reading the "
                            "per-page noindex meta")
-    if noindexed and not pdf_disallow:
-        f.err(robots_path, "no-index build must Disallow: /*.pdf$ -- a PDF carries "
-                           "no noindex meta and Pages serves no X-Robots-Tag, so "
-                           "crawling must be blocked to keep it unindexed")
-    if (not noindexed) and pdf_disallow:
-        f.err(robots_path, "published (indexable) build must not Disallow PDFs -- "
-                           "they should be indexable once the site is public")
     if noindexed:
-        # A no-index (interim) build may still carry unresolved TODO edit-markers;
-        # the TODO gate below applies only to a published (indexable) build.
+        if not pdf_disallow:
+            f.err(robots_path, "no-index build must Disallow: /*.pdf$ -- a PDF carries "
+                               "no noindex meta and Pages serves no X-Robots-Tag, so "
+                               "crawling must be blocked to keep it unindexed")
+        # A no-index (interim) build legitimately carries per-page noindex metas
+        # and may keep unresolved TODO edit-markers; the gates below are
+        # published-only.
         return
-    # An indexable, published site must not ship unresolved edit-markers on its
-    # STANDALONE pages. Article pages carry article_status and are governed by
-    # check_release_state (status-aware: a draft article may legitimately keep
-    # TODO notes under its not-peer-reviewed banner), so skip them here.
+    # PUBLISHED (indexable) build: robots must Disallow NOTHING (a published site
+    # is fully crawlable + indexable), and NO page may carry a noindex meta.
+    if re.search(r"(?mi)^Disallow:\s*\S", robots):
+        f.err(robots_path, "published (indexable) build must not Disallow anything in "
+                           "robots.txt -- a published site is fully crawlable")
+    # Per page: a published build must carry no noindex meta (anywhere), and no
+    # STANDALONE page an unresolved TODO edit-marker (article pages carry
+    # article_status + are governed by check_release_state, so the TODO scan
+    # skips them -- the noindex scan does not).
     for root, _dirs, files in os.walk(out_dir):
         for name in files:
             if not name.endswith(".html"):
@@ -491,6 +494,9 @@ def check_index_policy(out_dir, f):
             p = os.path.join(root, name)
             with open(p, encoding="utf-8") as fh:
                 page = fh.read()
+            if 'name="robots" content="noindex"' in page:
+                f.err(p, "published (indexable) build but this page carries a noindex "
+                         "meta -- strip it or build without --publish")
             if _STATUS_RE.search(page):
                 continue
             marker = html.unescape(_text_only(_CODE_RE.sub(" ", page)))

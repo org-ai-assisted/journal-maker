@@ -1233,10 +1233,22 @@ class TestIndexPolicy(unittest.TestCase):
         self.assertTrue(any("must Disallow" in m for m in
                             self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>")))
 
-    def test_published_with_pdf_disallow_errors(self):
-        # A published (indexable) build must NOT Disallow PDFs.
-        self.assertTrue(any("must not Disallow PDFs" in m for m in
+    def test_published_with_any_disallow_errors(self):
+        # A published (indexable) build must Disallow NOTHING -- not the PDF rule
+        # kept for no-index, nor any other path.
+        self.assertTrue(any("must not Disallow anything" in m for m in
                             self._check(self.NOINDEX_ROBOTS, "<html>clean</html>")))
+        robots = ("User-agent: *\nAllow: /\nDisallow: /x/\n\n"
+                  "Sitemap: https://e.example/sitemap.xml\n")
+        self.assertTrue(any("must not Disallow anything" in m for m in
+                            self._check(robots, "<html>clean</html>")))
+
+    def test_published_page_with_noindex_meta_errors(self):
+        # A published build must carry NO noindex meta on ANY page; an inner page
+        # that still has one (homepage does not) is flagged.
+        errs = self._check(self.ALLOW, "<html>clean</html>",
+                           extra={"sub/index.html": "<html>" + self.NOINDEX + "</html>"})
+        self.assertTrue(any("carries a noindex meta" in m for m in errs))
 
     def test_robots_disallow_with_noindex_errors(self):
         # Disallow is always wrong: it blocks the crawler from reading the
