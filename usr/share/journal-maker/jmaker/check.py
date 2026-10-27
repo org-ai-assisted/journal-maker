@@ -474,9 +474,20 @@ def check_index_policy(out_dir, f):
             f.err(robots_path, "no-index build must Disallow: /*.pdf$ -- a PDF carries "
                                "no noindex meta and Pages serves no X-Robots-Tag, so "
                                "crawling must be blocked to keep it unindexed")
-        # A no-index (interim) build legitimately carries per-page noindex metas
-        # and may keep unresolved TODO edit-markers; the gates below are
+        # robots Allows crawling, so EVERY HTML page of a no-index build must carry
+        # the noindex meta -- an inner page that lost it would be crawled AND
+        # indexed (the mirror of the published-only scan below). A no-index build
+        # legitimately keeps unresolved TODO edit-markers, so that gate stays
         # published-only.
+        for root, _dirs, files in os.walk(out_dir):
+            for name in files:
+                if not name.endswith(".html"):
+                    continue
+                p = os.path.join(root, name)
+                with open(p, encoding="utf-8") as fh:
+                    if 'name="robots" content="noindex"' not in fh.read():
+                        f.err(p, "no-index build but this page lacks a noindex meta -- "
+                                 "robots Allows crawling, so it would be indexed")
         return
     # PUBLISHED (indexable) build: robots must Disallow NOTHING (a published site
     # is fully crawlable + indexable), and NO page may carry a noindex meta.

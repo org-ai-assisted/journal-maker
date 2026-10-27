@@ -1277,8 +1277,14 @@ def write_icons(out_dir, journal):
     # Transient og source (title interpolated), rasterized then dropped -- only
     # og.png ships (the leading-dot name also keeps it out of any .svg scan).
     og_svg = os.path.join(adir, ".og.svg")
+    # Fit the title to the card's ~1020px text column (x=90..1110) so a long
+    # title does not overflow the 1200px canvas. sans-serif 700 averages
+    # ~0.6em/char; never enlarge past the 70px design size, and floor at 30px
+    # (a title long enough to need smaller fits on one line regardless).
+    title = journal["title"]
+    fontsize = max(30, min(70, int(1020 / (0.6 * max(len(title), 1)))))
     with open(og_svg, "w", encoding="utf-8") as fh:
-        fh.write(OG_SVG % {"title": html.escape(journal["title"])})
+        fh.write(OG_SVG % {"title": html.escape(title), "fontsize": fontsize})
     subprocess.run(["rsvg-convert", "-w", "1200", "-h", "630",
                     "-o", os.path.join(adir, "og.png"), og_svg], check=True)
     os.remove(og_svg)

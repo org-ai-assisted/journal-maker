@@ -1277,9 +1277,21 @@ class TestIndexPolicy(unittest.TestCase):
         self.assertEqual(errs, [])
 
     def test_noindex_build_allows_todo(self):
+        # A no-index build keeps TODO edit-markers; the inner page still carries
+        # the noindex meta (a real no-index page does), so only the TODO-allowance
+        # is under test here.
         errs = self._check(self.NOINDEX_ROBOTS, "<html>" + self.NOINDEX + "</html>",
-                           extra={"about/index.html": "<p><strong>TODO:</strong> finish</p>"})
+                           extra={"about/index.html": "<html>" + self.NOINDEX +
+                                  "<p><strong>TODO:</strong> finish</p></html>"})
         self.assertEqual(errs, [])
+
+    def test_noindex_build_inner_page_without_noindex_errors(self):
+        # robots Allows crawling, so EVERY page of a no-index build must carry the
+        # noindex meta; an inner page that lost it (homepage keeps it) would be
+        # crawled AND indexed. Mirror of the published-page scan.
+        errs = self._check(self.NOINDEX_ROBOTS, "<html>" + self.NOINDEX + "</html>",
+                           extra={"sub/index.html": "<html>clean</html>"})
+        self.assertTrue(any("lacks a noindex meta" in m for m in errs))
 
 
 class TestNoIndexDefault(unittest.TestCase):
