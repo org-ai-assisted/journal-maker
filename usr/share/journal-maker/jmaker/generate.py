@@ -1179,12 +1179,15 @@ def write_feed(articles, journal, out_dir):
 
 def write_robots(journal, out_dir):
     # Byte-identical to dist_ai.webcheck.site.render_robots. Always allows
-    # crawling and advertises the sitemap; a no-index page keeps itself out of
-    # indexes via its per-page <meta noindex> (which a crawler must be allowed to
-    # fetch to honor), so robots never Disallows. Blank line before Sitemap
-    # matches webcheck's canonical render_robots.
-    txt = ("User-agent: *\nAllow: /\n\nSitemap: %s/sitemap.xml\n"
-           % journal["base_url"])
+    # crawling HTML so each page's <meta noindex> is read (a crawler must fetch a
+    # page to honor its meta), and advertises the sitemap. A no-index build ALSO
+    # Disallows PDFs: a PDF carries no noindex meta and GitHub Pages serves no
+    # X-Robots-Tag, so blocking the crawl is the only Pages-compatible way to keep
+    # it out of indexes -- users still download it (robots binds crawlers only).
+    lines = ["User-agent: *", "Allow: /"]
+    if journal.get("_no_index"):
+        lines.append("Disallow: /*.pdf$")
+    txt = "\n".join(lines) + "\n\nSitemap: %s/sitemap.xml\n" % journal["base_url"]
     with open(os.path.join(out_dir, "robots.txt"), "w", encoding="utf-8") as fh:
         fh.write(txt)
 

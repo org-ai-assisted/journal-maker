@@ -448,12 +448,12 @@ def check_no_vendor_refs(out_dir, f):
 
 
 def check_index_policy(out_dir, f):
-    """robots.txt must always Allow crawling and never Disallow -- no-index is
-    expressed per-page via a noindex meta, which a crawler must be allowed to
-    fetch to honor, NOT by blocking crawling. Separately, a PUBLISHED (indexable,
-    no noindex meta) site must carry no leftover TODO edit-marker on a standalone
-    page. A Disallow robots, or an indexable site shipping an unresolved note, is
-    a hard error."""
+    """robots.txt must Allow crawling (so each page's noindex meta is read) and
+    never blanket-Disallow. A no-index build MUST additionally Disallow PDFs --
+    they carry no noindex meta and Pages serves no X-Robots-Tag, so blocking the
+    crawl is the only way to keep them unindexed; a PUBLISHED build must NOT (PDFs
+    become indexable). Separately, a published (indexable) site must carry no
+    leftover TODO edit-marker on a standalone page. A violation is a hard error."""
     robots_path = os.path.join(out_dir, "robots.txt")
     home = os.path.join(out_dir, "index.html")
     if not (os.path.isfile(robots_path) and os.path.isfile(home)):
@@ -463,14 +463,19 @@ def check_index_policy(out_dir, f):
     with open(home, encoding="utf-8") as fh:
         noindexed = 'name="robots" content="noindex"' in fh.read()
     allows = re.search(r"(?mi)^Allow: /\s*$", robots) is not None
-    disallows = re.search(r"(?mi)^Disallow: /\s*$", robots) is not None
-    # robots always Allows and never Disallows, independent of the noindex state:
-    # a no-index page is honored by a crawler only if it may fetch the page, so a
-    # Disallow would defeat the meta rather than reinforce it.
-    if disallows or not allows:
-        f.err(robots_path, "robots.txt must Allow: / and not Disallow: / -- "
-                           "no-index is expressed by the per-page noindex meta, "
-                           "not by robots")
+    blanket_disallow = re.search(r"(?mi)^Disallow: /\s*$", robots) is not None
+    pdf_disallow = re.search(r"(?mi)^Disallow: /\*\.pdf\$\s*$", robots) is not None
+    if not allows or blanket_disallow:
+        f.err(robots_path, "robots.txt must Allow: / and never blanket Disallow: / "
+                           "-- HTML de-indexing relies on the crawler reading the "
+                           "per-page noindex meta")
+    if noindexed and not pdf_disallow:
+        f.err(robots_path, "no-index build must Disallow: /*.pdf$ -- a PDF carries "
+                           "no noindex meta and Pages serves no X-Robots-Tag, so "
+                           "crawling must be blocked to keep it unindexed")
+    if (not noindexed) and pdf_disallow:
+        f.err(robots_path, "published (indexable) build must not Disallow PDFs -- "
+                           "they should be indexable once the site is public")
     if noindexed:
         # A no-index (interim) build may still carry unresolved TODO edit-markers;
         # the TODO gate below applies only to a published (indexable) build.

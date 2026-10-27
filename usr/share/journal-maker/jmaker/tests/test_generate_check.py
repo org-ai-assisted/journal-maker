@@ -1194,7 +1194,9 @@ class TestPdfFonts(unittest.TestCase):
 class TestIndexPolicy(unittest.TestCase):
     NOINDEX = '<meta name="robots" content="noindex">'
     DISALLOW = "User-agent: *\nDisallow: /\n"
-    ALLOW = "User-agent: *\nAllow: /\nSitemap: https://e.example/sitemap.xml\n"
+    ALLOW = "User-agent: *\nAllow: /\n\nSitemap: https://e.example/sitemap.xml\n"
+    NOINDEX_ROBOTS = ("User-agent: *\nAllow: /\nDisallow: /*.pdf$\n\n"
+                      "Sitemap: https://e.example/sitemap.xml\n")
 
     def _check(self, robots, home, extra=None):
         with tempfile.TemporaryDirectory() as d:
@@ -1212,12 +1214,24 @@ class TestIndexPolicy(unittest.TestCase):
             return [m for _l, _p, m in f.errors]
 
     def test_noindex_consistent_ok(self):
-        # A no-index build = per-page noindex meta + Allow robots (the crawler
-        # must be allowed to fetch the page to honor its meta).
-        self.assertEqual(self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>"), [])
+        # A no-index build = per-page noindex meta + Allow robots (crawler must
+        # fetch to read the meta) + Disallow PDFs (they carry no meta).
+        self.assertEqual(
+            self._check(self.NOINDEX_ROBOTS, "<html>" + self.NOINDEX + "</html>"), [])
 
     def test_indexable_consistent_ok(self):
         self.assertEqual(self._check(self.ALLOW, "<html>clean</html>"), [])
+
+    def test_noindex_without_pdf_disallow_errors(self):
+        # A no-index build whose robots does not Disallow PDFs leaves them
+        # indexable -- a PDF carries no noindex meta and Pages has no X-Robots-Tag.
+        self.assertTrue(any("must Disallow" in m for m in
+                            self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>")))
+
+    def test_published_with_pdf_disallow_errors(self):
+        # A published (indexable) build must NOT Disallow PDFs.
+        self.assertTrue(any("must not Disallow PDFs" in m for m in
+                            self._check(self.NOINDEX_ROBOTS, "<html>clean</html>")))
 
     def test_robots_disallow_with_noindex_errors(self):
         # Disallow is always wrong: it blocks the crawler from reading the
@@ -1246,19 +1260,23 @@ class TestIndexPolicy(unittest.TestCase):
         self.assertEqual(errs, [])
 
     def test_noindex_build_allows_todo(self):
-        errs = self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>",
+        errs = self._check(self.NOINDEX_ROBOTS, "<html>" + self.NOINDEX + "</html>",
                            extra={"about/index.html": "<p><strong>TODO:</strong> finish</p>"})
         self.assertEqual(errs, [])
 
 
 class TestNoIndexDefault(unittest.TestCase):
-    def test_write_robots_always_allow(self):
+    def test_write_robots_noindex_disallows_pdf(self):
         # Exact bytes must match dist_ai.webcheck.site.render_robots (the webcheck
-        # 'previews' policy re-derives and compares). robots is Allow + Sitemap
-        # regardless of _no_index -- no-index lives in the per-page meta.
-        expect = "User-agent: *\nAllow: /\n\nSitemap: https://e.example/sitemap.xml\n"
+        # 'previews' policy re-derives and compares). Both modes Allow (HTML
+        # de-indexes via the per-page meta); a no-index build ALSO Disallows PDFs
+        # (no meta possible, no X-Robots-Tag on Pages).
+        base = "User-agent: *\nAllow: /\n"
+        tail = "\nSitemap: https://e.example/sitemap.xml\n"
+        cases = {True: base + "Disallow: /*.pdf$\n" + tail,
+                 False: base + tail}
         with tempfile.TemporaryDirectory() as d:
-            for noindex in (True, False):
+            for noindex, expect in cases.items():
                 g.write_robots({"_no_index": noindex,
                                 "base_url": "https://e.example"}, d)
                 with open(os.path.join(d, "robots.txt"), encoding="utf-8") as fh:
@@ -1302,14 +1320,19 @@ class TestNoIndexDefault(unittest.TestCase):
             g.build(arts, jt, out1, skip_pdf=True)                 # default (no-index)
             out2 = os.path.join(d, "s2")
             g.build(arts, jt, out2, skip_pdf=True, publish=True)   # opt in (publish)
-            # robots is Allow + Sitemap in BOTH; the ONLY difference is the
-            # per-page noindex meta (present by default, dropped on publish).
+            # Both Allow + advertise the sitemap. Differences: the default
+            # (no-index) build carries the per-page noindex meta AND Disallows
+            # PDFs (no meta possible); the published build does neither.
             for out in (out1, out2):
                 with open(os.path.join(out, "robots.txt"), encoding="utf-8") as fh:
                     r = fh.read()
                 self.assertIn("Allow: /", r)
                 self.assertIn("Sitemap:", r)
-                self.assertNotIn("Disallow: /", r)
+                self.assertNotIn("Disallow: /\n", r)  # never a blanket disallow
+            with open(os.path.join(out1, "robots.txt"), encoding="utf-8") as fh:
+                self.assertIn("Disallow: /*.pdf$", fh.read())
+            with open(os.path.join(out2, "robots.txt"), encoding="utf-8") as fh:
+                self.assertNotIn("Disallow:", fh.read())
             with open(os.path.join(out1, "index.html"), encoding="utf-8") as fh:
                 self.assertIn('name="robots" content="noindex"', fh.read())
             with open(os.path.join(out2, "index.html"), encoding="utf-8") as fh:
