@@ -883,9 +883,11 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn('"lightbox"', js)                  # figure lightbox
 
     def test_opengraph_tags(self):
-        og = g._opengraph({"title": "T"}, {"title": "J"}, "https://e.example/x/",
-                          "An abstract.")
+        og = g._opengraph("T", "An abstract.", "https://e.example/x/",
+                          {"title": "J", "language": "en"}, og_type="article")
         self.assertIn('property="og:title" content="T"', og)
+        self.assertIn('property="og:type" content="article"', og)
+        self.assertIn('property="og:locale" content="en_US"', og)
         self.assertIn('name="twitter:card" content="summary"', og)
 
     def test_write_feed(self):
@@ -1417,6 +1419,24 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # code, but the skip is explicit).
         self.assertNotIn("style=", g._sanitize_html('<col style="width: 50%">'))
         self.assertIn('style="x"', g._sanitize_html('<pre>a style="x" b</pre>'))
+
+    def test_og_and_jsonld_on_all_page_types(self):
+        # Every page type carries OpenGraph + Twitter + og:locale + a JSON-LD
+        # block of the right schema.org @type (not article-only).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d, pages=["about"])
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            want = {"index.html": "WebSite", "about/index.html": "WebPage",
+                    "browse/index.html": "CollectionPage",
+                    "art/index.html": "ScholarlyArticle"}
+            for rel, ld_type in want.items():
+                with open(os.path.join(out, rel), encoding="utf-8") as fh:
+                    page = fh.read()
+                self.assertIn('property="og:title"', page, rel)
+                self.assertIn('property="og:locale"', page, rel)
+                self.assertIn('name="twitter:card"', page, rel)
+                self.assertIn('"@type": "%s"' % ld_type, page, rel)
 
     def test_discovers_flat_article(self):
         # Article landing pages live at a FLAT <slug>/index.html (no v<N>/i<M>);

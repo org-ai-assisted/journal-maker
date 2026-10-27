@@ -808,22 +808,50 @@ def _jsonld(m, journal, landing_url):
     return '<script type="application/ld+json">%s</script>' % j
 
 
-def _opengraph(m, journal, landing_url, description):
-    """OpenGraph + Twitter-card meta: web search and social link previews.
-    (These are NOT read by Google Scholar -- the citation_* tags serve that.)"""
+def _og_locale(journal):
+    # OpenGraph wants a locale like en_US; map a bare "en" to it, else pass the
+    # configured language through.
+    lang = journal.get("language", "en")
+    return "en_US" if lang == "en" else lang
+
+
+def _opengraph(title, description, url, journal, og_type="website"):
+    """OpenGraph + Twitter-card meta for a link preview (NOT read by Google
+    Scholar -- the citation_* tags serve that). Emitted on EVERY page type;
+    og_type is 'article' for a paper, 'website' for the homepage / standalone
+    pages."""
     def t(key, content, attr="property"):
         return ('<meta %s="%s" content="%s">'
                 % (attr, key, html.escape(str(content), quote=True)))
     return "\n".join([
-        t("og:type", "article"),
-        t("og:title", m["title"]),
+        t("og:type", og_type),
+        t("og:title", title),
         t("og:description", description),
-        t("og:url", landing_url),
+        t("og:url", url),
         t("og:site_name", journal["title"]),
+        t("og:locale", _og_locale(journal)),
         t("twitter:card", "summary", attr="name"),
-        t("twitter:title", m["title"], attr="name"),
+        t("twitter:title", title, attr="name"),
         t("twitter:description", description, attr="name"),
     ])
+
+
+def _jsonld_page(ld_type, name, description, url, journal):
+    """schema.org JSON-LD for a non-article page: WebSite (homepage),
+    CollectionPage (browse), or WebPage (standalone). Articles use the richer
+    ScholarlyArticle block (_jsonld)."""
+    ld = {
+        "@context": "https://schema.org",
+        "@type": ld_type,
+        "name": name,
+        "description": description,
+        "url": url,
+        "inLanguage": journal.get("language", "en"),
+        "publisher": {"@type": "Organization", "name": journal["publisher"]},
+    }
+    j = (json.dumps(ld).replace("<", "\\u003c").replace(">", "\\u003e")
+         .replace("&", "\\u0026"))
+    return '<script type="application/ld+json">%s</script>' % j
 
 
 def _authors_html(m):
@@ -979,7 +1007,8 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
     meta = citation_meta(m, journal, landing_url, pdf_url)
     pill, banner, status_line, status_head = _status_fragment(m)
     meta = (meta + "\n" + status_head + "\n"
-            + _opengraph(m, journal, landing_url, description) + "\n"
+            + _opengraph(m["title"], description, landing_url, journal,
+                         og_type="article") + "\n"
             + _jsonld(m, journal, landing_url))
     body_html = _linkify_citations(md_to_html_fragment(m["_body_md"]))
     abstract_html = md_to_html_fragment(m["abstract"])
@@ -1062,10 +1091,22 @@ def render_page(slug, md_text, journal):
             break
     body_html = md_to_html_fragment("\n".join(body_lines))
     canonical = "%s/%s/" % (journal["base_url"], slug)
+    # Meta description from the first body paragraph (markdown lightly stripped),
+    # falling back to the title -- a real description beats a bare "About".
+    desc = title
+    for ln in body_lines:
+        s = ln.strip()
+        if s and not s.startswith("#"):
+            s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)   # [text](url) -> text
+            s = re.sub(r"[*_`]", "", s)
+            desc = " ".join(s.split())[:200]
+            break
     main = ('<main id="main" class="page">\n<h1>%s</h1>\n%s\n</main>'
             % (html.escape(title), body_html))
+    extra = (_opengraph(title, desc, canonical, journal) + "\n"
+             + _jsonld_page("WebPage", title, desc, canonical, journal))
     page = _page(journal["language"], "%s -- %s" % (title, journal["title"]),
-                 title, canonical, "", main, journal, "../")
+                 desc, canonical, extra, main, journal, "../")
     return title, page
 
 
@@ -1092,10 +1133,13 @@ def render_homepage(articles, journal, pages):
         '<p><a href="browse/">Browse by keyword and author</a></p>\n'
         "%s</main>"
     ) % (html.escape(journal["title"]), "\n".join(items), page_nav)
-    return _page(journal["language"], journal["title"],
-                 "Occasional computer-security research previews for public "
-                 "commentary.",
-                 journal["base_url"] + "/", "", body, journal, "")
+    desc = ("Occasional computer-security research previews for public "
+            "commentary.")
+    home_url = journal["base_url"] + "/"
+    extra = (_opengraph(journal["title"], desc, home_url, journal) + "\n"
+             + _jsonld_page("WebSite", journal["title"], desc, home_url, journal))
+    return _page(journal["language"], journal["title"], desc,
+                 home_url, extra, body, journal, "")
 
 
 def render_browse(articles, journal):
@@ -1123,9 +1167,12 @@ def render_browse(articles, journal):
             byauth.setdefault(a["name"], []).append(m)
     body = ('<main id="main">\n<h1>Browse</h1>\n%s%s</main>'
             % (section("By keyword", bykw), section("By author", byauth)))
+    desc = "Browse articles by keyword and author."
+    url = journal["base_url"] + "/browse/"
+    extra = (_opengraph("Browse", desc, url, journal) + "\n"
+             + _jsonld_page("CollectionPage", "Browse", desc, url, journal))
     return _page(journal["language"], "Browse -- %s" % journal["title"],
-                 "Browse articles by keyword and author.",
-                 journal["base_url"] + "/browse/", "", body, journal, "../")
+                 desc, url, extra, body, journal, "../")
 
 
 def write_sitemap(urls, out_dir):
