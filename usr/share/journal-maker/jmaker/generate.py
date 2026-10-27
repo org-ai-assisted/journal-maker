@@ -724,7 +724,8 @@ def _build_toc(body_html):
         text = re.sub(r'\s+', " ", strip.sub("", inner)).strip()
         lis.append('<li><a href="#%s">%s</a></li>'
                    % (html.escape(hid, quote=True), html.escape(text)))
-    return ('<nav class="toc"><div class="toc-label">Contents</div>\n<ol>\n%s\n'
+    return ('<nav class="toc" aria-label="Contents">'
+            '<div class="toc-label">Contents</div>\n<ol>\n%s\n'
             "</ol></nav>\n" % "\n".join(lis))
 
 

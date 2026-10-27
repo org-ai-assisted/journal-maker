@@ -125,7 +125,10 @@ nav.toc .toc-label { font-weight: 650; text-transform: uppercase; letter-spacing
 nav.toc ol { margin: 0.4rem 0 0; padding-left: 1.4rem; }
 nav.toc li { margin: 0.15rem 0; }
 article.body { margin-top: 1.5rem; }
-article.body a.cite { text-decoration: none; font-variant-numeric: tabular-nums; }
+/* Dotted underline distinguishes a citation ref from a content link (solid) AND
+   gives it a non-color distinction, which WCAG 1.4.1 requires for an inline link
+   in a text block (axe link-in-text-block). */
+article.body a.cite { text-decoration: underline dotted; font-variant-numeric: tabular-nums; }
 article.body table { border-collapse: collapse; display: block; width: max-content; max-width: 100%; overflow-x: auto; font-size: 0.95rem; font-variant-numeric: tabular-nums; margin: 1.2rem 0; }
 article.body thead th { border-bottom: 2px solid var(--fg); }
 article.body tr.header { font-weight: 650; }
@@ -210,7 +213,7 @@ def site_header(journal_title, site_root):
     return (
         '<header class="site">'
         '<a class="brand" href="%s">%s</a>'
-        '<nav><a href="%s">Home</a></nav>'
+        '<nav aria-label="Site"><a href="%s">Home</a></nav>'
         "</header>" % (site_root, t, site_root)
     )
 

@@ -1041,7 +1041,7 @@ class TestHeaderNavRoot(unittest.TestCase):
     def test_header_uses_absolute_root(self):
         from jmaker import templates
         out = templates.site_header("J", "/")
-        self.assertIn('<nav><a href="/">Home</a></nav>', out)
+        self.assertIn('<nav aria-label="Site"><a href="/">Home</a></nav>', out)
         self.assertIn('<a class="brand" href="/">', out)
         # absolute + clean (no index.html) => identical on every page => consistent nav
 
@@ -1338,6 +1338,34 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                       encoding="utf-8") as fh:
                 fh.write("# %s\n\nBody.\n" % slug)
         return jt
+
+    def test_a11y_unique_nav_landmarks_and_cite_distinction(self):
+        # axe landmark-unique: the header, TOC, and footer <nav> landmarks each
+        # carry a UNIQUE aria-label (two unnamed navs would collide). axe
+        # link-in-text-block: inline citation links are distinguished from body
+        # text without relying on color (a dotted underline), per WCAG 1.4.1.
+        import glob
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            # >=3 body H2 sections so a TOC nav is emitted (_build_toc threshold);
+            # the landmark-unique collision only arises with header + TOC navs.
+            with open(os.path.join(d, "articles", "art", "paper.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation purposes here.\n\n## 1. Intro\n\nBody.\n\n"
+                         "## 2. More\n\nMore.\n\n## 3. End\n\nEnd.\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn('<nav aria-label="Site">', page)
+            self.assertIn('<nav class="toc" aria-label="Contents">', page)
+            self.assertIn('aria-label="Footer"', page)
+            css = ""
+            for p in glob.glob(os.path.join(out, "assets", "*.css")):
+                with open(p, encoding="utf-8") as fh:
+                    css += fh.read()
+            self.assertIn("a.cite { text-decoration: underline dotted", css)
 
     def test_discovers_flat_article(self):
         # Article landing pages live at a FLAT <slug>/index.html (no v<N>/i<M>);
