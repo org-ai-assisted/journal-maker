@@ -1314,8 +1314,11 @@ def write_robots(journal, out_dir):
     # crawling HTML so each page's <meta noindex> is read (a crawler must fetch a
     # page to honor its meta), and advertises the sitemap. A no-index build ALSO
     # Disallows PDFs: a PDF carries no noindex meta and GitHub Pages serves no
-    # X-Robots-Tag, so blocking the crawl is the only Pages-compatible way to keep
-    # it out of indexes -- users still download it (robots binds crawlers only).
+    # X-Robots-Tag, so a crawl block is the only Pages-compatible lever. It keeps
+    # PDF CONTENT out of search (uncrawled -> no snippet/indexed text); it does
+    # NOT guarantee the bare URL never appears if externally linked (a known
+    # robots limitation), but the interim host is unlinked. Users still download
+    # it (robots binds crawlers, not browsers).
     lines = ["User-agent: *", "Allow: /"]
     if journal.get("_no_index"):
         lines.append("Disallow: /*.pdf$")
