@@ -1475,6 +1475,32 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertNotIn("javascript:", neutralized)
         self.assertIn('href="#', neutralized)
 
+    def test_named_footnotes_number_by_appearance_not_definition(self):
+        # Authors key footnotes by stable name ([^name]), never by number: pandoc
+        # numbers them by inline-reference order, so inserting one mid-text
+        # renumbers automatically with no manual edit. Guards the whole fragment
+        # pipeline (md_to_html_fragment -> _sanitize_html -> _endash_html): a
+        # future sanitizer tightening must not strip the footnote anchors or
+        # disturb the ordering.
+        base = ("A.[^alpha] B.[^beta] C.[^gamma]\n\n"
+                "[^gamma]: third defined first.\n"
+                "[^alpha]: first.\n"
+                "[^beta]: second.\n")
+        html = g.md_to_html_fragment(base)
+        # Definition order is scrambled; markers still number 1,2,3 by the order
+        # the references appear in the prose, and the anchors survive sanitizing.
+        self.assertEqual(re.findall(r"<sup>(\d+)</sup>", html), ["1", "2", "3"])
+        self.assertIn("footnote-ref", html)
+        for text in ("first.", "second.", "third defined first."):
+            self.assertIn(text, html)
+        # Inserting a named footnote mid-text renumbers to 1..4 with no edit to
+        # the others -- the churn the stable-name scheme exists to avoid.
+        inserted = ("A.[^alpha] NEW.[^delta] B.[^beta] C.[^gamma]\n\n"
+                    "[^gamma]: g.\n[^alpha]: a.\n[^beta]: b.\n[^delta]: d.\n")
+        self.assertEqual(
+            re.findall(r"<sup>(\d+)</sup>", g.md_to_html_fragment(inserted)),
+            ["1", "2", "3", "4"])
+
     def test_sitemap_excludes_pdfs_in_full_build(self):
         # The sitemap lists HTML navigable pages only -- byte-identical to
         # dist_ai.webcheck.site.seo_page_urls, which the 'previews' policy
