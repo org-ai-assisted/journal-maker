@@ -77,7 +77,11 @@ def load_journal(path):
     j["base_url"] = j["base_url"].rstrip("/")
     j.setdefault("issn", "")
     j.setdefault("language", "en")
-    j.setdefault("publisher", j["title"])
+    # Empty, not just absent, falls back to the required title: publisher feeds
+    # the Scholar institution tag, RIS PB, Zenodo imprint and JSON-LD, none of
+    # which may be blank.
+    if not j.get("publisher"):
+        j["publisher"] = j["title"]
     j.setdefault("license", "")
     j.setdefault("license_url", "")
     # Optional consistent footer navigation (same links/order on every page).
@@ -590,6 +594,8 @@ def citation_meta(m, journal, landing_url, pdf_url):
     # Scholar's institution tag carries the publishing site; never
     # citation_journal_title or citation_issn (serial/journal identifiers).
     add("citation_technical_report_institution", journal["publisher"])
+    if m.get("article_number"):
+        add("citation_technical_report_number", m["article_number"])
     if m.get("firstpage"):
         add("citation_firstpage", m["firstpage"])
     if m.get("lastpage"):

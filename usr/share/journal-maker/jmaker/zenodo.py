@@ -54,7 +54,10 @@ def build_metadata(m, journal, abstract):
         "upload_type": "publication",
         # A self-published preview is a technical report, not a journal article:
         # no journal_title / journal_issn / journal_pages (article-only fields).
+        # imprint_publisher carries the publisher for a report; without it a
+        # Zenodo-minted DOI defaults the publisher to the literal "Zenodo".
         "publication_type": "report",
+        "imprint_publisher": journal["publisher"],
         "description": " ".join(abstract.split()),
         "creators": creators,
         "publication_date": m["date"],

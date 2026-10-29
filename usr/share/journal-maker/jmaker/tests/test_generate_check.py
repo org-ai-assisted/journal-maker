@@ -49,8 +49,17 @@ class TestGenerateHelpers(unittest.TestCase):
                       meta)
         self.assertNotIn("citation_journal_title", meta)
         self.assertNotIn("citation_issn", meta)
-        # empty doi must be omitted, not emitted blank
+        # empty doi / absent report number must be omitted, not emitted blank
         self.assertNotIn("citation_doi", meta)
+        self.assertNotIn("citation_technical_report_number", meta)
+
+    def test_citation_meta_report_number(self):
+        m = dict(META)
+        m["article_number"] = "CSR-2026-001"
+        meta = g.citation_meta(m, JOURNAL, "https://e.example/x/",
+                               "https://e.example/x/x.pdf")
+        self.assertIn('name="citation_technical_report_number" '
+                      'content="CSR-2026-001"', meta)
 
 
 class TestChecker(unittest.TestCase):
@@ -195,6 +204,8 @@ class TestZenodo(unittest.TestCase):
         self.assertNotIn("journal_title", out)
         self.assertNotIn("journal_issn", out)
         self.assertNotIn("journal_pages", out)
+        # publisher survives as the report's imprint (else Zenodo defaults it).
+        self.assertEqual(out["imprint_publisher"], "CSR")
         self.assertEqual(len(out["creators"]), 2)
         self.assertEqual(out["creators"][0]["affiliation"], "U")
 
@@ -452,6 +463,18 @@ class TestLoading(unittest.TestCase):
                 fh.write('title = "J"\nbase_url = "https:///"\n')
             with self.assertRaises(g.BuildError):
                 g.load_journal(jt)
+
+    def test_blank_publisher_falls_back_to_title(self):
+        # publisher = "" (present but empty) must fall back to the required
+        # title, not leave the Scholar institution / RIS PB / Zenodo imprint
+        # blank. Canary: fails on the old setdefault (which only filled absent).
+        with tempfile.TemporaryDirectory() as d:
+            jt = os.path.join(d, "site.toml")
+            with open(jt, "w", encoding="utf-8") as fh:
+                fh.write('title = "J"\nbase_url = "https://e.example"\n'
+                         'publisher = ""\n')
+            j = g.load_journal(jt)
+            self.assertEqual(j["publisher"], "J")
 
     def test_remote_image_rejected(self):
         with tempfile.TemporaryDirectory() as d:
