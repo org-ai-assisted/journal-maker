@@ -67,8 +67,11 @@ def load_journal(path):
     with open(path, "rb") as fh:
         j = tomllib.load(fh)
     for req in ("title", "base_url"):
-        if not j.get(req):
-            raise BuildError("site.toml missing required key: %s" % req)
+        v = j.get(req)
+        # Non-blank STRING, not just truthy: an unquoted TOML value (e.g. a bare
+        # date) parses as a non-str and later crashes string/JSON contexts.
+        if not isinstance(v, str) or not v.strip():
+            raise BuildError("site.toml key must be a non-empty string: %s" % req)
     # base_url must be absolute (Scholar requires absolute citation_pdf_url) and
     # free of whitespace/newlines (it is interpolated into robots.txt + sitemap).
     if not re.fullmatch(r"https?://[^/\s]+(/[^\s]*)?", j["base_url"]):
@@ -77,10 +80,11 @@ def load_journal(path):
     j["base_url"] = j["base_url"].rstrip("/")
     j.setdefault("issn", "")
     j.setdefault("language", "en")
-    # Empty, not just absent, falls back to the required title: publisher feeds
-    # the Scholar institution tag, RIS PB, Zenodo imprint and JSON-LD, none of
-    # which may be blank.
-    if not j.get("publisher"):
+    # publisher feeds the Scholar institution tag, RIS PB, Zenodo imprint and
+    # JSON-LD, none of which may be blank; fall back to the required title for
+    # any absent/blank/non-string value (so none ever ships bad metadata).
+    pub = j.get("publisher")
+    if not isinstance(pub, str) or not pub.strip():
         j["publisher"] = j["title"]
     j.setdefault("license", "")
     j.setdefault("license_url", "")

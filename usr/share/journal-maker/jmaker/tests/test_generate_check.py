@@ -464,17 +464,31 @@ class TestLoading(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.load_journal(jt)
 
-    def test_blank_publisher_falls_back_to_title(self):
-        # publisher = "" (present but empty) must fall back to the required
-        # title, not leave the Scholar institution / RIS PB / Zenodo imprint
-        # blank. Canary: fails on the old setdefault (which only filled absent).
-        with tempfile.TemporaryDirectory() as d:
-            jt = os.path.join(d, "site.toml")
-            with open(jt, "w", encoding="utf-8") as fh:
-                fh.write('title = "J"\nbase_url = "https://e.example"\n'
-                         'publisher = ""\n')
-            j = g.load_journal(jt)
-            self.assertEqual(j["publisher"], "J")
+    def _write_site_toml(self, body):
+        d = tempfile.mkdtemp()
+        jt = os.path.join(d, "site.toml")
+        with open(jt, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return jt
+
+    def test_unusable_publisher_falls_back_to_title(self):
+        # Absent/blank/whitespace/non-string publisher must fall back to the
+        # required title, never leave the Scholar institution / RIS PB / Zenodo
+        # imprint blank or non-string. Canary: fails on the old truthiness-only
+        # handling for the whitespace and unquoted-date (TOML date) cases.
+        base = 'title = "J"\nbase_url = "https://e.example"\n'
+        for extra in ('publisher = ""\n', 'publisher = "   "\n',
+                      "publisher = 2026-10-29\n", ""):
+            j = g.load_journal(self._write_site_toml(base + extra))
+            self.assertEqual(j["publisher"], "J", extra)
+
+    def test_nonstring_required_key_rejected(self):
+        # An unquoted title parses as a TOML date (non-string); reject early with
+        # a clear error, not a later TypeError in a string/JSON context.
+        jt = self._write_site_toml(
+            'title = 2026-10-29\nbase_url = "https://e.example"\n')
+        with self.assertRaises(g.BuildError):
+            g.load_journal(jt)
 
     def test_remote_image_rejected(self):
         with tempfile.TemporaryDirectory() as d:
