@@ -1682,6 +1682,14 @@ class TestCiteprocFragment(unittest.TestCase):
         self.assertIn("&#x2013;", html)   # en dash (pp. 1-28)
         self.assertIn("&#x201c;", html)   # left curly quote
 
+    def test_nocase_marker_stripped(self):
+        # {{double-braced}} bib titles make citeproc emit <span class="nocase">;
+        # it is a no-op marker and must be stripped (the check_site gate rejects a
+        # sole class with no CSS rule), while the title casing is preserved.
+        html = self._frag(_refsdoc("A [@alpha]."))
+        self.assertNotIn('class="nocase"', html)
+        self.assertIn("Alpha page", html)   # casing preserved (not "alpha page")
+
     def test_undefined_citation_fails_loud(self):
         # citeproc EXITS 0 on an undefined [@key]; the generator promotes its
         # stderr warning to a hard failure so a dangling cite cannot ship.

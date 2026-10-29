@@ -457,6 +457,13 @@ def _ascii_entities_html(frag):
 CSL_PATH = "/usr/share/citation-style-language/styles/ieee.csl"
 
 
+# citeproc wraps case-protected title text (from a {{double-braced}} bib title)
+# in <span class="nocase">. It is a BibTeX parse-time marker, a no-op in rendered
+# HTML; drop the class so the stylesheet carries no dead selector (the
+# website-tests check_site gate flags a sole class with no CSS rule / JS use).
+_NOCASE_RE = re.compile(r'\s+class="nocase"')
+
+
 def _check_citeproc(stderr):
     # citeproc EXITS 0 on an undefined [@key] -- it renders "key?" and warns on
     # stderr. Promote any citeproc warning to a hard build failure so a dangling
@@ -483,7 +490,8 @@ def md_to_html_fragment(md_text, bib_path=None):
                 "-M", "link-citations=true", "-M", "link-bibliography=true"]
     r = _run(cmd, input=md_text)
     _check_citeproc(r.stderr)
-    return _ascii_entities_html(_endash_html(_sanitize_html(r.stdout)))
+    html = _NOCASE_RE.sub("", r.stdout)
+    return _ascii_entities_html(_endash_html(_sanitize_html(html)))
 
 
 def _yaml_dq(s):
