@@ -95,7 +95,12 @@ class TestChecker(unittest.TestCase):
 
     def test_bibtex(self):
         bt = g._bibtex(META, JOURNAL, "https://h/v1/i1/x/")
-        self.assertIn("@article{", bt)
+        # A web preview, not a journal article.
+        self.assertIn("@misc{", bt)
+        self.assertNotIn("@article{", bt)
+        self.assertNotIn("journal =", bt)
+        self.assertIn("howpublished = {Computer Security Research}", bt)
+        self.assertIn("url = {https://h/v1/i1/x/}", bt)
         self.assertIn("title = {A Title}", bt)
         self.assertIn("author = {Jane Doe and Rick Roe}", bt)
 
@@ -872,19 +877,37 @@ class TestIdentityAndCite(unittest.TestCase):
         self.assertEqual(g._statements({}), "")
 
     def test_cite_box_formats(self):
-        box = g._cite_box(self._M, {"title": "J"}, "https://e.example/x/", "2026")
+        box = g._cite_box(self._M, {"title": "J", "publisher": "J"},
+                          "https://e.example/x/", "2026")
         for label in ("IEEE", "APA", "BibTeX", "RIS"):
             self.assertIn(">%s<" % label, box)
-        self.assertIn("TY  - JOUR", box)
+        self.assertIn("TY  - ELEC", box)
+
+    def test_cite_box_not_a_journal(self):
+        # A self-published web preview must never be cited as a journal article:
+        # no @article/journal= (BibTeX) and no TY JOUR/JO (RIS).
+        box = g._cite_box(self._M, {"title": "CSR", "publisher": "CSR"},
+                          "https://e.example/x/", "2026")
+        self.assertNotIn("@article", box)
+        self.assertNotIn("journal =", box)
+        self.assertNotIn("TY  - JOUR", box)
+        self.assertNotIn("JO  - ", box)
+        self.assertIn("@misc{", box)
+        self.assertIn("TY  - ELEC", box)
+        self.assertIn("howpublished = {CSR}", box)
+        # every format carries a retrieval URL
+        self.assertEqual(box.count("https://e.example/x/"), 4)
 
     def test_article_number_in_cites(self):
         m = dict(self._M)
         m["article_number"] = "CSR-2026-001"
         self.assertIn("Art. no. CSR-2026-001",
-                      g._ieee_cite(m, {"title": "J"}, "2026"))
-        self.assertIn("Article CSR-2026-001", g._apa(m, {"title": "J"}, "2026"))
+                      g._ieee_cite(m, {"title": "J"}, "https://e.example/x/", "2026"))
+        self.assertIn("Article CSR-2026-001",
+                      g._apa(m, {"title": "J"}, "https://e.example/x/", "2026"))
         self.assertIn("M1  - CSR-2026-001",
-                      g._ris(m, {"title": "J"}, "https://e.example/x/"))
+                      g._ris(m, {"title": "J", "publisher": "J"},
+                             "https://e.example/x/"))
 
     def test_bad_article_number_rejected(self):
         with tempfile.TemporaryDirectory() as d:

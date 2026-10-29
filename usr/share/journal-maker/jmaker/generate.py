@@ -772,15 +772,19 @@ def _bibtex(m, journal, landing_url):
     surname = (re.sub(r'[^a-z0-9]', "", m["authors"][0]["name"].lower().split()[-1])
                if m["authors"] else "anon")
     key = "%s%s" % (surname, m["date"][:4])
+    # A self-published web preview, NOT a journal article: @misc + howpublished
+    # (the site), never @article/journal (see csr framing rules).
     fields = [
         ("author", " and ".join(a["name"] for a in m["authors"])),
         ("title", m["title"]),
-        ("journal", journal["title"]),
+        ("howpublished", journal["title"]),
         ("year", m["date"][:4]),
     ]
-    fields.append(("doi", m["doi"]) if m.get("doi") else ("url", landing_url))
+    if m.get("doi"):
+        fields.append(("doi", m["doi"]))
+    fields.append(("url", landing_url))
     body = ",\n".join("  %s = {%s}" % (k, v) for k, v in fields)
-    return "@article{%s,\n%s\n}" % (key, body)
+    return "@misc{%s,\n%s\n}" % (key, body)
 
 
 def _status_fragment(m):
@@ -962,41 +966,46 @@ def _statements(m):
 
 
 def _ris(m, journal, landing_url):
-    lines = ["TY  - JOUR"]
+    # TY ELEC (electronic/web), NOT JOUR: a self-published web document has no
+    # journal, so there is no JO field (publisher carries the site). The access
+    # URL is UR; the DOI, when present, is its own DO field.
+    lines = ["TY  - ELEC"]
     lines += ["AU  - " + a["name"] for a in m["authors"]]
-    lines += ["TI  - " + m["title"], "JO  - " + journal["title"],
+    lines += ["TI  - " + m["title"], "PB  - " + journal["publisher"],
               "PY  - " + m["date"][:4]]
     if m.get("article_number"):
         lines.append("M1  - " + m["article_number"])
     if m.get("doi"):
         lines.append("DO  - " + m["doi"])
-    lines.append("UR  - " + ("https://doi.org/" + m["doi"]
-                             if m.get("doi") else landing_url))
+    lines.append("UR  - " + landing_url)
     lines.append("ER  - ")
     return "\n".join(lines)
 
 
-def _apa(m, journal, year):
+def _apa(m, journal, landing_url, year):
+    # Web-page form: Author (Year). Title. Site. URL -- the site is the source,
+    # not a journal; always carry a retrieval URL.
     authors = ", ".join(a["name"] for a in m["authors"])
     art = (", Article %s" % m["article_number"]) if m.get("article_number") else ""
-    src = (" https://doi.org/%s" % m["doi"]) if m.get("doi") else ""
-    return "%s (%s). %s. %s%s.%s" % (
-        authors, year, m["title"], journal["title"], art, src)
+    url = ("https://doi.org/%s" % m["doi"]) if m.get("doi") else landing_url
+    return "%s (%s). %s. %s%s. %s" % (
+        authors, year, m["title"], journal["title"], art, url)
 
 
-def _ieee_cite(m, journal, year):
+def _ieee_cite(m, journal, landing_url, year):
+    # Online form: name the site + an [Online]. Available link, not a journal.
     authors = ", ".join(a["name"] for a in m["authors"])
     artno = (", Art. no. %s" % m["article_number"]) if m.get("article_number") \
         else ""
     tail = (", doi: %s" % m["doi"]) if m.get("doi") else ""
-    return '%s, "%s," %s%s, %s%s.' % (
-        authors, m["title"], journal["title"], artno, year, tail)
+    return '%s, "%s," %s%s, %s%s. [Online]. Available: %s' % (
+        authors, m["title"], journal["title"], artno, year, tail, landing_url)
 
 
 def _cite_box(m, journal, landing_url, year):
     fmts = [
-        ("IEEE", _ieee_cite(m, journal, year)),
-        ("APA", _apa(m, journal, year)),
+        ("IEEE", _ieee_cite(m, journal, landing_url, year)),
+        ("APA", _apa(m, journal, landing_url, year)),
         ("BibTeX", _bibtex(m, journal, landing_url)),
         ("RIS", _ris(m, journal, landing_url)),
     ]
