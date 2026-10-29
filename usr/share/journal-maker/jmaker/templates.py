@@ -99,7 +99,6 @@ STYLE_CSS = """\
 html { -webkit-text-size-adjust: 100%; }
 .skip-link { position: absolute; left: -9999px; top: 0; background: var(--accent); color: var(--on-accent); padding: 0.5rem 0.9rem; border-radius: 0 0 4px 0; font-family: var(--sans); z-index: 10; }
 .skip-link:focus { left: 0; }
-a.backref { text-decoration: none; font-size: 0.85em; }
 body {
   margin: 0;
   background: var(--bg);
@@ -163,10 +162,10 @@ nav.toc .toc-label { font-weight: 650; text-transform: uppercase; letter-spacing
 nav.toc ol { margin: 0.4rem 0 0; padding-left: 1.4rem; }
 nav.toc li { margin: 0.15rem 0; }
 article.body { margin-top: 1.5rem; }
-/* Dotted underline distinguishes a citation ref from a content link (solid) AND
-   gives it a non-color distinction, which WCAG 1.4.1 requires for an inline link
-   in a text block (axe link-in-text-block). */
-article.body a.cite { text-decoration: underline dotted; font-variant-numeric: tabular-nums; }
+/* Dotted underline distinguishes a citeproc citation ref from a content link
+   (solid) AND gives it a non-color distinction, which WCAG 1.4.1 requires for an
+   inline link in a text block (axe link-in-text-block). */
+article.body .citation a { text-decoration: underline dotted; font-variant-numeric: tabular-nums; }
 article.body table { border-collapse: collapse; display: block; width: max-content; max-width: 100%; overflow-x: auto; font-size: 0.95rem; font-variant-numeric: tabular-nums; margin: 1.2rem 0; }
 article.body thead th { border-bottom: 2px solid var(--fg); }
 article.body tr.header { font-weight: 650; }
@@ -178,12 +177,20 @@ article.body code { font-family: var(--mono); font-size: 0.875em; background: va
 article.body pre { font-family: var(--mono); font-size: 0.85rem; line-height: 1.5; overflow-x: auto; padding: 1rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; tab-size: 4; }
 article.body pre code { background: none; border: 0; padding: 0; }
 article.body blockquote { margin: 1rem 0; padding-left: 1.25rem; border-left: 3px solid var(--rule); color: var(--muted); }
-ol.references { list-style: none; padding-left: 0; margin: 0.5rem 0; }
-ol.references li { padding-left: 2.4em; text-indent: -2.4em; font-size: 0.9rem; line-height: 1.5; margin: 0.35rem 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-ol.references li:target { background: var(--surface); }
+/* pandoc --citeproc reference list: #refs.csl-bib-body wraps one .csl-entry per
+   reference, each split into .csl-left-margin ([n]) + .csl-right-inline (text).
+   A flex row gives the hanging-indent look the IEEE numeric style expects. */
+.csl-bib-body { margin: 0.5rem 0; }
+.csl-entry { display: flex; gap: 0.6em; font-size: 0.9rem; line-height: 1.5; margin: 0.35rem 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.csl-entry:target { background: var(--surface); }
+.csl-left-margin { flex: 0 0 auto; }
+.csl-right-inline { flex: 1 1 auto; min-width: 0; }
 .hovercard { position: absolute; z-index: 50; max-width: min(90vw, 30rem); background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18); padding: 0.55rem 0.75rem; font-size: 0.85rem; line-height: 1.5; }
 .hovercard[hidden] { display: none; }
 .hovercard-body { overflow-wrap: anywhere; }
+/* A citeproc .csl-entry is cloned into the card; keep its [n]/text split inline
+   so the preview reads as one line, not two stacked flex rows. */
+.hovercard .csl-left-margin, .hovercard .csl-right-inline { display: inline; }
 .hovercard-nav { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin-top: 0.4rem; }
 .hovercard-nav[hidden] { display: none; }
 .hovercard-navbtn { font-family: var(--sans); font-size: 0.8rem; line-height: 1; padding: 0.15rem 0.45rem; border: 1px solid var(--rule); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer; }
@@ -288,7 +295,10 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
   // stepping through the references in document order. The native title= is kept as a
   // JS-off fallback. TT-safe: the card is built with DOM APIs + cloneNode only (no
   // HTML-string sinks), so it survives a strict Content-Security-Policy.
-  var cites = [].slice.call(document.querySelectorAll("a.cite"));
+  // citeproc renders each in-text cite as <span class="citation"><a href="#ref-KEY">;
+  // a grouped cite holds several such anchors. The reference list uses .csl-entry,
+  // never .citation, so this selector matches in-text cites only.
+  var cites = [].slice.call(document.querySelectorAll("article.body .citation a[href^='#ref-']"));
   var refOrder = [];            // ref ids in first-citation document order (deduped)
   var seen = Object.create(null);
   for (var j = 0; j < cites.length; j++) {
@@ -326,11 +336,9 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       var frag = document.createDocumentFragment();
       var r = document.getElementById(id);
       if (!r) { return frag; }
-      var kids = r.childNodes;
+      var kids = r.childNodes;        // .csl-left-margin ([n]) + .csl-right-inline
       for (var i = 0; i < kids.length; i++) {
-        var k = kids[i];
-        if (k.nodeType === 1 && k.classList && k.classList.contains("backref")) { continue; }
-        frag.appendChild(k.cloneNode(true));
+        frag.appendChild(kids[i].cloneNode(true));
       }
       return frag;
     }

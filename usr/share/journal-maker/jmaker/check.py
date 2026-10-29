@@ -248,38 +248,33 @@ def check_release_state(page, page_path, f):
 
 
 def check_citation_parity(page, page_path, f):
-    """Every in-text [n] has a reference entry and every entry is cited.
+    """Every in-text citation resolves to a reference entry and every entry is
+    cited. pandoc --citeproc renders an in-text cite as <a href="#ref-KEY"> and
+    the reference list as <div id="ref-KEY" class="csl-entry">; keys are stable
+    @citekeys, not numbers.
 
-    Catches a dead #ref-n link, an undefined citation, an uncited reference, and
-    a duplicate reference id. Works on linkified anchors, falling back to the
-    visible [n] markers in the body when a page has no reference links.
+    Catches a dangling citation (an undefined [@key], which citeproc renders as
+    "KEY?" with a dead #ref-KEY link), an uncited reference, and a duplicate entry
+    id.
     """
-    defined = re.findall(r'<li id="ref-(\d+)">', page)
-    dups = sorted({n for n in defined if defined.count(n) > 1}, key=int)
+    defined = re.findall(r'<div id="ref-([^"]+)" class="csl-entry"', page)
+    dups = sorted({k for k in defined if defined.count(k) > 1})
     if dups:
-        f.err(page_path, "duplicate reference id(s): %s"
-              % ", ".join("[%s]" % n for n in dups))
+        f.err(page_path, "duplicate reference id(s): %s" % ", ".join(dups))
     defined_set = set(defined)
 
-    cited = set(re.findall(r'href="#ref-(\d+)"', page))
-    if not cited:
-        body = page
-        mo = re.search(r'<h2[^>]*>\s*References\s*</h2>', page, re.I)
-        if mo:
-            body = page[:mo.start()]
-        cited = set(re.findall(r'\[(\d+)\]', _text_only(_CODE_RE.sub(" ", body))))
-
+    cited = set(re.findall(r'href="#ref-([^"]+)"', page))
     if not cited and not defined_set:
         return  # an article with no citations and no reference list is fine
 
-    dangling = sorted(cited - defined_set, key=int)
+    dangling = sorted(cited - defined_set)
     if dangling:
         f.err(page_path, "in-text citation(s) with no reference entry: %s"
-              % ", ".join("[%s]" % n for n in dangling))
-    uncited = sorted(defined_set - cited, key=int)
+              % ", ".join(dangling))
+    uncited = sorted(defined_set - cited)
     if uncited:
         f.err(page_path, "reference entr(y/ies) never cited: %s"
-              % ", ".join("[%s]" % n for n in uncited))
+              % ", ".join(uncited))
 
 
 def _has_type3_font(pdffonts_output):

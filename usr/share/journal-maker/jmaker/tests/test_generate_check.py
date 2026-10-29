@@ -83,38 +83,6 @@ class TestChecker(unittest.TestCase):
         self.assertEqual(
             c._dirname_url("https://h/v1/i1/x/x.pdf"), "https://h/v1/i1/x")
 
-    def test_linkify_citations(self):
-        html_in = ('<p>claim [5].</p><h2 id="references">References</h2>'
-                   '<p>[5] Foo.</p>')
-        out = g._linkify_citations(html_in)
-        self.assertIn('href="#ref-5">[5]</a>', out)
-        self.assertIn('<ol class="references">', out)
-        self.assertIn('<li id="ref-5">', out)
-        self.assertIn('href="#cite-5"', out)   # backlink to first mention
-        self.assertIn("Foo.", out)
-
-    def test_references_number_matches_citation_key(self):
-        # Out-of-order reference list: the visible [n] is the citation key (emitted
-        # as literal text), NOT the <ol> position -- so a "[2]"-first entry still
-        # renders "[2]". Guards the counter-based mis-numbering the reviewer found.
-        body = ('<p>see [1] and [2].</p><h2>References</h2>'
-                '<p>[2] Apple.</p>\n<p>[1] Zebra.</p>')
-        out = g._linkify_citations(body)
-        self.assertIn('<ol class="references">', out)
-        self.assertIn('<li id="ref-2">[2] ', out)
-        self.assertIn('<li id="ref-1">[1] ', out)
-
-    def test_noncontiguous_reference_still_anchored(self):
-        # A reference separated from the main block by an interrupting paragraph
-        # must still become <li id="ref-n"> (its own <ol>), so its in-text citation
-        # does not dangle. count=1 would have left the second entry an unanchored <p>.
-        body = ('<p>see [1] and [2].</p><h2>References</h2>'
-                '<p>[1] A.</p>\n<p>a sub-note not starting with a bracketed number</p>\n'
-                '<p>[2] B.</p>')
-        out = g._linkify_citations(body)
-        self.assertIn('<li id="ref-1">', out)
-        self.assertIn('<li id="ref-2">', out)
-
     def test_build_toc(self):
         body = ('<h2 id="a">1. Intro</h2><h2 id="b">2. Bg</h2>'
                 '<h2 id="c">3. More</h2>')
@@ -249,6 +217,7 @@ class TestZenodo(unittest.TestCase):
             captured["argv"] = argv
             class R:
                 stdout = ""
+                stderr = ""   # mirror subprocess.CompletedProcess
             return R()
         orig = g._run
         setattr(g, "_run", fake_run)
@@ -559,22 +528,32 @@ class TestCitationParity(unittest.TestCase):
         c.check_citation_parity(page, "p", f)
         return [m for _l, _p, m in f.errors]
 
+    # citeproc DOM: in-text <a href="#ref-KEY">, reference list
+    # <div id="ref-KEY" class="csl-entry">. Keys are stable @citekeys.
     def test_clean(self):
-        page = '<a href="#ref-1">[1]</a><ol class="references"><li id="ref-1">X.</li></ol>'
+        page = ('<span class="citation"><a href="#ref-selinux">[1]</a></span>'
+                '<div id="ref-selinux" class="csl-entry">X.</div>')
         self.assertEqual(self._run(page), [])
 
     def test_dangling_citation(self):
-        page = '<a href="#ref-2">[2]</a><ol class="references"><li id="ref-1">X.</li></ol>'
-        self.assertTrue(any("no reference entry" in m for m in self._run(page)))
+        # An undefined [@key] citeproc renders as "key?" with a live #ref-key link
+        # but no matching .csl-entry.
+        page = ('<span class="citation"><a href="#ref-ghost">ghost?</a></span>'
+                '<div id="ref-selinux" class="csl-entry">X.</div>')
+        msgs = self._run(page)
+        self.assertTrue(any("no reference entry" in m for m in msgs))
+        self.assertTrue(any("ghost" in m for m in msgs))
 
     def test_uncited_reference(self):
-        page = ('<a href="#ref-1">[1]</a><ol class="references"><li id="ref-1">X.</li>'
-                '<li id="ref-2">Y.</li></ol>')
+        page = ('<span class="citation"><a href="#ref-selinux">[1]</a></span>'
+                '<div id="ref-selinux" class="csl-entry">X.</div>'
+                '<div id="ref-unused" class="csl-entry">Y.</div>')
         self.assertTrue(any("never cited" in m for m in self._run(page)))
 
     def test_duplicate_reference(self):
-        page = ('<a href="#ref-1">[1]</a><ol class="references"><li id="ref-1">X.</li>'
-                '<li id="ref-1">dup.</li></ol>')
+        page = ('<a href="#ref-selinux">[1]</a>'
+                '<div id="ref-selinux" class="csl-entry">X.</div>'
+                '<div id="ref-selinux" class="csl-entry">dup.</div>')
         self.assertTrue(any("duplicate" in m for m in self._run(page)))
 
     def test_no_citations_ok(self):
@@ -778,75 +757,6 @@ class TestEnDash(unittest.TestCase):
 
 
 class TestRefLinksAndMeta(unittest.TestCase):
-    def test_citation_backlink_and_anchor(self):
-        src = ("<p>see [1] and again [1].</p>"
-               "<h2>References</h2><p>[1] A. Author. Title.</p>")
-        out = g._linkify_citations(src)
-        self.assertIn('id="cite-1"', out)          # first mention anchored
-        self.assertEqual(out.count('id="cite-1"'), 1)
-        self.assertIn('href="#ref-1"', out)        # forward link
-        self.assertIn('href="#cite-1"', out)        # backlink from the entry
-        self.assertIn('<li id="ref-1">', out)
-
-    def test_reference_url_linkified(self):
-        src = ("<p>x [1].</p><h2>References</h2>"
-               "<p>[1] Title. https://e.example/a/b (accessed).</p>")
-        out = g._linkify_citations(src)
-        self.assertIn('<a href="https://e.example/a/b">https://e.example/a/b</a>',
-                      out)
-
-    def test_reference_doi_linkified(self):
-        src = ("<p>x [1].</p><h2>References</h2>"
-               "<p>[1] Title. doi: 10.1109/ABC.2020.123.</p>")
-        out = g._linkify_citations(src)
-        self.assertIn('href="https://doi.org/10.1109/ABC.2020.123"', out)
-
-    def test_reference_url_href_escaped(self):
-        # A '"' in a reference URL must be escaped, not smuggle an attribute past
-        # the sanitizer (linkify runs after _sanitize_html).
-        src = ('<p>x [1].</p><h2>References</h2>'
-               '<p>[1] P. https://e.example/x"onmouseover=alert(1)</p>')
-        out = g._linkify_citations(src)
-        self.assertNotIn('"onmouseover=', out)
-        self.assertIn("&quot;onmouseover=", out)
-
-    def test_reference_url_balanced_paren(self):
-        # A ')' that closes a '(' in the URL stays inside the link.
-        src = ("<p>x [1].</p><h2>References</h2>"
-               "<p>[1] P. https://en.wikipedia.org/wiki/Foo_(bar)</p>")
-        out = g._linkify_citations(src)
-        self.assertIn('href="https://en.wikipedia.org/wiki/Foo_(bar)"', out)
-
-    def test_linkify_citations_skips_code(self):
-        # An array index inside <code> is not a citation.
-        src = ('<p>claim [1]. <code>arr[2]</code></p>'
-               '<h2>References</h2><p>[1] A.</p>')
-        out = g._linkify_citations(src)
-        self.assertIn('href="#ref-1"', out)
-        self.assertNotIn('href="#ref-2"', out)
-        self.assertIn("<code>arr[2]</code>", out)
-
-    def test_linkify_citations_prose_range_not_linkified(self):
-        # A bracketed number RANGE/LIST in prose (a byte range, a coordinate) is
-        # ambiguous with a combined citation, so it must NOT be auto-linkified --
-        # doing so would invent dangling citations and fail the parity gate.
-        src = ("<p>bytes [0-15] and entry [3, 4].</p>"
-               "<h2>References</h2><p>[1] A.</p>")
-        out = g._linkify_citations(src)
-        self.assertNotIn('href="#ref-0"', out)
-        self.assertNotIn('href="#ref-3"', out)
-        self.assertIn("[0-15]", out)       # left as plain prose
-        self.assertIn("[3, 4]", out)
-
-    def test_anchor_does_not_double_escape(self):
-        # pandoc already entity-escaped '&'; _anchor must not turn &amp; into
-        # &amp;amp;.
-        src = ("<p>x [1].</p><h2>References</h2>"
-               "<p>[1] P. https://e.example/s?a=1&amp;b=2</p>")
-        out = g._linkify_citations(src)
-        self.assertIn('href="https://e.example/s?a=1&amp;b=2"', out)
-        self.assertNotIn("&amp;amp;", out)
-
     def test_csp_meta_present(self):
         page = g.render_homepage([], dict(JOURNAL), [])
         self.assertIn("Content-Security-Policy", page)
@@ -1425,7 +1335,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             for p in glob.glob(os.path.join(out, "assets", "*.css")):
                 with open(p, encoding="utf-8") as fh:
                     css += fh.read()
-            self.assertIn("a.cite { text-decoration: underline dotted", css)
+            self.assertIn(".citation a { text-decoration: underline dotted", css)
 
     def test_inline_styles_stripped_and_favicon_linked(self):
         # Strict CSP style-src 'self' blocks inline styles (pandoc emits them on
@@ -1500,6 +1410,47 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertEqual(
             re.findall(r"<sup>(\d+)</sup>", g.md_to_html_fragment(inserted)),
             ["1", "2", "3", "4"])
+
+    def test_citeproc_full_build_numbers_and_checks_clean(self):
+        # End-to-end: a paper citing [@key] from refs.bib builds, the built page
+        # numbers in-text cites by first appearance, and the citation-parity gate
+        # passes on the citeproc DOM.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation purposes here.\n\n## 1. Intro\n\n"
+                         "First [@beta]. Second [@alpha]. Reuse [@beta].\n\n"
+                         "## 2. References\n\n::: {#refs}\n:::\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertEqual(
+                re.findall(r'role="doc-biblioref">\[(\d+)\]', page),
+                ["1", "2", "1"])
+            self.assertIn('<div id="ref-beta" class="csl-entry"', page)
+            f = c.Findings()
+            c.check_citation_parity(page, "p", f)
+            self.assertEqual([m for _l, _p, m in f.errors], [])
+
+    def test_body_citation_requires_bib(self):
+        # A [@key] in the body with no refs.bib is a build error (no silent
+        # literal "[@key]" shipping).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with open(os.path.join(d, "articles", "art", "paper.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation purposes here.\n\n## 1. Intro\n\n"
+                         "A cite [@nobib] with no bibliography.\n")
+            out = os.path.join(d, "s")
+            with self.assertRaises(g.BuildError):
+                g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
 
     def test_sitemap_excludes_pdfs_in_full_build(self):
         # The sitemap lists HTML navigable pages only -- byte-identical to
@@ -1658,6 +1609,133 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             out = os.path.join(d, "s")
             with self.assertRaises(g.BuildError):
                 g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+
+
+_BIB = (
+    "@misc{alpha, title={{Alpha page}}, author={{Org A}}, "
+    "url={https://a.example/x}, urldate={2026-01-01}}\n"
+    "@misc{beta, title={{Beta page}}, author={{Org B}}, "
+    "url={https://b.example/y}, urldate={2026-01-01}}\n"
+    "@article{gamma, author={R. Writer}, title={Paper}, "
+    "journal={J. Testing}, volume={2}, number={3}, pages={1--28}, year={2004}}\n"
+    "@misc{delta, title={{DOI item}}, author={A. Author}, year={2020}, "
+    "doi={10.1000/example.doi}}\n"
+)
+
+
+def _refsdoc(body):
+    return body + "\n\n## References\n\n::: {#refs}\n:::\n"
+
+
+class TestCiteprocFragment(unittest.TestCase):
+    """The real pandoc --citeproc path (needs pandoc + the IEEE CSL)."""
+
+    def _frag(self, md):
+        with tempfile.TemporaryDirectory() as d:
+            bib = os.path.join(d, "refs.bib")
+            with open(bib, "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            return g.md_to_html_fragment(md, bib)
+
+    def test_numbered_by_first_appearance(self):
+        # beta is cited first (1), alpha next (2); a grouped cite renders both in
+        # number order; a reuse repeats the number. Inserting a cite never
+        # renumbers because numbers follow first appearance, not the bib order.
+        html = self._frag(_refsdoc(
+            "X [@beta]. Y [@alpha]. Z [@beta; @alpha]. Reuse [@beta]."))
+        self.assertEqual(
+            re.findall(r'role="doc-biblioref">\[(\d+)\]', html),
+            ["1", "2", "1", "2", "1"])
+        # bib entry order follows first citation (beta before alpha).
+        self.assertLess(html.index('id="ref-beta"'), html.index('id="ref-alpha"'))
+
+    def test_reference_url_and_doi_linkified(self):
+        # citeproc (link-bibliography) linkifies the bib URL and the DOI itself --
+        # the generator no longer hand-rolls this.
+        html = self._frag(_refsdoc("U [@alpha]. D [@delta]."))
+        self.assertIn('href="https://a.example/x"', html)
+        self.assertIn('href="https://doi.org/10.1000/example.doi"', html)
+
+    def test_output_is_ascii_entities(self):
+        # The IEEE style emits an en dash in the page range and curly quotes; the
+        # ASCII gate must still pass, so the fragment is byte-ASCII with the
+        # typographic chars folded to numeric HTML entities.
+        html = self._frag(_refsdoc("G [@gamma]."))
+        self.assertTrue(all(ord(ch) < 128 for ch in html))
+        self.assertIn("&#x2013;", html)   # en dash (pp. 1-28)
+        self.assertIn("&#x201c;", html)   # left curly quote
+
+    def test_undefined_citation_fails_loud(self):
+        # citeproc EXITS 0 on an undefined [@key]; the generator promotes its
+        # stderr warning to a hard failure so a dangling cite cannot ship.
+        with self.assertRaises(g.BuildError) as cm:
+            self._frag(_refsdoc("Bad [@no-such-key]."))
+        self.assertIn("no-such-key", str(cm.exception))
+
+
+class TestSidecarDrift(unittest.TestCase):
+    """source-quotes.md @keys must all exist in refs.bib (pure; no pandoc)."""
+
+    def _dir(self, bib=_BIB, sidecar=None):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        if bib is not None:
+            with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(bib)
+        if sidecar is not None:
+            with open(os.path.join(d, "source-quotes.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(sidecar)
+        return d
+
+    def test_passes_when_keys_present(self):
+        d = self._dir(sidecar="## [@alpha] a\n- Quote: x\n## [@beta] b\n")
+        g._check_sidecar_drift(d)  # no raise
+
+    def test_fails_on_missing_key(self):
+        d = self._dir(sidecar="## [@alpha] a\n## [@ghost] not in bib\n")
+        with self.assertRaises(g.BuildError) as cm:
+            g._check_sidecar_drift(d)
+        self.assertIn("ghost", str(cm.exception))   # canary: names the key
+
+    def test_grouped_and_remaining_keys_parsed(self):
+        # Keys in a grouped [@a; @b] and in a "Remaining references" bullet are
+        # both validated.
+        d = self._dir(sidecar="## [@alpha; @beta] grouped\n- [@gamma]: paywalled\n")
+        g._check_sidecar_drift(d)
+        d2 = self._dir(sidecar="- [@ghost]: nope\n")
+        with self.assertRaises(g.BuildError):
+            g._check_sidecar_drift(d2)
+
+    def test_no_sidecar_is_ok(self):
+        g._check_sidecar_drift(self._dir(sidecar=None))  # no raise
+
+    def test_email_in_quote_not_mistaken_for_cite(self):
+        # A bare user@host inside a quote is not bracketed, so it is not a cite.
+        d = self._dir(sidecar='## [@alpha] a\n- Quote: "mail root@host now"\n')
+        g._check_sidecar_drift(d)  # no raise
+
+    def test_bib_keys_parsed(self):
+        d = self._dir()
+        self.assertEqual(g._bib_keys(os.path.join(d, "refs.bib")),
+                         {"alpha", "beta", "gamma", "delta"})
+
+    def test_citekeys_in(self):
+        self.assertEqual(g._citekeys_in("see [@a-b] and [@c.d; @e:f]"),
+                         {"a-b", "c.d", "e:f"})
+        self.assertEqual(g._citekeys_in("email a@b.com, no bracket"), set())
+
+
+class TestAsciiEntities(unittest.TestCase):
+    def test_folds_non_ascii(self):
+        self.assertEqual(g._ascii_entities_html("a" + chr(0x2013) + "b"),
+                         "a&#x2013;b")
+        self.assertEqual(g._ascii_entities_html(chr(0x201c) + "q" + chr(0x201d)),
+                         "&#x201c;q&#x201d;")
+
+    def test_preserves_ascii(self):
+        s = '<div class="x">plain &amp; safe</div>'
+        self.assertEqual(g._ascii_entities_html(s), s)
 
 
 if __name__ == "__main__":

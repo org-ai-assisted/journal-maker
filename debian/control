@@ -20,14 +20,18 @@ Depends: ${misc:Depends},
  lmodern,
  poppler-utils,
  qpdf,
+ citation-style-language-styles,
 Description: build a Google-Scholar-indexable static journal from Markdown
  Turns per-article Markdown plus TOML bibliographic metadata into a fully
  static academic journal website: one HTML landing page per article carrying
  Highwire Press citation_* meta tags and a visible abstract, a camera-ready
  PDF built via pandoc and XeLaTeX in the same directory (as Google Scholar
  requires), a homepage, per-volume browse pages, sitemap.xml and robots.txt.
+ References are cited by stable @key from a per-article BibTeX bibliography
+ and numbered by pandoc citeproc (IEEE style, numbered by first appearance),
+ so inserting a reference never renumbers the body.
  Ships a Scholar-compliance checker that fails the build on any violation
  (missing required meta, oversized or non-searchable PDF, mislocated
- citation_pdf_url, leftover wiki markup) and a de-wiki drafting aid that turns
- MediaWiki source into a Markdown starting point. No server-side logic at
- serve time; deterministic and reproducible.
+ citation_pdf_url, dangling or uncited reference, leftover wiki markup) and a
+ de-wiki drafting aid that turns MediaWiki source into a Markdown starting
+ point. No server-side logic at serve time; deterministic and reproducible.

@@ -186,6 +186,44 @@ def _parse_paper(md, adir):
     return title, abstract, body
 
 
+# A bracketed citation group ([@key] or [@a; @b]) and the keys inside it; a bare
+# "user@host" in prose is never in brackets, so it is not mistaken for a cite.
+_CITE_GROUP_RE = re.compile(r"\[(@[^\]]+)\]")
+_KEY_IN_GROUP_RE = re.compile(r"@([\w:.\-]+)")
+# A BibTeX entry key: `@type{key,`.
+_BIB_KEY_RE = re.compile(r"^\s*@\w+\s*\{\s*([^,\s]+)\s*,", re.M)
+
+
+def _citekeys_in(text):
+    keys = set()
+    for grp in _CITE_GROUP_RE.findall(text):
+        keys.update(_KEY_IN_GROUP_RE.findall(grp))
+    return keys
+
+
+def _bib_keys(bib_path):
+    with open(bib_path, "r", encoding="utf-8") as fh:
+        return set(_BIB_KEY_RE.findall(fh.read()))
+
+
+def _check_sidecar_drift(adir):
+    """Every @key used in the source-quotes.md reviewer aid must exist in
+    refs.bib. The sidecar is keyed by @citekey; a key renamed or removed in the
+    bib but left dangling in the sidecar is exactly the cross-file drift this
+    migration removes from the body -- catch it at build time, loudly."""
+    sq = os.path.join(adir, "source-quotes.md")
+    if not os.path.exists(sq):
+        return
+    bib = os.path.join(adir, "refs.bib")
+    keys = _bib_keys(bib) if os.path.exists(bib) else set()
+    with open(sq, "r", encoding="utf-8") as fh:
+        used = _citekeys_in(fh.read())
+    missing = sorted(used - keys)
+    if missing:
+        raise BuildError("%s/source-quotes.md: @key(s) not in refs.bib: %s"
+                         % (adir, ", ".join(missing)))
+
+
 def load_article(adir):
     slug_default = os.path.basename(adir.rstrip("/"))
     meta_path = os.path.join(adir, "meta.toml")
@@ -295,6 +333,7 @@ def load_article(adir):
         m["correction_url"] = cu
     m["_dir"] = adir
     m["_body_md"] = body
+    _check_sidecar_drift(adir)
     return m
 
 
@@ -397,7 +436,30 @@ def _endash_md(text):
                         lambda s: s.replace(" -- ", " " + _EN_DASH + " "), text)
 
 
-def md_to_html_fragment(md_text):
+def _ascii_entities_html(frag):
+    # citeproc emits typographic punctuation (en dash, curly quotes) and a
+    # bibliography may carry accented author names; the HTML path is ASCII-gated,
+    # so fold every non-ASCII char to a numeric HTML entity -- byte-ASCII output
+    # that renders identically, independent of the CSL locale. Runs on generated
+    # output only (the author body is ASCII), so no code span needs protecting.
+    return "".join(c if ord(c) < 128 else "&#x%x;" % ord(c) for c in frag)
+
+
+# IEEE numeric CSL shipped by citation-style-language-styles (Depends). Numbers
+# references by first in-text appearance, so inserting a cite never renumbers.
+CSL_PATH = "/usr/share/citation-style-language/styles/ieee.csl"
+
+
+def _check_citeproc(stderr):
+    # citeproc EXITS 0 on an undefined [@key] -- it renders "key?" and warns on
+    # stderr. Promote any citeproc warning to a hard build failure so a dangling
+    # citation cannot ship silently.
+    bad = [ln for ln in stderr.splitlines() if "Citeproc:" in ln]
+    if bad:
+        raise BuildError("unresolved citation(s):\n" + "\n".join(bad))
+
+
+def md_to_html_fragment(md_text, bib_path=None):
     # Disable: raw_html (author <script> becomes text); smart (keep output ASCII
     # -- smart would emit curly quotes / en-dashes); and the attribute extensions
     # that let author Markdown attach arbitrary HTML attributes such as an
@@ -405,8 +467,16 @@ def md_to_html_fragment(md_text):
     # residual event-handler attribute or dangerous URL scheme.
     fmt = ("markdown-raw_html-smart-raw_attribute-link_attributes"
            "-native_divs-native_spans")
-    r = _run(["pandoc", "-f", fmt, "-t", "html5", "--wrap=none"], input=md_text)
-    return _endash_html(_sanitize_html(r.stdout))
+    cmd = ["pandoc", "-f", fmt, "-t", "html5", "--wrap=none"]
+    if bib_path:
+        # citeproc renders the in-text numbers (by first appearance), the
+        # reference list at the ::: {#refs} div, and the DOI/URL links from the
+        # bibliography -- replacing the old hand-rolled [n] linkifier.
+        cmd += ["--citeproc", "--bibliography", bib_path, "--csl", CSL_PATH,
+                "-M", "link-citations=true", "-M", "link-bibliography=true"]
+    r = _run(cmd, input=md_text)
+    _check_citeproc(r.stderr)
+    return _ascii_entities_html(_endash_html(_sanitize_html(r.stdout)))
 
 
 def _yaml_dq(s):
@@ -463,7 +533,7 @@ def md_to_pdf(m, journal, out_pdf):
             "\\do\\&\\do\\=\\do\\#\\do\\%\\do\\;\\do\\:}%\n"
             "}\n")
         hdr.close()
-        _run([
+        cmd = [
             "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute", "-o", out_pdf,
             "--pdf-engine=pdflatex",
             "--include-in-header", hdr.name,
@@ -472,7 +542,14 @@ def md_to_pdf(m, journal, out_pdf):
             "-V", "fontsize=11pt",
             "-V", "linkcolor=blue",
             "-V", "urlcolor=blue",
-        ], input=doc, env=env)
+        ]
+        bib = os.path.join(m["_dir"], "refs.bib")
+        if os.path.exists(bib):
+            # citeproc resolves before LaTeX, so the engine is unaffected; the
+            # reference list lands at the ::: {#refs} div in the body.
+            cmd += ["--citeproc", "--bibliography", bib, "--csl", CSL_PATH]
+        r = _run(cmd, input=doc, env=env)
+        _check_citeproc(r.stderr)
     finally:
         os.unlink(hdr.name)
 
@@ -657,99 +734,6 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         site_header(journal["title"], _site_root(journal)), body,
         site_footer(journal, root_rel),
     )
-
-
-# A bare URL in a reference entry (pandoc already entity-escaped any &); not
-# preceded by " or > so a URL already inside an href/anchor is left alone.
-_REF_URL_RE = re.compile(r'(?<![">])(https?://[^\s<]+)')
-
-
-def _anchor(href_url, text=None, trail=""):
-    # Linkify runs AFTER _sanitize_html on pandoc output, so '&', '<', '>' are
-    # already entity-escaped -- re-escaping would double them (&amp; -> &amp;amp;).
-    # Only '"' is left literal by pandoc in body text, and an unescaped '"' here
-    # would close the href early and smuggle an attribute past the sanitizer, so
-    # neutralize just that one.
-    if text is None:
-        text = href_url
-
-    def q(s):
-        return s.replace('"', "&quot;")
-    return '<a href="%s">%s</a>%s' % (q(href_url), q(text), trail)
-
-
-def _linkify_refs(refs):
-    """Turn plain-text DOIs and URLs in reference entries into links."""
-    refs = re.sub(
-        r'\bdoi:\s*(10\.[^\s<]+)',
-        lambda x: 'doi: ' + _anchor("https://doi.org/" + x.group(1).rstrip("."),
-                                    x.group(1).rstrip(".")), refs, flags=re.I)
-
-    def _url(x):
-        url, trail = x.group(1), ""
-        # Strip trailing sentence punctuation, but keep a ')' that closes a '('
-        # inside the URL itself (e.g. a Wikipedia '..._(disambiguation)' link).
-        while url:
-            ch = url[-1]
-            if ch in ".,;":
-                trail = ch + trail
-                url = url[:-1]
-                continue
-            if ch == ")" and url.count("(") < url.count(")"):
-                trail = ch + trail
-                url = url[:-1]
-                continue
-            break
-        return _anchor(url, trail=trail)
-    return _REF_URL_RE.sub(_url, refs)
-
-
-def _linkify_citations(body_html):
-    """Link in-text [n] to #ref-n (first mention gets a back-anchor id), anchor
-    each reference entry with a backlink to its first mention, and turn plain
-    DOIs/URLs in references into links."""
-    mo = re.search(r'(<h2[^>]*>\s*References\s*</h2>)', body_html, re.I)
-    head = body_html if mo is None else body_html[:mo.start()]
-    refs = "" if mo is None else body_html[mo.start():]
-    seen: set = set()
-
-    def _cite(x):
-        n = x.group(1)
-        if n in seen:
-            return '<a class="cite" href="#ref-%s">[%s]</a>' % (n, n)
-        seen.add(n)
-        return ('<a class="cite" id="cite-%s" href="#ref-%s">[%s]</a>'
-                % (n, n, n))
-    # Only a lone [n] is a citation, and only OUTSIDE code spans -- so an array
-    # index such as arr[2] in a <code> block is not linkified. Combined/range
-    # forms ([1, 2], [1-3]) are intentionally NOT auto-linkified: they are
-    # indistinguishable from an ordinary prose number range (a byte range
-    # [0-15], a coordinate [3, 4]) and guessing wrong fails the build.
-    head = _sub_outside(_HTML_CODE_RE,
-                        lambda s: re.sub(r"\[(\d+)\]", _cite, s), head)
-
-    def _refs_to_ol(m):
-        def _li(x):
-            n = x.group(1)
-            content = x.group(2).rstrip()
-            back = ('<a class="backref" href="#cite-%s" '
-                    'aria-label="back to citation">&#8617;</a> ' % n) if n in seen \
-                else ""
-            # Emit the visible "[n]" as literal text, NOT a CSS list counter, so the
-            # displayed number always equals the citation key n -- even when the
-            # reference list is not authored in 1,2,3 order.
-            return '<li id="ref-%s">[%s] %s%s</li>' % (n, n, back, content)
-        lis = re.sub(r'<p>\s*\[(\d+)\]\s*(.*?)</p>\s*', _li, m.group(0), flags=re.S)
-        return '\n<ol class="references">\n' + lis.rstrip() + '\n</ol>\n'
-    # Convert EVERY consecutive run of reference paragraphs after the References
-    # heading (each run -> its own <ol>), so a reference separated from the main
-    # block by an interrupting paragraph is still wrapped and anchored (id="ref-n")
-    # and its in-text citation does not dangle. References is the last section, so
-    # `refs` spans it to end of document; there is no later section whose "[k]"
-    # lines this could wrongly capture.
-    refs = re.sub(r'(?:<p>\s*\[\d+\]\s*.*?</p>\s*)+', _refs_to_ol, refs,
-                  flags=re.S)
-    return head + _linkify_refs(refs)
 
 
 def _build_toc(body_html):
@@ -1046,7 +1030,14 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
             + _opengraph(m["title"], description, landing_url, journal,
                          og_type="article") + "\n"
             + _jsonld(m, journal, landing_url))
-    body_html = _linkify_citations(md_to_html_fragment(m["_body_md"]))
+    bib_path = os.path.join(m["_dir"], "refs.bib")
+    has_bib = os.path.exists(bib_path)
+    # A [@key] citation needs refs.bib; scan outside code spans so a literal
+    # "[@" in a sample is not mistaken for a citation.
+    if not has_bib and _citekeys_in(_MD_CODE_RE.sub(" ", m["_body_md"])):
+        raise BuildError("%s: body has [@...] citations but no refs.bib"
+                         % m["_dir"])
+    body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
 
