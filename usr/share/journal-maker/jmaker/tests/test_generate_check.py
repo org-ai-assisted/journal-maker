@@ -44,9 +44,12 @@ class TestGenerateHelpers(unittest.TestCase):
         self.assertIn('citation_author_institution', meta)
         self.assertIn('content="2026/10/24"', meta)
         self.assertIn('citation_pdf_url" content="%s"' % pdf, meta)
-        self.assertIn('citation_journal_title', meta)
-        # empty issn/doi must be omitted, not emitted blank
+        # A self-published preview is a technical report, not a journal article.
+        self.assertIn('name="citation_technical_report_institution" content="CSR"',
+                      meta)
+        self.assertNotIn("citation_journal_title", meta)
         self.assertNotIn("citation_issn", meta)
+        # empty doi must be omitted, not emitted blank
         self.assertNotIn("citation_doi", meta)
 
 
@@ -185,13 +188,15 @@ class TestZenodo(unittest.TestCase):
         out = zenodo.build_metadata(m, JOURNAL, m["abstract"])["metadata"]
         self.assertEqual(out["title"], "A Title")
         self.assertEqual(out["upload_type"], "publication")
-        self.assertEqual(out["publication_type"], "article")
+        # Technical report, not a journal article: no journal_* fields.
+        self.assertEqual(out["publication_type"], "report")
         self.assertEqual(out["description"], "An abstract.")
         self.assertEqual(out["license"], "cc-by-4.0")
-        self.assertEqual(out["journal_title"], "Computer Security Research")
+        self.assertNotIn("journal_title", out)
+        self.assertNotIn("journal_issn", out)
+        self.assertNotIn("journal_pages", out)
         self.assertEqual(len(out["creators"]), 2)
         self.assertEqual(out["creators"][0]["affiliation"], "U")
-        self.assertEqual(out["journal_pages"], "1-12")
 
     def test_write_doi_to_meta(self):
         from jmaker import zenodo

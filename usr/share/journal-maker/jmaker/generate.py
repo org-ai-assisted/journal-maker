@@ -586,9 +586,10 @@ def citation_meta(m, journal, landing_url, pdf_url):
     add("citation_publication_date", _scholar_date(m["date"]))
     if m.get("online_date"):
         add("citation_online_date", _scholar_date(m["online_date"]))
-    add("citation_journal_title", journal["title"])
-    if journal.get("issn"):
-        add("citation_issn", journal["issn"])
+    # A self-published web preview is a technical report, NOT a journal article:
+    # Scholar's institution tag carries the publishing site; never
+    # citation_journal_title or citation_issn (serial/journal identifiers).
+    add("citation_technical_report_institution", journal["publisher"])
     if m.get("firstpage"):
         add("citation_firstpage", m["firstpage"])
     if m.get("lastpage"):

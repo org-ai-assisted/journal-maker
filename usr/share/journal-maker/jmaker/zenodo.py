@@ -52,7 +52,9 @@ def build_metadata(m, journal, abstract):
     meta = {
         "title": m["title"],
         "upload_type": "publication",
-        "publication_type": "article",
+        # A self-published preview is a technical report, not a journal article:
+        # no journal_title / journal_issn / journal_pages (article-only fields).
+        "publication_type": "report",
         "description": " ".join(abstract.split()),
         "creators": creators,
         "publication_date": m["date"],
@@ -62,20 +64,12 @@ def build_metadata(m, journal, abstract):
         # not guaranteed to be present, and reserve() would fail after creating
         # the (now orphaned) deposition.
         "prereserve_doi": True,
-        "journal_title": journal["title"],
     }
     lic = m.get("license", journal.get("license", ""))
     if lic:
         meta["license"] = _LICENSE_MAP.get(lic, lic.lower())
     if m.get("keywords"):
         meta["keywords"] = list(m["keywords"])
-    if journal.get("issn"):
-        meta["journal_issn"] = journal["issn"]
-    if m.get("firstpage"):
-        pages = str(m["firstpage"])
-        if m.get("lastpage"):
-            pages = "%s-%s" % (m["firstpage"], m["lastpage"])
-        meta["journal_pages"] = pages
     return {"metadata": meta}
 
 
