@@ -186,9 +186,13 @@ def _parse_paper(md, adir):
     return title, abstract, body
 
 
-# A bracketed citation group ([@key] or [@a; @b]) and the keys inside it; a bare
-# "user@host" in prose is never in brackets, so it is not mistaken for a cite.
-_CITE_GROUP_RE = re.compile(r"\[(@[^\]]+)\]")
+# A bracketed group holding at least one @key, and the keys inside it. Matches
+# the plain [@a] / [@a; @b] and pandoc's prefixed/locator forms [see @a] /
+# [cf. @a, p. 3]. A bare "user@host" in prose is never in brackets, so it is not
+# mistaken for a cite. Bare NARRATIVE "@a showed" (no brackets) is OUT of scope:
+# it is off our [@key] convention (csr-rules), and matching it robustly means
+# replicating pandoc's citation grammar (email / word-boundary edge cases).
+_CITE_GROUP_RE = re.compile(r"\[([^\]]*@[^\]]+)\]")
 _KEY_IN_GROUP_RE = re.compile(r"@([\w:.\-]+)")
 # A BibTeX entry key: `@type{key,`.
 _BIB_KEY_RE = re.compile(r"^\s*@\w+\s*\{\s*([^,\s]+)\s*,", re.M)
@@ -202,7 +206,10 @@ def _citekeys_in(text):
 
 
 def _bib_keys(bib_path):
-    with open(bib_path, "r", encoding="utf-8") as fh:
+    # Keys are ASCII (@type{key,); errors="replace" keeps a non-UTF-8 byte in an
+    # accented author field from crashing key extraction with a raw traceback --
+    # pandoc stays the authority on the bib's actual content at build time.
+    with open(bib_path, "r", encoding="utf-8", errors="replace") as fh:
         return set(_BIB_KEY_RE.findall(fh.read()))
 
 
@@ -216,7 +223,7 @@ def _check_sidecar_drift(adir):
         return
     bib = os.path.join(adir, "refs.bib")
     keys = _bib_keys(bib) if os.path.exists(bib) else set()
-    with open(sq, "r", encoding="utf-8") as fh:
+    with open(sq, "r", encoding="utf-8", errors="replace") as fh:
         used = _citekeys_in(fh.read())
     missing = sorted(used - keys)
     if missing:
@@ -1037,6 +1044,13 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
     if not has_bib and _citekeys_in(_MD_CODE_RE.sub(" ", m["_body_md"])):
         raise BuildError("%s: body has [@...] citations but no refs.bib"
                          % m["_dir"])
+    # The abstract is rendered WITHOUT citeproc (a cited abstract would append a
+    # whole reference list), and it is reused verbatim as the plain-text meta /
+    # OpenGraph description -- so a citation there cannot render and would ship as
+    # literal "[@key]". Forbid it outright, loudly.
+    if _citekeys_in(_MD_CODE_RE.sub(" ", m["abstract"])):
+        raise BuildError("%s: abstract must not contain [@...] citations "
+                         "(it is the plain-text meta/OG description)" % m["_dir"])
     body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)

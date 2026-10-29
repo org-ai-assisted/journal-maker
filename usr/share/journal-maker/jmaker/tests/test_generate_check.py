@@ -1438,6 +1438,23 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             c.check_citation_parity(page, "p", f)
             self.assertEqual([m for _l, _p, m in f.errors], [])
 
+    def test_abstract_citation_rejected(self):
+        # A [@key] in the abstract cannot render (no citeproc there; it is the
+        # plain-text meta/OG description) -- the build must fail, not ship literal.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA long enough abstract that cites "
+                         "prior work [@alpha] right here.\n\n## 1. Intro\n\n"
+                         "Body [@beta].\n\n## 2. References\n\n::: {#refs}\n:::\n")
+            out = os.path.join(d, "s")
+            with self.assertRaises(g.BuildError) as cm:
+                g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            self.assertIn("abstract", str(cm.exception))
+
     def test_body_citation_requires_bib(self):
         # A [@key] in the body with no refs.bib is a build error (no silent
         # literal "[@key]" shipping).
@@ -1724,6 +1741,25 @@ class TestSidecarDrift(unittest.TestCase):
         self.assertEqual(g._citekeys_in("see [@a-b] and [@c.d; @e:f]"),
                          {"a-b", "c.d", "e:f"})
         self.assertEqual(g._citekeys_in("email a@b.com, no bracket"), set())
+        # pandoc prefixed / locator forms are caught.
+        self.assertEqual(g._citekeys_in("as noted [see @alpha] and [cf. @beta, p. 3]"),
+                         {"alpha", "beta"})
+
+    def test_prefixed_key_drift_caught(self):
+        # A prefixed [see @ghost] in the sidecar with no bib entry still drifts.
+        d = self._dir(sidecar="## [@alpha] a\n- also [see @ghost]\n")
+        with self.assertRaises(g.BuildError) as cm:
+            g._check_sidecar_drift(d)
+        self.assertIn("ghost", str(cm.exception))
+
+    def test_non_utf8_bib_no_crash(self):
+        # A non-UTF-8 byte in an accented author field must not crash key
+        # extraction with a raw UnicodeDecodeError (keys are ASCII).
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        with open(os.path.join(d, "refs.bib"), "wb") as fh:
+            fh.write(b"@article{mueller, author={M\xfcller}, title={T}, year={2020}}\n")
+        self.assertEqual(g._bib_keys(os.path.join(d, "refs.bib")), {"mueller"})
 
 
 class TestAsciiEntities(unittest.TestCase):
