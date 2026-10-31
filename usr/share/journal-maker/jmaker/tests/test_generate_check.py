@@ -857,6 +857,7 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertLess(js.index("appendChild(cnav)"), js.index("appendChild(cbody)"))
         self.assertIn("ArrowLeft", js)
         self.assertIn("ArrowRight", js)
+        self.assertIn('getElementById("cq-"', js)   # prefer the quote block
 
     def test_opengraph_tags(self):
         og = g._opengraph("T", "An abstract.", "https://e.example/x/",
@@ -1732,96 +1733,80 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
 
-    def test_source_quotes_sidecar_published_and_linked(self):
-        # A per-article source-quotes.md is published as a read-only HTML page at
-        # <slug>/sources/, linked from the article, carrying the no-index meta;
-        # the keyed heading anchor is rebound to the stable @citekey, and the
-        # literal [@key] stays visible (no citeproc numbering). check_site stays
+    _TOML = ('[alpha]\nlabel = "Alpha source"\n'
+             'claims = [{ section = "Sec. 3", text = "the alpha claim" }]\n'
+             'quotes = [{ text = "the alpha verbatim text" }]\n'
+             '[gamma]\nno_quote = "paywalled; no free full text."\n')
+
+    def test_source_quotes_cards_published_and_linked(self):
+        # A per-article source-quotes.toml is published as quotation cards at
+        # <slug>/sources/, linked from the article, carrying the no-index meta.
+        # Attribution comes from refs.bib (via pandoc CSL-JSON). check_site stays
         # clean (the sidecar is a non-article page, exempt from citation parity).
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
             ad = os.path.join(d, "articles", "art")
             with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
                 fh.write(_BIB)
-            with open(os.path.join(ad, "source-quotes.md"), "w",
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
                       encoding="utf-8") as fh:
-                fh.write("# Source quotes\n\n"
-                         "## [@alpha] Alpha source\n\n"
-                         "- URL: https://e.example/alpha (retrieved 2026-10-26)\n"
-                         '- Quote: "the alpha verbatim text"\n')
+                fh.write(self._TOML)
             out = os.path.join(d, "s")
             g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
             spage = os.path.join(out, "art", "sources", "index.html")
             self.assertTrue(os.path.isfile(spage))
             with open(spage, encoding="utf-8") as fh:
                 sources = fh.read()
+            self.assertIn('<article class="qcard" id="alpha">', sources)
             self.assertIn("the alpha verbatim text", sources)
-            self.assertIn('<h2 id="alpha">', sources)       # anchor == @citekey
-            # the [@alpha] key is a clickable self-permalink to its entry
-            self.assertIn('<a href="#alpha">[@alpha]</a>', sources)
-            # the bare source URL is autolinked (orphan class="uri" stripped)
-            self.assertIn('<a href="https://e.example/alpha">', sources)
-            self.assertNotIn('class="uri"', sources)
+            self.assertIn('<a class="qkey" href="#alpha">[@alpha]</a>', sources)
+            self.assertIn('href="../#cite-alpha">Sec. 3', sources)   # claim pill
+            # attribution from refs.bib (CSL-JSON): author "Org A", linked title
+            self.assertIn('<span class="nm">Org A</span>', sources)
+            self.assertIn('href="https://a.example/x">Alpha page</a>', sources)
+            self.assertIn("retrieved 2026-01-01", sources)
+            # gamma has no quote -> Remaining references, not a card
+            self.assertIn("Remaining references", sources)
+            self.assertIn("paywalled", sources)
             self.assertIn('name="robots" content="noindex"', sources)
             self.assertIn('href="../"', sources)            # back to the paper
             with open(os.path.join(out, "art", "index.html"),
                       encoding="utf-8") as fh:
                 self.assertIn('href="sources/"', fh.read())  # article links it
-            # in the sitemap like every navigable page: webcheck's seo_page_urls
-            # includes it (a noindex meta does not drop a page), and the 'previews'
-            # SEO check asserts our sitemap.xml == its render_sitemap.
+            # in the sitemap like every navigable page (byte-parity with webcheck)
             with open(os.path.join(out, "sitemap.xml"), encoding="utf-8") as fh:
                 self.assertIn("<loc>https://e.example/art/sources/</loc>",
                               fh.read())
             f, found = c.check_site(out)
-            self.assertEqual(found, 1)                       # still 1 article
-            # the sidecar page raises no error of its own (the only skip-pdf
-            # error is the absent PDF the canonical meta points at, on the
-            # article page -- not under sources/).
+            self.assertEqual(found, 1)
             self.assertFalse(any("sources" in p for _l, p, _m in f.errors),
                              [i for i in f.errors])
 
-    def test_sidecar_validated_against_rendered_not_raw(self):
-        # Root-fix end-to-end (needs pandoc): a relative link AND a [@ghost] key
-        # shown as literal examples inside a code span / fence are <code> text in
-        # the rendered HTML -- never an <a>/<img> or a citation -- so they do NOT
-        # trip the guard (no false-positive build failure, no phantom key drift).
+    def test_sidecar_neutralizes_dangerous_url(self):
+        # A dangerous scheme in a refs.bib url must be neutralized on the sources
+        # page (the hand-assembled card HTML runs through _sanitize_html).
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
             ad = os.path.join(d, "articles", "art")
             with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
-                fh.write(_BIB)
-            with open(os.path.join(ad, "source-quotes.md"), "w",
+                fh.write('@misc{alpha, author={{Org}}, title={{T}}, '
+                         'url={javascript:alert(1)}}\n')
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
                       encoding="utf-8") as fh:
-                fh.write("# Source quotes\n\n## [@alpha] Alpha\n\n"
-                         "inline `[c](figures/x.png)` and `[@ghost]` samples\n\n"
-                         "```\nsee [d](rel/y.png); [@alsoghost]; [r]: rel/z.png\n```\n")
+                fh.write('[alpha]\nquotes = [{ text = "q" }]\n')
             out = os.path.join(d, "s")
-            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)  # no raise
-            self.assertTrue(os.path.isfile(
-                os.path.join(out, "art", "sources", "index.html")))
-
-    def test_sidecar_real_relative_link_rejected(self):
-        # A genuine relative link (inline OR reference-style) outside code is a
-        # <a href="..."> in the rendered HTML and must still be rejected.
-        for body in ("see [chart](figures/x.png)\n",
-                     "see [chart][c]\n\n[c]: figures/x.png\n"):
-            with tempfile.TemporaryDirectory() as d:
-                jt = self._site(d)
-                ad = os.path.join(d, "articles", "art")
-                with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
-                    fh.write(_BIB)
-                with open(os.path.join(ad, "source-quotes.md"), "w",
-                          encoding="utf-8") as fh:
-                    fh.write("# Source quotes\n\n## [@alpha] Alpha\n\n" + body)
-                with self.assertRaises(g.BuildError) as cm:
-                    g.build(os.path.join(d, "articles"), jt,
-                            os.path.join(d, "s"), skip_pdf=True)
-                self.assertIn("relative", str(cm.exception))
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "sources", "index.html"),
+                      encoding="utf-8") as fh:
+                sources = fh.read()
+            # _sanitize_html rewrites the dangerous scheme to '#', so no live
+            # javascript: href survives.
+            self.assertNotIn("javascript:", sources)
+            self.assertIn('class="src"><a href="#', sources)
 
     def test_reference_backlinks_and_source_links(self):
         # #6: the first in-text citation gets id=cite-KEY and the reference [n]
-        # backlinks to it. #5: a reference whose key has a sidecar entry links to
+        # backlinks to it. #5: a reference whose key has a sidecar card links to
         # its sources/#KEY quote; one without does not. Parity stays clean.
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
@@ -1833,9 +1818,9 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                          "validation here.\n\n## 1. Intro\n\nBody [@beta] then "
                          "[@alpha], reuse [@beta].\n\n## 2. References\n\n"
                          "::: {#refs}\n:::\n")
-            with open(os.path.join(ad, "source-quotes.md"), "w",
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
                       encoding="utf-8") as fh:
-                fh.write("# Source quotes\n\n## [@beta] Beta\n\n- Quote: b\n")
+                fh.write('[beta]\nquotes = [{ text = "b" }]\n')
             out = os.path.join(d, "s")
             g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
             with open(os.path.join(out, "art", "index.html"),
@@ -1845,37 +1830,74 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertEqual(page.count('id="cite-beta"'), 1)           # first only
             self.assertIn('<a class="csl-backref" href="#cite-beta">', page)
             self.assertIn('<a class="csl-source" href="sources/#beta">', page)  # #5
-            self.assertNotIn('href="sources/#alpha"', page)   # alpha has no entry
+            self.assertNotIn('href="sources/#alpha"', page)   # alpha has no card
             f = c.Findings()
             c.check_citation_parity(page, "p", f)
             self.assertEqual([m for _l, _p, m in f.errors], [])
 
-    def test_markdown_source_links(self):
+    def test_citation_quote_store_for_hovercards(self):
+        # The paper embeds a hidden per-citation quote block (the source card's
+        # verbatim quote + attribution) for each CITED key that has a sidecar card,
+        # so the citation hovercard can preview it. An uncited card key is not
+        # embedded.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBody [@beta].\n\n"
+                         "## 2. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[beta]\nquotes = [{ text = "verbatim beta quote" }]\n'
+                         '[gamma]\nquotes = [{ text = "uncited quote" }]\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn('<div class="cite-quotes" hidden>', page)
+            self.assertIn('<div class="cite-quote" id="cq-beta" hidden>', page)
+            self.assertIn("verbatim beta quote", page)
+            self.assertIn('blockquote class="quotation"', page)  # reused block
+            # gamma has a card but is not cited in the paper -> not embedded
+            self.assertNotIn('id="cq-gamma"', page)
+            self.assertNotIn("uncited quote", page)
+
+    def test_source_links_use_dir_name_and_toml(self):
         # With source_base_url set, the article links to its paper.md and the
-        # sources page to its source-quotes.md, under articles/<slug>/.
+        # sources page to its source-quotes.toml, under articles/<DIR NAME> (not
+        # the slug, which meta.toml can override).
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
             with open(jt, "a", encoding="utf-8") as fh:
                 fh.write('source_base_url = "https://github.com/o/r/blob/master"\n')
             ad = os.path.join(d, "articles", "art")
-            with open(os.path.join(ad, "source-quotes.md"), "w",
+            with open(os.path.join(ad, "meta.toml"), "a", encoding="utf-8") as fh:
+                fh.write('slug = "different-slug"\n')   # slug != dir name
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
                       encoding="utf-8") as fh:
-                fh.write("# Source quotes\n\n## Alpha\n\n- Quote: y\n")
+                fh.write('[alpha]\nquotes = [{ text = "y" }]\n')
             out = os.path.join(d, "s")
             g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
-            with open(os.path.join(out, "art", "index.html"),
+            with open(os.path.join(out, "different-slug", "index.html"),
                       encoding="utf-8") as fh:
                 art = fh.read()
+            # blob path uses the on-disk dir "art", never the slug
             self.assertIn('href="https://github.com/o/r/blob/master/articles/art/'
                           'paper.md"', art)
-            self.assertIn(">Markdown source</a>", art)
-            with open(os.path.join(out, "art", "sources", "index.html"),
+            self.assertNotIn("different-slug/paper.md", art)
+            with open(os.path.join(out, "different-slug", "sources", "index.html"),
                       encoding="utf-8") as fh:
                 self.assertIn('href="https://github.com/o/r/blob/master/articles/'
-                              'art/source-quotes.md"', fh.read())
+                              'art/source-quotes.toml"', fh.read())
 
     def test_no_sidecar_no_sources_page_or_link(self):
-        # No source-quotes.md -> no sources/ page and no link on the article.
+        # No source-quotes.toml -> no sources/ page and no link on the article.
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
             out = os.path.join(d, "s")
@@ -1886,10 +1908,9 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 self.assertNotIn('href="sources/"', fh.read())
 
     def test_sources_page_inherits_article_vendor_allowance(self):
-        # The sources/ page renders the sidecar verbatim; a vendor phrase the
-        # article allow-lists and that is quoted in the sidecar must be allowed on
-        # the sources page too (its dir is a distinct per-file key). Without the
-        # <slug>/sources manifest entry, check_no_vendor_refs would flag the token.
+        # The card renders the quote verbatim; a vendor phrase the article
+        # allow-lists and that is quoted in the sidecar must be allowed on the
+        # sources page too (its dir is a distinct per-file key).
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
             ad = os.path.join(d, "articles", "art")
@@ -1897,18 +1918,16 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 fh.write('allow_vendor_mentions = ["Kicksecure wiki"]\n')
             with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
                 fh.write(_BIB)
-            with open(os.path.join(ad, "source-quotes.md"), "w",
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
                       encoding="utf-8") as fh:
-                fh.write("# Source quotes\n\n## [@alpha] Alpha\n\n"
-                         '- Quote: "see the Kicksecure wiki for details"\n')
+                fh.write('[alpha]\nquotes = [{ text = '
+                         '"see the Kicksecure wiki for details" }]\n')
             out = os.path.join(d, "s")
             g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
-            # the manifest carries the allowance under the sources dir key
             with open(os.path.join(out, ".github", "vendor-allowlist.json"),
                       encoding="utf-8") as fh:
                 manifest = json.load(fh)
             self.assertIn("art/sources", manifest)
-            # and the vendor-ref gate is clean for the sources page
             f = c.Findings()
             c.check_no_vendor_refs(out, f)
             self.assertEqual([m for _l, p, m in f.errors], [])
@@ -1985,55 +2004,162 @@ class TestCiteprocFragment(unittest.TestCase):
         self.assertIn("no-such-key", str(cm.exception))
 
 
-class TestSidecarDrift(unittest.TestCase):
-    """File-level source-quotes.md checks at load: not a symlink, valid UTF-8
-    (pure; no pandoc). Key/target drift is validated on the rendered fragment."""
+class TestSidecar(unittest.TestCase):
+    """Structured source-quotes.toml: load + validate (pure, no pandoc), the
+    refs.bib CSL attribution logic, and the card builders."""
 
-    def _dir(self, bib=_BIB, sidecar=None):
+    def _dir(self, bib=_BIB, toml=None):
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(d))
         if bib is not None:
             with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
                 fh.write(bib)
-        if sidecar is not None:
-            with open(os.path.join(d, "source-quotes.md"), "w",
+        if toml is not None:
+            with open(os.path.join(d, "source-quotes.toml"), "w",
                       encoding="utf-8") as fh:
-                fh.write(sidecar)
+                fh.write(toml)
         return d
 
     def test_no_sidecar_is_ok(self):
-        g._check_sidecar_drift(self._dir(sidecar=None))  # no raise
+        self.assertIsNone(g._load_sidecar(self._dir()))
 
-    def test_valid_sidecar_file_ok(self):
-        # File-level checks only now (symlink + UTF-8); key/target drift is
-        # validated on the rendered fragment (TestValidateSources).
-        g._check_sidecar_drift(self._dir(sidecar="## [@alpha] a\n- Quote: x\n"))
+    def test_valid_sidecar_loads_in_order(self):
+        d = self._dir(toml='[beta]\nquotes = [{ text = "b" }]\n'
+                           '[alpha]\nquotes = [{ text = "a" }]\n')
+        data = g._load_sidecar(d)
+        self.assertEqual(list(data), ["beta", "alpha"])   # file order preserved
+        self.assertEqual(data["alpha"]["quotes"][0]["text"], "a")
 
     def test_symlinked_sidecar_rejected(self):
-        # A symlinked sidecar is read + published verbatim, so a link out of the
-        # article dir would leak another file's text; reject it loudly.
         import shutil as _sh
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: _sh.rmtree(d))
-        secret = os.path.join(d, "secret.md")
+        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+            fh.write(_BIB)
+        secret = os.path.join(d, "secret.toml")
         with open(secret, "w", encoding="utf-8") as fh:
-            fh.write("## [@alpha] x\n")
-        os.symlink(secret, os.path.join(d, "source-quotes.md"))
+            fh.write('[alpha]\nquotes = [{ text = "x" }]\n')
+        os.symlink(secret, os.path.join(d, "source-quotes.toml"))
         with self.assertRaises(g.BuildError) as cm:
-            g._check_sidecar_drift(d)
+            g._load_sidecar(d)
         self.assertIn("symlink", str(cm.exception))
 
-    def test_non_utf8_sidecar_rejected(self):
-        # A stray non-UTF-8 byte must fail as a BuildError (the CLI catches that),
-        # not abort the whole build with a raw UnicodeDecodeError.
-        import shutil as _sh
-        d = tempfile.mkdtemp()
-        self.addCleanup(lambda: _sh.rmtree(d))
-        with open(os.path.join(d, "source-quotes.md"), "wb") as fh:
-            fh.write(b"## [@alpha] x\n- Quote: caf\xe9\n")
+    def test_toml_parse_error_rejected(self):
+        d = self._dir(toml='[alpha]\nquotes = [ bad\n')
+        with self.assertRaises(g.BuildError):
+            g._load_sidecar(d)
+
+    def test_key_not_in_bib_rejected(self):
+        d = self._dir(toml='[ghost]\nquotes = [{ text = "x" }]\n')
         with self.assertRaises(g.BuildError) as cm:
-            g._check_sidecar_drift(d)
-        self.assertIn("UTF-8", str(cm.exception))
+            g._load_sidecar(d)
+        self.assertIn("ghost", str(cm.exception))
+
+    def test_entry_needs_quotes_or_no_quote(self):
+        d = self._dir(toml='[alpha]\nclaims = [{ section = "Sec. 1", text = "c" }]\n')
+        with self.assertRaises(g.BuildError) as cm:
+            g._load_sidecar(d)
+        self.assertIn("quotes or", str(cm.exception))
+
+    def test_empty_quote_text_rejected(self):
+        d = self._dir(toml='[alpha]\nquotes = [{ text = "  " }]\n')
+        with self.assertRaises(g.BuildError):
+            g._load_sidecar(d)
+
+    def test_no_quote_entry_ok(self):
+        d = self._dir(toml='[alpha]\nno_quote = "paywalled"\n')
+        self.assertIn("alpha", g._load_sidecar(d))
+
+    def test_bad_key_charset_rejected(self):
+        # A key with HTML-unsafe chars (would break out of id/href) is refused.
+        d = self._dir(toml='["a<b"]\nquotes = [{ text = "x" }]\n')
+        with self.assertRaises(g.BuildError) as cm:
+            g._load_sidecar(d)
+        self.assertIn("[\\w:.-]+", str(cm.exception))
+
+    def test_nonstring_fields_rejected(self):
+        # Every rendered field must be a string -- else html.escape crashes with
+        # an AttributeError the CLI does not catch. Validate at load as BuildError.
+        for toml in ('[alpha]\nlabel = 1\nquotes = [{ text = "x" }]\n',
+                     '[alpha]\nquotes = [{ text = "x", label = 2 }]\n',
+                     '[alpha]\nclaims = [{ section = 3, text = "c" }]\n'
+                     'quotes = [{ text = "x" }]\n',
+                     '[alpha]\nno_quote = true\n',
+                     '[alpha]\nno_quote = ""\n'):
+            d = self._dir(toml=toml)
+            with self.assertRaises(g.BuildError):
+                g._load_sidecar(d)
+
+    # --- refs.bib CSL attribution (pure: hand-built CSL-JSON entries) ---
+    def test_csl_attribution_author_venue_retrieved(self):
+        att = g._csl_attribution({
+            "author": [{"family": "Doe", "given": "J."}, {"literal": "Org"}],
+            "title": "T", "URL": "https://e.example/p",
+            "container-title": "Proc X", "issued": {"date-parts": [[2022]]},
+            "accessed": {"date-parts": [[2026, 10, 31]]}})
+        self.assertEqual(att["name"], "J. Doe; Org")
+        self.assertEqual(att["venue"], "Proc X, 2022")
+        self.assertEqual(att["link"], "https://e.example/p")
+        self.assertEqual(att["retrieved"], "2026-10-31")
+
+    def test_csl_attribution_publisher_name_and_doi_link(self):
+        # no author -> name from publisher; no URL -> link from DOI; no accessed.
+        att = g._csl_attribution({"title": "Patent",
+                                  "publisher": "U.S. Patent US1", "DOI": "10.1/x"})
+        self.assertEqual(att["name"], "U.S. Patent US1")
+        self.assertEqual(att["venue"], "")       # publisher is the name, not venue
+        self.assertEqual(att["link"], "https://doi.org/10.1/x")
+        self.assertEqual(att["retrieved"], "")
+
+    def test_csl_date_partial(self):
+        self.assertEqual(g._csl_date([[2014, 5]]), "2014-05")
+        self.assertEqual(g._csl_date([[2019]]), "2019")
+        self.assertEqual(g._csl_date(None), "")
+
+    # --- card builders (pure) ---
+    _ATT = {"name": "N", "venue": "V", "title": "Ti",
+            "link": "https://e.example/p", "retrieved": "2026-10-31"}
+
+    def test_card_single_claim(self):
+        entry = {"label": "Lbl", "claims": [{"section": "Sec. 3", "text": "cl"}],
+                 "quotes": [{"text": "qt", "label": "abstract"}]}
+        card = g._sources_card("alpha", entry, self._ATT)
+        self.assertIn('<article class="qcard" id="alpha">', card)
+        self.assertIn('<a class="qkey" href="#alpha">[@alpha]</a>', card)
+        self.assertIn("Lbl", card)
+        self.assertIn('href="../#cite-alpha">Sec. 3', card)   # claim -> paper citation
+        self.assertIn('<span class="qlabel-tag">abstract</span>', card)
+        self.assertIn("qt", card)
+        self.assertIn('<span class="nm">N</span>', card)
+        self.assertIn('href="https://e.example/p">Ti</a>', card)
+        self.assertIn("retrieved 2026-10-31", card)
+
+    def test_card_multi_claim_list(self):
+        entry = {"claims": [{"section": "Sec. 7", "text": "a"},
+                            {"section": "Sec. 13", "text": "b"}],
+                 "quotes": [{"text": "q"}]}
+        card = g._sources_card("k", entry,
+                               {"name": "", "venue": "", "title": "",
+                                "link": "", "retrieved": ""})
+        self.assertIn("qclaim-list", card)
+        self.assertEqual(card.count('href="../#cite-k">'), 2)
+
+    def test_card_claim_without_section_no_empty_pill(self):
+        # A claim with no section emits NO pill (not an empty <a> pill).
+        entry = {"claims": [{"text": "sectionless claim"}],
+                 "quotes": [{"text": "q"}]}
+        card = g._sources_card("k", entry,
+                               {"name": "", "venue": "", "title": "",
+                                "link": "", "retrieved": ""})
+        self.assertNotIn("qclaim-sec", card)
+        self.assertIn("sectionless claim", card)
+
+    def test_csl_authors_keeps_particles_and_suffix(self):
+        att = g._csl_attribution({"title": "T", "author": [
+            {"given": "Vincent", "non-dropping-particle": "van",
+             "family": "Gogh"},
+            {"given": "Martin Luther", "family": "King", "suffix": "Jr."}]})
+        self.assertEqual(att["name"], "Vincent van Gogh; Martin Luther King, Jr.")
 
     def test_bib_keys_parsed(self):
         d = self._dir()
@@ -2044,13 +2170,8 @@ class TestSidecarDrift(unittest.TestCase):
         self.assertEqual(g._citekeys_in("see [@a-b] and [@c.d; @e:f]"),
                          {"a-b", "c.d", "e:f"})
         self.assertEqual(g._citekeys_in("email a@b.com, no bracket"), set())
-        # pandoc prefixed / locator forms are caught.
-        self.assertEqual(g._citekeys_in("as noted [see @alpha] and [cf. @beta, p. 3]"),
-                         {"alpha", "beta"})
 
     def test_non_utf8_bib_no_crash(self):
-        # A non-UTF-8 byte in an accented author field must not crash key
-        # extraction with a raw UnicodeDecodeError (keys are ASCII).
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(d))
         with open(os.path.join(d, "refs.bib"), "wb") as fh:
@@ -2120,102 +2241,6 @@ class TestBibLinkPresence(unittest.TestCase):
         # The start-of-body anchor must not let a first-field urldate pass as url.
         bib = ("@misc{x, urldate={2026-01-01}, title={{T}}}\n")
         self.assertEqual(self._missing(bib), ["x"])
-
-
-class TestValidateSources(unittest.TestCase):
-    """Link-target + @key-drift validation on the RENDERED fragment (pure: the
-    fragments here are what pandoc emits, so no pandoc is invoked)."""
-
-    def _dir(self, bib=_BIB):
-        d = tempfile.mkdtemp()
-        self.addCleanup(lambda: __import__("shutil").rmtree(d))
-        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
-            fh.write(bib)
-        return d
-
-    def test_relative_href_rejected(self):
-        frag = '<p>see <a href="figures/c.png">chart</a></p>'
-        with self.assertRaises(g.BuildError) as cm:
-            g._validate_sources(frag, self._dir())
-        self.assertIn("relative", str(cm.exception))
-        self.assertIn("figures/c.png", str(cm.exception))
-
-    def test_relative_img_rejected(self):
-        frag = '<p><img src="figures/c.png" alt="c" /></p>'
-        with self.assertRaises(g.BuildError):
-            g._validate_sources(frag, self._dir())
-
-    def test_remote_and_anchor_targets_ok(self):
-        # http(s) / mailto / in-page #anchor targets are all fine.
-        frag = ('<a href="https://e.example/p">p</a> '
-                '<a href="mailto:a@e.example">m</a> <a href="#alpha">a</a>'
-                '<span class="citation" data-cites="alpha">[@alpha]</span>')
-        g._validate_sources(frag, self._dir())  # no raise
-
-    def test_missing_citekey_rejected(self):
-        frag = '<span class="citation" data-cites="ghost">[@ghost]</span>'
-        with self.assertRaises(g.BuildError) as cm:
-            g._validate_sources(frag, self._dir())
-        self.assertIn("ghost", str(cm.exception))
-
-    def test_grouped_data_cites_parsed(self):
-        g._validate_sources(
-            '<span class="citation" data-cites="alpha beta">x</span>', self._dir())
-        with self.assertRaises(g.BuildError) as cm:
-            g._validate_sources(
-                '<span class="citation" data-cites="alpha ghost">x</span>',
-                self._dir())
-        self.assertIn("ghost", str(cm.exception))
-
-
-class TestSourcesAnchorIds(unittest.TestCase):
-    """Rebind a sidecar heading's auto-slug id to its stable @citekey (pure)."""
-
-    def test_anchor_id_rebound_to_citekey(self):
-        # pandoc (no citeproc) emits the heading's leading [@key] as a citation
-        # span carrying data-cites; the heading id becomes that key.
-        frag = ('<h2 id="alpha-src-alpha-source">'
-                '<span class="citation" data-cites="alpha">[@alpha]</span>'
-                " Alpha source</h2>\n<ul><li>q</li></ul>")
-        out = g._sources_anchor_ids(frag)
-        self.assertIn('<h2 id="alpha">', out)
-        self.assertNotIn('id="alpha-src-alpha-source"', out)
-        # the readable [@alpha] label survives and is a clickable self-permalink
-        self.assertIn('data-cites="alpha"><a href="#alpha">[@alpha]</a></span>',
-                      out)
-
-    def test_hyphen_dot_colon_key_preserved(self):
-        frag = ('<h2 id="x"><span class="citation" data-cites="a-b.c:d">'
-                "[@a-b.c:d]</span> L</h2>")
-        self.assertIn('<h2 id="a-b.c:d">', g._sources_anchor_ids(frag))
-
-    def test_duplicate_key_headings_get_unique_ids(self):
-        # Two headings sharing a @key must not emit duplicate <h2 id="key">
-        # (invalid HTML / ambiguous deep-link); first keeps the key, next is -2.
-        frag = ('<h2 id="k-a"><span class="citation" data-cites="k">[@k]</span> A</h2>'
-                '<h2 id="k-b"><span class="citation" data-cites="k">[@k]</span> B</h2>')
-        out = g._sources_anchor_ids(frag)
-        self.assertIn('<h2 id="k">', out)
-        self.assertIn('<h2 id="k-2">', out)
-        self.assertEqual(out.count('id="k"'), 1)
-
-    def test_grouped_keys_each_get_an_anchor(self):
-        # A grouped heading ([@a; @b]) yields data-cites="a b"; the first key is
-        # the heading id and each remaining key gets its own empty anchor, so
-        # sources/#a and sources/#b both resolve (a space-bearing id resolves to
-        # nothing -- the bug this guards).
-        frag = ('<h2 id="a-b-grouped">'
-                '<span class="citation" data-cites="a b">[@a; @b]</span> G</h2>')
-        out = g._sources_anchor_ids(frag)
-        self.assertIn('<h2 id="a">', out)
-        self.assertIn('<span id="b"></span>', out)
-        self.assertNotIn('id="a b"', out)
-
-    def test_non_keyed_heading_untouched(self):
-        # A heading with no leading citation (e.g. "Remaining references") keeps
-        # its pandoc auto-slug id -- canary against an over-broad rewrite.
-        frag = '<h2 id="remaining-references">Remaining references</h2>'
-        self.assertEqual(g._sources_anchor_ids(frag), frag)
 
 
 class TestAsciiEntities(unittest.TestCase):
