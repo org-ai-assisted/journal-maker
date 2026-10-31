@@ -857,6 +857,7 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertLess(js.index("appendChild(cnav)"), js.index("appendChild(cbody)"))
         self.assertIn("ArrowLeft", js)
         self.assertIn("ArrowRight", js)
+        self.assertIn('getElementById("cq-"', js)   # prefer the quote block
 
     def test_opengraph_tags(self):
         og = g._opengraph("T", "An abstract.", "https://e.example/x/",
@@ -1833,6 +1834,37 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             f = c.Findings()
             c.check_citation_parity(page, "p", f)
             self.assertEqual([m for _l, _p, m in f.errors], [])
+
+    def test_citation_quote_store_for_hovercards(self):
+        # The paper embeds a hidden per-citation quote block (the source card's
+        # verbatim quote + attribution) for each CITED key that has a sidecar card,
+        # so the citation hovercard can preview it. An uncited card key is not
+        # embedded.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBody [@beta].\n\n"
+                         "## 2. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[beta]\nquotes = [{ text = "verbatim beta quote" }]\n'
+                         '[gamma]\nquotes = [{ text = "uncited quote" }]\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn('<div class="cite-quotes" hidden>', page)
+            self.assertIn('<div class="cite-quote" id="cq-beta" hidden>', page)
+            self.assertIn("verbatim beta quote", page)
+            self.assertIn('blockquote class="quotation"', page)  # reused block
+            # gamma has a card but is not cited in the paper -> not embedded
+            self.assertNotIn('id="cq-gamma"', page)
+            self.assertNotIn("uncited quote", page)
 
     def test_source_links_use_dir_name_and_toml(self):
         # With source_base_url set, the article links to its paper.md and the

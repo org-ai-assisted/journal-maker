@@ -714,64 +714,6 @@ def md_to_pdf(m, journal, out_pdf):
         os.unlink(hdr.name)
 
 
-# Strip the citeproc reference section (## References + the ::: {#refs} div) from
-# the body for the LaTeX submission source. The .tex is natbib: bibtex + the .bst
-# generate the list from \bibliography{refs}, so leaving the div in emits a
-# spurious empty "References" heading before the bst's own list. References is the
-# final body section (csr content model), so stripping from its heading to EOF is
-# safe and needs no parser.
-_TEX_REFS_STRIP_RE = re.compile(r"\n+#{1,6}[ \t]+References\b.*\Z", re.S)
-
-
-def md_to_tex(m, journal, out_tex):
-    r"""Emit an editable LaTeX submission source (natbib + refs.bib) from paper.md.
-
-    Venue-neutral `article` class with real \cite commands and \bibliography{refs},
-    numeric style (unsrtnat) matching the site's IEEE numbering. An author
-    retargets it to a venue class (IEEEtran / elsarticle / sn-jnl / acmart) by
-    swapping \documentclass + \bibliographystyle. This is a DIFFERENT artifact from
-    the citeproc PDF, so the build compiles it (bibtex pass) to prove valid LaTeX.
-    """
-    authors_yaml = "\n".join("  - " + _yaml_dq(a["name"]) for a in m["authors"])
-    abstract = " ".join(m["abstract"].split())
-    meta_block = (
-        "---\n"
-        "title: %s\n"
-        "author:\n%s\n"
-        "date: %s\n"
-        "abstract: %s\n"
-        "documentclass: article\n"
-        "---\n\n"
-    ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(m["date"]),
-         _yaml_dq(abstract))
-    doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
-    body = _TEX_REFS_STRIP_RE.sub("", m["_body_md"])
-    doc = _endash_md(meta_block + doi_line + body)
-    # Same reader as md_to_pdf: author raw TeX (\input{...}) is NOT passed through
-    # -- it becomes literal text, so paper.md cannot inject engine-level file reads
-    # when the emitted .tex is later compiled by an author.
-    cmd = [
-        "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute",
-        "-t", "latex", "--standalone", "-o", out_tex,
-        "--natbib",
-        "-V", "biblio-style=unsrtnat",
-        "-V", "natbiboptions=numbers",
-        "--resource-path", m["_dir"],
-    ]
-    # cwd = article dir + bare basename so pandoc emits \bibliography{refs.bib}
-    # (not an absolute path); refs.bib ships beside the .tex so citation keys
-    # resolve when the author compiles.
-    if os.path.exists(os.path.join(m["_dir"], "refs.bib")):
-        cmd += ["--bibliography", "refs.bib"]
-    _run(cmd, input=doc, cwd=m["_dir"])
-    # \bibliography{refs.bib} -> \bibliography{refs}: the idiomatic basename form.
-    with open(out_tex, "r", encoding="utf-8") as fh:
-        tex = fh.read()
-    tex = tex.replace("\\bibliography{refs.bib}", "\\bibliography{refs}")
-    with open(out_tex, "w", encoding="utf-8") as fh:
-        fh.write(tex)
-
-
 # ---------------------------------------------------------------- meta tags
 
 def citation_meta(m, journal, landing_url, pdf_url):
@@ -1283,7 +1225,8 @@ def _enhance_references(body_html, sidecar_keys):
     return _REF_ENTRY_RE.sub(entry, body_html)
 
 
-def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None):
+def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None,
+                   quote_blocks=None):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
@@ -1327,6 +1270,17 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     body_html = _enhance_references(body_html, sidecar_keys or set())
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
+    # Hidden per-citation quote store: the verbatim source quote(s) + attribution
+    # for each cited key that has a sidecar card, so the citation hovercard (site.js)
+    # can preview the full quote (HTML-only; the PDF never carries it). Keyed off
+    # the #cite-<key> anchor _enhance_references stamped on the first citation, so
+    # only actually-cited keys are embedded.
+    quote_store = "".join(
+        '<div class="cite-quote" id="cq-%s" hidden>%s</div>' % (k, blk)
+        for k, blk in (quote_blocks or {}).items()
+        if ('id="cite-%s"' % k) in body_html)
+    quote_store = ('<div class="cite-quotes" hidden>%s</div>\n' % quote_store
+                   if quote_store else "")
 
     authors_line = _authors_html(m)
     affils = []
@@ -1352,17 +1306,13 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     license_bit = _license_footer(m, journal)
     # PDF + sha256 are generated only on a full build (build() gates them on
     # skip_pdf); omit the download anchors in a skip-pdf tree so it carries no
-    # link to an artifact that was never produced. The LaTeX submission source is
-    # generated on EVERY build (pandoc only, no TeX engine), so its link is
-    # unconditional. The source-quotes reviewer-aid link appears whenever the
-    # sidecar exists, independent of the PDF.
+    # link to an artifact that was never produced. The source-quotes reviewer-aid
+    # link appears whenever the sidecar exists, independent of the PDF.
     action_links = []
     if not skip_pdf:
         action_links.append('<a href="%s">Download PDF</a>' % pdf_name)
         action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
                              % pdf_name)
-    action_links.append('<a class="tex-source" href="%s.tex">LaTeX source</a>'
-                        % m["slug"])
     if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")
@@ -1395,12 +1345,13 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
         "%s"                                   # toc
         '<article class="body">\n%s\n</article>\n'
+        "%s"                                   # hidden citation quote store
         "%s"                                   # statements (data/funding/COI)
         "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
          doi_bit, history, subjects, ccs, status_line, actions_bit,
-         cite_box, abstract_html, toc, body_html, statements,
+         cite_box, abstract_html, toc, body_html, quote_store, statements,
          _article_nav(neighbors, root_rel), license_bit)
 
     page = _page(
@@ -1432,6 +1383,20 @@ def _attribution_html(att):
             if parts else "")
 
 
+def _quote_block(quotes, att):
+    """The verbatim quote(s) + refs.bib attribution as a quotation blockquote.
+    Shared by the sources-page card and the paper's citation hovercard store, so
+    both show the same quote preview."""
+    body = "".join(
+        '<p>%s%s</p>' % (
+            ('<span class="qlabel-tag">%s</span> ' % html.escape(q["label"]))
+            if q.get("label") else "",
+            html.escape(q["text"]))
+        for q in quotes)
+    return ('<blockquote class="quotation">%s%s</blockquote>'
+            % (body, _attribution_html(att)))
+
+
 def _sources_card(key, entry, att):
     """One source-quote card: clickable [@key], label, the paper claim(s) (each a
     pill linking to ../#cite-key in the paper), the verbatim quote(s) as a
@@ -1458,15 +1423,8 @@ def _sources_card(key, entry, att):
         claim_html = ('<div class="qclaim"><div class="qclaim-row">'
                       '<span class="qclaim-label">Paper claims</span></div>'
                       '<ul class="qclaim-list">%s</ul></div>' % lis)
-    quotes = "".join(
-        '<p>%s%s</p>' % (
-            ('<span class="qlabel-tag">%s</span> ' % html.escape(q["label"]))
-            if q.get("label") else "",
-            html.escape(q["text"]))
-        for q in entry["quotes"])
-    return ('<article class="qcard" id="%s">%s%s'
-            '<blockquote class="quotation">%s%s</blockquote></article>\n'
-            % (key, head, claim_html, quotes, _attribution_html(att)))
+    return ('<article class="qcard" id="%s">%s%s%s</article>\n'
+            % (key, head, claim_html, _quote_block(entry["quotes"], att)))
 
 
 def _sources_remaining(key, entry, att):
@@ -1495,11 +1453,14 @@ def render_sources(m, journal):
     root_rel = _root_rel(rel_dir)
     canonical = "%s/%s/" % (journal["base_url"], rel_dir)
     cards, remaining, card_keys = [], [], set()
+    quote_blocks = {}   # key -> processed quote block, for the paper's hovercards
     for key, entry in data.items():
         att = _csl_attribution(csl.get(key, {}))
         if entry.get("quotes"):
             card_keys.add(key)
             cards.append(_sources_card(key, entry, att))
+            quote_blocks[key] = _ascii_entities_html(_endash_html(
+                _sanitize_html(_quote_block(entry["quotes"], att))))
         else:
             remaining.append(_sources_remaining(key, entry, att))
     body = "".join(cards)
@@ -1533,7 +1494,7 @@ def render_sources(m, journal):
     page = _page(m.get("language", journal["language"]),
                  "%s -- %s" % (title, journal["title"]), description, canonical,
                  extra, main, journal, root_rel)
-    return rel_dir, page, card_keys
+    return rel_dir, page, card_keys, quote_blocks
 
 
 def render_page(slug, md_text, journal):
@@ -1842,8 +1803,9 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         # RESULTS_SUBDIR; a noindex meta does NOT drop a page), keeping our
         # sitemap.xml byte-equal to its render_sitemap.
         card_keys = set()
+        quote_blocks = {}
         if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
-            s_rel, s_page, card_keys = render_sources(m, journal)
+            s_rel, s_page, card_keys, quote_blocks = render_sources(m, journal)
             s_dest = os.path.join(out_dir, s_rel)
             os.makedirs(s_dest, exist_ok=True)
             with open(os.path.join(s_dest, "index.html"), "w",
@@ -1852,7 +1814,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
             urls.append("%s/%s/" % (journal["base_url"], s_rel))
         rel_dir, pdf_name, page = render_article(
             m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf,
-            sidecar_keys=card_keys)
+            sidecar_keys=card_keys, quote_blocks=quote_blocks)
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
@@ -1868,19 +1830,6 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
                                          % os.path.join(froot, nm))
             shutil.copytree(figdir, os.path.join(dest, "figures"))
         urls.append("%s/%s/" % (journal["base_url"], rel_dir))
-        # LaTeX submission source: regenerated into the article dir (committed
-        # beside paper.md for a tracked diff) and served from _site next to the
-        # PDF. Generated on EVERY build (pandoc only, no TeX engine) so it exists
-        # in the --skip-pdf CI tree too; a stale committed .tex is caught by the
-        # content repo's CI `git diff --exit-code` guard. refs.bib is copied
-        # alongside so the served .tex's \bibliography{refs} resolves on download.
-        tex_name = "%s.tex" % m["slug"]
-        src_tex = os.path.join(m["_dir"], tex_name)
-        md_to_tex(m, journal, src_tex)
-        shutil.copyfile(src_tex, os.path.join(dest, tex_name))
-        bib_src = os.path.join(m["_dir"], "refs.bib")
-        if os.path.exists(bib_src):
-            shutil.copyfile(bib_src, os.path.join(dest, "refs.bib"))
         if not skip_pdf:
             pdf_path = os.path.join(dest, pdf_name)
             md_to_pdf(m, journal, pdf_path)

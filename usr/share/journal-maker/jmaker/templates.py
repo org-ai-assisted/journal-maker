@@ -242,6 +242,14 @@ article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 
 /* A citeproc .csl-entry is cloned into the card; keep its [n]/text split inline
    so the preview reads as one line, not two stacked flex rows. */
 .hovercard .csl-left-margin, .hovercard .csl-right-inline { display: inline; }
+/* Hidden per-citation quote store; its quote blocks are cloned into a hovercard. */
+.cite-quotes { display: none; }
+/* A source-quote block shown in a hovercard: compact (no card shadow/fill). */
+.hovercard blockquote.quotation { margin: 0; padding: 0.1rem 0 0.1rem 1.7rem; background: transparent; box-shadow: none; border-left: 3px solid var(--accent); border-radius: 0; }
+.hovercard blockquote.quotation::before { font-size: 2rem; left: 0.1rem; top: -0.1rem; }
+.hovercard blockquote.quotation p { margin: 0 0 0.4rem; font-size: 0.85rem; line-height: 1.5; }
+.hovercard blockquote.quotation p:last-child { margin-bottom: 0; }
+.hovercard .blockquote-context { margin-top: 0.45rem; font-size: 0.8rem; }
 .hovercard-nav { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin-bottom: 0.4rem; }
 .hovercard-nav[hidden] { display: none; }
 .hovercard-navbtn { font-family: var(--sans); font-size: 0.8rem; line-height: 1; padding: 0.15rem 0.45rem; border: 1px solid var(--rule); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer; }
@@ -386,9 +394,12 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     var hideTimer = null, curIdx = -1, curAnchor = null, pinned = false;
     function refFragment(id) {
       var frag = document.createDocumentFragment();
-      var r = document.getElementById(id);
+      // Prefer the verbatim source-quote block when one is embedded for this key
+      // (id is "ref-<key>"); fall back to the reference-list entry otherwise.
+      var key = id.indexOf("ref-") === 0 ? id.slice(4) : id;
+      var r = document.getElementById("cq-" + key) || document.getElementById(id);
       if (!r) { return frag; }
-      var kids = r.childNodes;        // .csl-left-margin ([n]) + .csl-right-inline
+      var kids = r.childNodes;
       for (var i = 0; i < kids.length; i++) {
         frag.appendChild(kids[i].cloneNode(true));
       }
