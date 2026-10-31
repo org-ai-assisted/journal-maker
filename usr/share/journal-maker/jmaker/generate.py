@@ -210,7 +210,7 @@ def _parse_paper(md, adir):
 # the plain [@a] / [@a; @b] and pandoc's prefixed/locator forms [see @a] /
 # [cf. @a, p. 3]. A bare "user@host" in prose is never in brackets, so it is not
 # mistaken for a cite. Bare NARRATIVE "@a showed" (no brackets) is OUT of scope:
-# it is off our [@key] convention (csr-rules), and matching it robustly means
+# it is off our [@key] citation convention, and matching it robustly means
 # replicating pandoc's citation grammar (email / word-boundary edge cases).
 _CITE_GROUP_RE = re.compile(r"\[([^\]]*@[^\]]+)\]")
 _KEY_IN_GROUP_RE = re.compile(r"@([\w:.\-]+)")
@@ -281,8 +281,14 @@ def _load_sidecar(adir):
         if not isinstance(entry, dict):
             raise BuildError("%s/source-quotes.toml: [%s] must be a table"
                              % (adir, key))
-        # Keys are interpolated raw into id/href/label; hold them to the csr-rules
-        # citekey charset so they are HTML-attribute-safe and match the citeproc
+        # Reject an unknown (e.g. misspelled) entry field: a typo like `cliams`
+        # would otherwise be silently dropped from the rendered card.
+        extra = set(entry) - {"label", "claims", "quotes", "no_quote"}
+        if extra:
+            raise BuildError("%s/source-quotes.toml: [%s] unknown field(s): %s"
+                             % (adir, key, ", ".join(sorted(extra))))
+        # Keys are interpolated raw into id/href/label; hold them to the citekey
+        # charset so they are HTML-attribute-safe and match the citeproc
         # #ref-<key> on the paper page (no entity-escaping divergence).
         if not re.fullmatch(r"[\w:.\-]+", key):
             raise BuildError("%s/source-quotes.toml: @key must match [\\w:.-]+, "
@@ -314,6 +320,16 @@ def _load_sidecar(adir):
                 if opt in item and not isinstance(item[opt], str):
                     raise BuildError("%s/source-quotes.toml: [%s] %s must be a "
                                      "string" % (adir, key, opt))
+        for c in claims:
+            extra = set(c) - {"section", "text"}
+            if extra:
+                raise BuildError("%s/source-quotes.toml: [%s] claim has unknown "
+                                 "field(s): %s" % (adir, key, ", ".join(sorted(extra))))
+        for q in quotes:
+            extra = set(q) - {"label", "text"}
+            if extra:
+                raise BuildError("%s/source-quotes.toml: [%s] quote has unknown "
+                                 "field(s): %s" % (adir, key, ", ".join(sorted(extra))))
     return data
 
 
@@ -339,9 +355,9 @@ def _csl_date(parts):
                     for i, x in enumerate(parts[0]))
 
 
-def _csl_authors(entry):
+def _csl_names(entry, field="author"):
     out = []
-    for a in entry.get("author", []):
+    for a in entry.get(field, []):
         if a.get("literal"):
             out.append(a["literal"])
             continue
@@ -363,7 +379,13 @@ def _csl_attribution(entry):
     its CSL-JSON entry. name falls back to publisher (orgs/patents/statutes with
     no author); link falls back to the DOI; retrieved is empty for a formally
     published (DOI-dated) work with no access date."""
-    name = _csl_authors(entry) or entry.get("publisher", "")
+    name = _csl_names(entry, "author")
+    if not name:
+        # Pandoc maps BibTeX `editor` to CSL `editor` and leaves `author` empty for
+        # an edited work, so credit editors before falling back to the publisher.
+        eds = _csl_names(entry, "editor")
+        name = (eds + (" (eds.)" if "; " in eds else " (ed.)")) if eds \
+            else entry.get("publisher", "")
     pub = entry.get("publisher", "")
     venue = entry.get("container-title") or (pub if pub and pub != name else "")
     year = _csl_date(entry.get("issued", {}).get("date-parts"))
@@ -1369,9 +1391,9 @@ def _attribution_html(att):
         parts.append('<span class="nm">%s</span>' % html.escape(att["name"]))
     if att["venue"]:
         parts.append('<span class="rl">%s</span>' % html.escape(att["venue"]))
-    if att["link"] and att["title"]:
+    if att["link"]:
         src = '<a href="%s">%s</a>' % (html.escape(att["link"], quote=True),
-                                       html.escape(att["title"]))
+                                       html.escape(att["title"] or att["link"]))
     else:
         src = html.escape(att["title"])
     if src and att["retrieved"]:
@@ -1386,15 +1408,19 @@ def _attribution_html(att):
 def _quote_block(quotes, att):
     """The verbatim quote(s) + refs.bib attribution as a quotation blockquote.
     Shared by the sources-page card and the paper's citation hovercard store, so
-    both show the same quote preview."""
-    body = "".join(
-        '<p>%s%s</p>' % (
-            ('<span class="qlabel-tag">%s</span> ' % html.escape(q["label"]))
-            if q.get("label") else "",
-            html.escape(q["text"]))
-        for q in quotes)
+    both show the same quote preview. A quote with blank-line-separated paragraphs
+    becomes one <p> per paragraph (the label tags only the first) so separate
+    paragraphs do not merge into a single run."""
+    paras = []
+    for q in quotes:
+        chunks = [p.strip() for p in re.split(r"\n[ \t]*\n", q["text"].strip())
+                  if p.strip()] or [q["text"]]
+        for i, para in enumerate(chunks):
+            tag = (('<span class="qlabel-tag">%s</span> ' % html.escape(q["label"]))
+                   if i == 0 and q.get("label") else "")
+            paras.append("<p>%s%s</p>" % (tag, html.escape(para)))
     return ('<blockquote class="quotation">%s%s</blockquote>'
-            % (body, _attribution_html(att)))
+            % ("".join(paras), _attribution_html(att)))
 
 
 def _sources_card(key, entry, att):
@@ -1430,9 +1456,9 @@ def _sources_card(key, entry, att):
 def _sources_remaining(key, entry, att):
     """A 'Remaining references' list item: a cited source with no retrievable
     verbatim text, with its reason and refs.bib attribution."""
-    if att["link"] and att["title"]:
+    if att["link"]:
         title = '<a href="%s">%s</a>' % (html.escape(att["link"], quote=True),
-                                         html.escape(att["title"]))
+                                         html.escape(att["title"] or att["link"]))
     else:
         title = html.escape(att["title"])
     name = (" &middot; " + html.escape(att["name"])) if att["name"] else ""
@@ -1454,8 +1480,22 @@ def render_sources(m, journal):
     canonical = "%s/%s/" % (journal["base_url"], rel_dir)
     cards, remaining, card_keys = [], [], set()
     quote_blocks = {}   # key -> processed quote block, for the paper's hovercards
+    # A claim with a `section` renders a pill to ../#cite-<key>, an anchor
+    # _enhance_references stamps only on an actual in-text citation. An uncited key
+    # with such a claim would emit a dead pill (check_citation_parity cannot catch
+    # it -- citeproc never lists an uncited reference), so fail the build.
+    cited = _citekeys_in(_MD_CODE_RE.sub(" ", m["_body_md"]))
     for key, entry in data.items():
-        att = _csl_attribution(csl.get(key, {}))
+        if key not in csl:
+            raise BuildError("%s/source-quotes.toml: @%s has no refs.bib CSL-JSON "
+                             "entry (pandoc emitted none -- a @comment/@string block "
+                             "cannot back a card)" % (m["_dir"], key))
+        if key not in cited and any(cl.get("section")
+                                    for cl in entry.get("claims", [])):
+            raise BuildError("%s/source-quotes.toml: @%s has a claim section pill "
+                             "but no in-text citation in paper.md (the pill would "
+                             "link to a nonexistent #cite-%s)" % (m["_dir"], key, key))
+        att = _csl_attribution(csl[key])
         if entry.get("quotes"):
             card_keys.add(key)
             cards.append(_sources_card(key, entry, att))

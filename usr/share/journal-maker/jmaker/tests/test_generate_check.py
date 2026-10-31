@@ -1748,6 +1748,10 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             ad = os.path.join(d, "articles", "art")
             with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
                 fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBody [@alpha] and "
+                         "[@gamma].\n\n## 2. References\n\n::: {#refs}\n:::\n")
             with open(os.path.join(ad, "source-quotes.toml"), "w",
                       encoding="utf-8") as fh:
                 fh.write(self._TOML)
@@ -1931,6 +1935,42 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             f = c.Findings()
             c.check_no_vendor_refs(out, f)
             self.assertEqual([m for _l, p, m in f.errors], [])
+
+    def test_section_pill_key_must_be_cited(self):
+        # A sidecar claim with a `section` renders a ../#cite-KEY pill; if the key
+        # is not cited in paper.md that anchor never exists, so the build fails
+        # rather than emit a dead pill (the default _site paper.md cites nothing).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[alpha]\nclaims = [{ section = "Sec. 1", text = "c" }]\n'
+                         'quotes = [{ text = "q" }]\n')
+            with self.assertRaises(g.BuildError) as cm:
+                g.build(os.path.join(d, "articles"), jt, os.path.join(d, "s"),
+                        skip_pdf=True)
+            self.assertIn("no in-text citation", str(cm.exception))
+
+    def test_sidecar_key_without_csl_entry_rejected(self):
+        # A key in the raw refs.bib scan but not emitted by pandoc CSL-JSON (an
+        # @comment block) would render a card with empty attribution; fail instead.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@comment{alpha, url={https://e.example/x}}\n"
+                         "@misc{beta, author={{B}}, title={{T}}, "
+                         "url={https://e.example/b}}\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[alpha]\nquotes = [{ text = "q" }]\n')
+            with self.assertRaises(g.BuildError) as cm:
+                g.build(os.path.join(d, "articles"), jt, os.path.join(d, "s"),
+                        skip_pdf=True)
+            self.assertIn("CSL-JSON", str(cm.exception))
 
 
 _BIB = (
@@ -2177,6 +2217,51 @@ class TestSidecar(unittest.TestCase):
         with open(os.path.join(d, "refs.bib"), "wb") as fh:
             fh.write(b"@article{mueller, author={M\xfcller}, title={T}, year={2020}}\n")
         self.assertEqual(g._bib_keys(os.path.join(d, "refs.bib")), {"mueller"})
+
+    def test_unknown_entry_field_rejected(self):
+        # A misspelled entry field (e.g. `cliams`) is silently dropped otherwise.
+        d = self._dir(toml='[alpha]\nquotes = [{ text = "x" }]\ncliams = "y"\n')
+        with self.assertRaises(g.BuildError) as cm:
+            g._load_sidecar(d)
+        self.assertIn("unknown field", str(cm.exception))
+
+    def test_unknown_claim_and_quote_field_rejected(self):
+        for toml in ('[alpha]\nclaims = [{ section = "S", text = "c", oops = "z" }]\n'
+                     'quotes = [{ text = "x" }]\n',
+                     '[alpha]\nquotes = [{ text = "x", note = "z" }]\n'):
+            d = self._dir(toml=toml)
+            with self.assertRaises(g.BuildError) as cm:
+                g._load_sidecar(d)
+            self.assertIn("unknown field", str(cm.exception))
+
+    def test_csl_attribution_editor_before_publisher(self):
+        # No author: credit editors (with an ed./eds. tag) before the publisher.
+        one = g._csl_attribution({"title": "T", "publisher": "Pub",
+                                  "editor": [{"given": "A", "family": "Ed"}]})
+        self.assertEqual(one["name"], "A Ed (ed.)")
+        two = g._csl_attribution({"title": "T", "publisher": "Pub", "editor": [
+            {"given": "A", "family": "Ed"}, {"given": "B", "family": "Em"}]})
+        self.assertEqual(two["name"], "A Ed; B Em (eds.)")
+
+    def test_attribution_link_without_title_uses_url(self):
+        # A titleless entry with a url still renders a link (url as the text).
+        att = {"name": "", "venue": "", "title": "",
+               "link": "https://e.example/x", "retrieved": ""}
+        self.assertIn('href="https://e.example/x">https://e.example/x</a>',
+                      g._attribution_html(att))
+        self.assertIn('href="https://e.example/x">https://e.example/x</a>',
+                      g._sources_remaining("k", {"no_quote": "r"}, att))
+
+    def test_quote_block_splits_paragraphs(self):
+        # A blank-line-separated quote becomes one <p> per paragraph; the label
+        # tags only the first (separate paragraphs must not merge into one run).
+        blk = g._quote_block([{"text": "para one\n\npara two", "label": "L"}],
+                             {"name": "", "venue": "", "title": "",
+                              "link": "", "retrieved": ""})
+        self.assertEqual(blk.count("<p>"), 2)
+        self.assertEqual(blk.count('<span class="qlabel-tag">L</span>'), 1)
+        self.assertIn('<span class="qlabel-tag">L</span> para one</p>', blk)
+        self.assertIn("<p>para two</p>", blk)
 
 
 class TestBibLinkPresence(unittest.TestCase):

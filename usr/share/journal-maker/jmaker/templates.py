@@ -154,7 +154,7 @@ main.sources > h1 { margin-bottom: 1.5rem; }
    verbatim quote(s) as a quotation blockquote, and the refs.bib attribution. */
 .qcard { margin: 1.8rem 0; }
 .qhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin-bottom: 0.5rem; }
-.qkey { font-family: var(--mono); font-size: 0.82rem; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.qkey { font-family: var(--mono); font-size: 0.82rem; color: var(--accent); text-decoration: none; }
 .qkey:hover { text-decoration: underline; }
 .qlabel { font-family: var(--sans); font-weight: 650; font-size: 1.02rem; min-width: 0; }
 /* Paper claim: a structured block above the quote; the section pill links into
