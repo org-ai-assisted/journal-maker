@@ -24,7 +24,8 @@ def _cmd_build(args):
     try:
         count, out = generate.build(args.articles, args.journal, args.out,
                                     skip_pdf=args.skip_pdf,
-                                    publish=args.publish)
+                                    publish=args.publish,
+                                    pdf_only=args.pdf_only)
     except generate.BuildError as exc:
         print("build error: %s" % exc, file=sys.stderr)
         return 1
@@ -83,6 +84,10 @@ def build_parser():
     pbuild.add_argument("--out", default="_site")
     pbuild.add_argument("--skip-pdf", action="store_true",
                         help="skip PDF generation (fast HTML-only iteration)")
+    pbuild.add_argument("--pdf-only", action="store_true",
+                        help="render ONLY the per-article PDFs into an existing "
+                             "built tree (deploy-time; the committed _site already "
+                             "holds the HTML/.tex/assets)")
     pbuild.add_argument("--publish", action="store_true",
                         help="emit an INDEXABLE site (robots Allow + sitemap, no "
                              "noindex meta). DEFAULT is non-indexable (robots "

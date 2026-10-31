@@ -1433,6 +1433,35 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                     css += fh.read()
             self.assertIn(".citation a { text-decoration: underline dotted", css)
 
+    def test_pdf_only_adds_pdfs_without_rebuilding(self):
+        # Deploy path: --pdf-only renders PDFs into an already-built tree without
+        # wiping it (no rmtree) and without touching the committed HTML.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            arts = os.path.join(d, "articles")
+            out = os.path.join(d, "s")
+            g.build(arts, jt, out, skip_pdf=True)   # committed text tree, no PDF
+            html = os.path.join(out, "art", "index.html")
+            with open(html, encoding="utf-8") as fh:
+                before = fh.read()
+            self.assertFalse(os.path.exists(os.path.join(out, "art", "art.pdf")))
+            orig = g.md_to_pdf
+            g.md_to_pdf = lambda m, j, p: open(p, "wb").write(b"%PDF-1.5 stub\n")
+            self.addCleanup(lambda: setattr(g, "md_to_pdf", orig))
+            g.build(arts, jt, out, pdf_only=True)
+            self.assertTrue(os.path.exists(os.path.join(out, "art", "art.pdf")))
+            self.assertTrue(os.path.exists(os.path.join(out, "art", "art.pdf.sha256")))
+            with open(html, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), before)   # HTML untouched (no rebuild)
+
+    def test_pdf_only_refuses_missing_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with self.assertRaises(g.BuildError) as cm:
+                g.build(os.path.join(d, "articles"), jt,
+                        os.path.join(d, "nope"), pdf_only=True)
+            self.assertIn("existing built tree", str(cm.exception))
+
     def test_inline_styles_stripped_and_favicon_linked(self):
         # Strict CSP style-src 'self' blocks inline styles (pandoc emits them on
         # aligned/sized table cells); the page must carry none. Every page links a

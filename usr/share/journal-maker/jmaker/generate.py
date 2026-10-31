@@ -1891,7 +1891,20 @@ def _is_within(path, parent):
         return False
 
 
-def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
+def _pdf_with_checksum(m, journal, dest, pdf_name):
+    """Render the article PDF into dest and write its sha256sum sidecar."""
+    pdf_path = os.path.join(dest, pdf_name)
+    md_to_pdf(m, journal, pdf_path)
+    h = hashlib.sha256()
+    with open(pdf_path, "rb") as pf:
+        for chunk in iter(lambda: pf.read(65536), b""):
+            h.update(chunk)
+    with open(pdf_path + ".sha256", "w", encoding="utf-8") as sf:
+        sf.write("%s  %s\n" % (h.hexdigest(), pdf_name))  # sha256sum format
+
+
+def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
+          pdf_only=False):
     journal = load_journal(journal_toml)
     # Non-indexable by DEFAULT: a draft or interim host must never be crawled.
     # Indexability is an explicit, trust-bearing opt-in (--publish) for the
@@ -1922,6 +1935,20 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         raise BuildError("no articles with meta.toml under %s" % articles_dir)
 
     articles = [load_article(d) for d in adirs]
+
+    if pdf_only:
+        # Deploy-time pass: the committed _site already holds the HTML/.tex/assets
+        # (built in the sandbox and committed); render ONLY the per-article PDFs +
+        # sha256 into it. No rmtree, no HTML/sitemap/robots regeneration -- the
+        # final HTML is NOT generated in CI, only the (gitignored) binary PDFs are.
+        if not os.path.isdir(out_dir):
+            raise BuildError("--pdf-only needs an existing built tree at %r "
+                             "(commit the sandbox-built _site first)" % out_dir)
+        for m in articles:
+            dest = os.path.join(out_dir, _rel_dir(m))
+            os.makedirs(dest, exist_ok=True)
+            _pdf_with_checksum(m, journal, dest, "%s.pdf" % m["slug"])
+        return len(articles), out_dir
 
     # Flat routes share one <slug>/ namespace, so an article slug must not
     # collide with another article, a standalone page, or the browse/assets
@@ -2002,14 +2029,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         if os.path.exists(bib_src):
             shutil.copyfile(bib_src, os.path.join(dest, "refs.bib"))
         if not skip_pdf:
-            pdf_path = os.path.join(dest, pdf_name)
-            md_to_pdf(m, journal, pdf_path)
-            h = hashlib.sha256()
-            with open(pdf_path, "rb") as pf:
-                for chunk in iter(lambda: pf.read(65536), b""):
-                    h.update(chunk)
-            with open(pdf_path + ".sha256", "w", encoding="utf-8") as sf:
-                sf.write("%s  %s\n" % (h.hexdigest(), pdf_name))  # sha256sum format
+            _pdf_with_checksum(m, journal, dest, pdf_name)
             # The PDF is NOT added to the sitemap: it lists HTML navigable pages
             # only (byte-identical to dist_ai.webcheck.site.seo_page_urls, which
             # the 'previews' policy re-derives and compares). The PDF stays
