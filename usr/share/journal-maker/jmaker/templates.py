@@ -243,7 +243,7 @@ article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 
    so the preview reads as one line, not two stacked flex rows. */
 .hovercard .csl-left-margin, .hovercard .csl-right-inline { display: inline; }
 /* Hidden per-citation quote store; its quote blocks are cloned into a hovercard. */
-.cite-quotes { display: none; }
+.cite-quotes, .cite-quote { display: none; }
 /* A source-quote block shown in a hovercard: compact (no card shadow/fill). */
 .hovercard blockquote.quotation { margin: 0; padding: 0.1rem 0 0.1rem 1.7rem; background: transparent; box-shadow: none; border-left: 3px solid var(--accent); border-radius: 0; }
 .hovercard blockquote.quotation::before { font-size: 2rem; left: 0.1rem; top: -0.1rem; }
