@@ -1111,7 +1111,44 @@ def _article_nav(neighbors, root_rel):
             % "".join(parts))
 
 
-def render_article(m, journal, neighbors=None, skip_pdf=False):
+# citeproc in-text citation anchor (href only; no id yet) and a full reference
+# list entry. Used to cross-link the reference list with the body + the sidecar.
+_CITE_ANCHOR_RE = re.compile(r'<a href="#ref-([^"]+)" role="doc-biblioref">')
+_REF_ENTRY_RE = re.compile(
+    r'(<div id="ref-([^"]+)" class="csl-entry"[^>]*>\s*'
+    r'<div class="csl-left-margin">)([^<]*)'
+    r'(</div><div class="csl-right-inline">)(.*?)(</div>\s*</div>)', re.S)
+
+
+def _enhance_references(body_html, sidecar_keys):
+    """Cross-link the citeproc reference list (HTML only, never the PDF):
+    - give the FIRST in-text citation of each key an id so it is a :target, and
+      make the reference's [n] a backlink to it (click [n] -> jump to the citation,
+      which the stylesheet highlights on :target);
+    - when a key has a source-quotes entry, append a 'quote' link from the
+      reference to its verbatim quote at sources/#key."""
+    seen = set()
+
+    def id_first(mo):
+        key = mo.group(1)
+        if key in seen:
+            return mo.group(0)
+        seen.add(key)
+        return ('<a id="cite-%s" href="#ref-%s" role="doc-biblioref">'
+                % (key, key))
+    body_html = _CITE_ANCHOR_RE.sub(id_first, body_html)
+
+    def entry(mo):
+        pre, key, num, mid, inner, close = mo.groups()
+        num_html = ('<a class="csl-backref" href="#cite-%s">%s</a>' % (key, num)
+                    if key in seen else num)
+        src = ('<a class="csl-source" href="sources/#%s">quote</a>' % key
+               if key in sidecar_keys else "")
+        return pre + num_html + mid + inner + src + close
+    return _REF_ENTRY_RE.sub(entry, body_html)
+
+
+def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
@@ -1140,6 +1177,7 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
         raise BuildError("%s: abstract must not contain [@...] citations "
                          "(it is the plain-text meta/OG description)" % m["_dir"])
     body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
+    body_html = _enhance_references(body_html, sidecar_keys or set())
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
 
@@ -1274,6 +1312,10 @@ def render_sources(m, journal):
     canonical = "%s/%s/" % (journal["base_url"], rel_dir)
     rendered = md_to_html_fragment(md_text, autolink=True)
     _validate_sources(rendered, m["_dir"])
+    # Heading keys (first key of each `## [@key]` entry) -- the keys that have a
+    # sources/#key anchor, so the paper's reference list can link to them.
+    heading_keys = {dc.split()[0] for dc in re.findall(
+        r'<h2[^>]*><span class="citation" data-cites="([^"]+)">', rendered)}
     frag = _sources_anchor_ids(rendered)
     title = "Source quotes -- %s" % m["title"]
     description = (("Verbatim source quotes backing the paraphrased claims in "
@@ -1292,7 +1334,7 @@ def render_sources(m, journal):
     page = _page(m.get("language", journal["language"]),
                  "%s -- %s" % (title, journal["title"]), description, canonical,
                  extra, main, journal, root_rel)
-    return rel_dir, page
+    return rel_dir, page, heading_keys
 
 
 def render_page(slug, md_text, journal):
@@ -1594,20 +1636,25 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         nbr[_rel_dir(a)] = (ordered[i - 1] if i > 0 else None,
                             ordered[i + 1] if i < len(ordered) - 1 else None)
     for m in articles:
+        # Render the sources page FIRST (if any): the article's reference list
+        # links to the keys that have a source-quotes entry (heading_keys).
+        s_rel = s_page = None
+        heading_keys = set()
+        if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
+            s_rel, s_page, heading_keys = render_sources(m, journal)
         rel_dir, pdf_name, page = render_article(
-            m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf)
+            m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf,
+            sidecar_keys=heading_keys)
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(page)
-        # Per-article source-quotes.md reviewer aid -> a read-only HTML page at
-        # <slug>/sources/, linked from the article. It is a real navigable page, so
-        # it goes in the sitemap like every other page: webcheck's seo_page_urls
-        # includes every HTML page except the ephemeral RESULTS_SUBDIR (a noindex
-        # meta does NOT drop a page), and the 'previews' SEO check asserts our
-        # sitemap.xml == its render_sitemap -- omitting it would read as stale.
-        if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
-            s_rel, s_page = render_sources(m, journal)
+        # The sources page is a real navigable page, so it goes in the sitemap
+        # like every other page: webcheck's seo_page_urls includes every HTML page
+        # except the ephemeral RESULTS_SUBDIR (a noindex meta does NOT drop a
+        # page), and the 'previews' SEO check asserts our sitemap.xml == its
+        # render_sitemap -- omitting it would read as stale.
+        if s_page is not None:
             s_dest = os.path.join(out_dir, s_rel)
             os.makedirs(s_dest, exist_ok=True)
             with open(os.path.join(s_dest, "index.html"), "w",

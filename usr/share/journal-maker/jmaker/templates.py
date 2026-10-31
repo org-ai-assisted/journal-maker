@@ -194,6 +194,13 @@ article.body blockquote { margin: 1rem 0; padding-left: 1.25rem; border-left: 3p
 .csl-entry:target { background: var(--surface); }
 .csl-left-margin { flex: 0 0 auto; }
 .csl-right-inline { flex: 1 1 auto; min-width: 0; }
+/* Reference [n] is a backlink to its first in-text citation: looks like the
+   plain number, clickable on hover; the citation it jumps to is highlighted via
+   :target below (backwards-navigation aid). */
+.csl-backref { color: inherit; text-decoration: none; }
+.csl-backref:hover, .csl-backref:focus-visible { color: var(--accent); text-decoration: underline; }
+.csl-source { font-family: var(--sans); font-size: 0.8rem; margin-left: 0.5rem; white-space: nowrap; }
+article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 2px var(--warn-rule); border-radius: 3px; }
 .hovercard { position: absolute; z-index: 50; max-width: min(90vw, 30rem); background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18); padding: 0.55rem 0.75rem; font-size: 0.85rem; line-height: 1.5; }
 .hovercard[hidden] { display: none; }
 .hovercard-body { overflow-wrap: anywhere; }

@@ -1794,6 +1794,37 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                             os.path.join(d, "s"), skip_pdf=True)
                 self.assertIn("relative", str(cm.exception))
 
+    def test_reference_backlinks_and_source_links(self):
+        # #6: the first in-text citation gets id=cite-KEY and the reference [n]
+        # backlinks to it. #5: a reference whose key has a sidecar entry links to
+        # its sources/#KEY quote; one without does not. Parity stays clean.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBody [@beta] then "
+                         "[@alpha], reuse [@beta].\n\n## 2. References\n\n"
+                         "::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# Source quotes\n\n## [@beta] Beta\n\n- Quote: b\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn('<a id="cite-beta" href="#ref-beta"', page)   # #6 target
+            self.assertEqual(page.count('id="cite-beta"'), 1)           # first only
+            self.assertIn('<a class="csl-backref" href="#cite-beta">', page)
+            self.assertIn('<a class="csl-source" href="sources/#beta">', page)  # #5
+            self.assertNotIn('href="sources/#alpha"', page)   # alpha has no entry
+            f = c.Findings()
+            c.check_citation_parity(page, "p", f)
+            self.assertEqual([m for _l, _p, m in f.errors], [])
+
     def test_markdown_source_links(self):
         # With source_base_url set, the article links to its paper.md and the
         # sources page to its source-quotes.md, under articles/<slug>/.
