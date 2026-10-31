@@ -354,6 +354,11 @@ def check_pdf(path, f):
 
 
 _TEXT_EXT = {".html", ".css", ".xml", ".txt", ".svg", ".json", ".tex", ".bib"}
+# The ASCII-only gate is a PUBLISHED-HTML policy (no em-dash/curly quotes/nbsp in
+# served HTML). .tex/.bib are LaTeX/BibTeX SOURCE a reader compiles: UTF-8 is
+# first-class there (inputenc), and an accented author name must survive -- so
+# they are vendor/internal-scanned (above) but NOT ASCII-gated.
+_ASCII_EXT = _TEXT_EXT - {".tex", ".bib"}
 
 
 def check_ascii(out_dir, f):
@@ -365,7 +370,7 @@ def check_ascii(out_dir, f):
     """
     for root, _dirs, files in os.walk(out_dir):
         for name in files:
-            if os.path.splitext(name)[1].lower() not in _TEXT_EXT:
+            if os.path.splitext(name)[1].lower() not in _ASCII_EXT:
                 continue
             path = os.path.join(root, name)
             with open(path, "rb") as fh:

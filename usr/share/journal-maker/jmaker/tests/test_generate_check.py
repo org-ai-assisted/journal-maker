@@ -2563,5 +2563,75 @@ class TestVendorScanCoversTex(unittest.TestCase):
             self.assertTrue(any("whonix" in m.lower() for m in msgs), msgs)
 
 
+class TestReviewFixes(unittest.TestCase):
+    """Regression guards for the PR #45 reviewer findings."""
+
+    def _tex_input(self, body):
+        cap = {}
+
+        def fake_run(argv, **kw):
+            cap["input"] = kw.get("input")
+            out = argv[argv.index("-o") + 1]
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write("\\bibliography{refs.bib}\n")
+
+            class R:
+                stdout = ""
+                stderr = ""
+            return R()
+        orig = g._run
+        setattr(g, "_run", fake_run)
+        self.addCleanup(lambda: setattr(g, "_run", orig))
+        with tempfile.TemporaryDirectory() as d:
+            m = dict(META)
+            m["doi"] = ""
+            m["_dir"] = d
+            m["_body_md"] = body
+            g.md_to_tex(m, JOURNAL, os.path.join(d, "x.tex"))
+        return cap["input"]
+
+    def test_tex_strip_keeps_appendix_after_references(self):
+        # The refs strip removes ONLY the heading + ::: {#refs} div; an appendix
+        # after References is preserved (finding: strip-to-EOF dropped it).
+        sent = self._tex_input(
+            "Body [@k].\n\n## References\n\n::: {#refs}\n:::\n\n"
+            "## Appendix\n\nKept text.\n")
+        self.assertNotIn("{#refs}", sent)
+        self.assertNotIn("## References", sent)
+        self.assertIn("## Appendix", sent)
+        self.assertIn("Kept text.", sent)
+
+    def test_reject_symlinked_bib(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "real.bib")
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write("@misc{k, title={{T}}, url={https://e/}}\n")
+            os.symlink(target, os.path.join(d, "refs.bib"))
+            m = dict(META)
+            m["_dir"] = d
+            with self.assertRaises(g.BuildError) as cm:
+                g._reject_symlinked_bib(m)
+            self.assertIn("symlink", str(cm.exception))
+
+    def test_check_ascii_exempts_tex_and_bib(self):
+        # .tex/.bib are UTF-8 LaTeX/BibTeX source -> not ASCII-gated; HTML is.
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("x.tex", "y.bib", "z.html"):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write("Jos\u00e9 \u2014 accent\n")
+            f = c.Findings()
+            c.check_ascii(d, f)
+            flagged = " ".join(p for _l, p, _m in f.errors)
+            self.assertIn("z.html", flagged)
+            self.assertNotIn("x.tex", flagged)
+            self.assertNotIn("y.bib", flagged)
+
+    def test_skip_pdf_and_pdf_only_are_mutually_exclusive(self):
+        from jmaker import cli
+        parser = cli.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["build", "--skip-pdf", "--pdf-only"])
+
+
 if __name__ == "__main__":
     unittest.main()

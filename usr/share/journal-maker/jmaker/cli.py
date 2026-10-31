@@ -82,12 +82,15 @@ def build_parser():
     pbuild.add_argument("--articles", default="articles")
     pbuild.add_argument("--journal", default="site.toml")
     pbuild.add_argument("--out", default="_site")
-    pbuild.add_argument("--skip-pdf", action="store_true",
-                        help="skip PDF generation (fast HTML-only iteration)")
-    pbuild.add_argument("--pdf-only", action="store_true",
-                        help="render ONLY the per-article PDFs into an existing "
-                             "built tree (deploy-time; the committed _site already "
-                             "holds the HTML/.tex/assets)")
+    # Mutually exclusive: --skip-pdf omits the PDFs, --pdf-only renders ONLY them;
+    # together they contradict (and the pdf_only path would silently win).
+    pdf_mode = pbuild.add_mutually_exclusive_group()
+    pdf_mode.add_argument("--skip-pdf", action="store_true",
+                          help="skip PDF generation (fast HTML-only iteration)")
+    pdf_mode.add_argument("--pdf-only", action="store_true",
+                          help="render ONLY the per-article PDFs into an existing "
+                               "built tree (deploy-time; the committed _site "
+                               "already holds the HTML/.tex/assets)")
     pbuild.add_argument("--publish", action="store_true",
                         help="emit an INDEXABLE site (robots Allow + sitemap, no "
                              "noindex meta). DEFAULT is non-indexable (robots "

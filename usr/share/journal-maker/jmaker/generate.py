@@ -771,10 +771,11 @@ def md_to_pdf(m, journal, out_pdf):
 # Strip the citeproc reference section (## References + the ::: {#refs} div) from
 # the body for the LaTeX submission source. The .tex is natbib: bibtex + the .bst
 # generate the list from \bibliography{refs}, so leaving the div in emits a
-# spurious empty "References" heading before the bst's own list. References is the
-# final body section (csr content model), so stripping from its heading to EOF is
-# safe and needs no parser.
-_TEX_REFS_STRIP_RE = re.compile(r"\n+#{1,6}[ \t]+References\b.*\Z", re.S)
+# spurious empty "References" heading before the bst's own list. Match ONLY the
+# heading + the empty refs div (not to EOF), so anything legitimately after
+# References (an appendix) is preserved in the .tex as it is in the HTML/PDF.
+_TEX_REFS_STRIP_RE = re.compile(
+    r"\n+#{1,6}[ \t]+References[ \t]*\n+:::[ \t]*\{#refs\}[ \t]*\n+:::[ \t]*")
 
 
 def md_to_tex(m, journal, out_tex):
@@ -1890,6 +1891,15 @@ def _is_within(path, parent):
         return False
 
 
+def _reject_symlinked_bib(m):
+    """refs.bib must not be a symlink: shutil.copyfile follows it and would
+    publish the target's contents (the same reason figures/ and source-quotes
+    are rejected). Guard before any read or copy."""
+    bib = os.path.join(m["_dir"], "refs.bib")
+    if os.path.islink(bib):
+        raise BuildError("refs.bib must not be a symlink: %s" % bib)
+
+
 def _pdf_with_checksum(m, journal, dest, pdf_name):
     """Render the article PDF into dest and write its sha256sum sidecar."""
     pdf_path = os.path.join(dest, pdf_name)
@@ -1935,20 +1945,6 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
 
     articles = [load_article(d) for d in adirs]
 
-    if pdf_only:
-        # Deploy-time pass: the committed _site already holds the HTML/.tex/assets
-        # (built in the sandbox and committed); render ONLY the per-article PDFs +
-        # sha256 into it. No rmtree, no HTML/sitemap/robots regeneration -- the
-        # final HTML is NOT generated in CI, only the (gitignored) binary PDFs are.
-        if not os.path.isdir(out_dir):
-            raise BuildError("--pdf-only needs an existing built tree at %r "
-                             "(commit the sandbox-built _site first)" % out_dir)
-        for m in articles:
-            dest = os.path.join(out_dir, _rel_dir(m))
-            os.makedirs(dest, exist_ok=True)
-            _pdf_with_checksum(m, journal, dest, "%s.pdf" % m["slug"])
-        return len(articles), out_dir
-
     # Flat routes share one <slug>/ namespace, so an article slug must not
     # collide with another article, a standalone page, or the browse/assets
     # routes -- the build would otherwise overwrite one with another and the
@@ -1966,6 +1962,23 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
         route_owner[route] = owner
     article_routes = [_rel_dir(m) for m in articles]
 
+    if pdf_only:
+        # Deploy-time pass, AFTER the route-collision check (so two articles with
+        # the same slug cannot silently overwrite one PDF): the committed _site
+        # already holds the HTML/.tex/assets (built in the sandbox and committed);
+        # render ONLY the per-article PDFs + sha256 into it. No rmtree, no HTML/
+        # sitemap/robots regeneration -- the final HTML is NOT generated in CI,
+        # only the (gitignored) binary PDFs are.
+        if not os.path.isdir(out_dir):
+            raise BuildError("--pdf-only needs an existing built tree at %r "
+                             "(commit the sandbox-built _site first)" % out_dir)
+        for m in articles:
+            _reject_symlinked_bib(m)
+            dest = os.path.join(out_dir, _rel_dir(m))
+            os.makedirs(dest, exist_ok=True)
+            _pdf_with_checksum(m, journal, dest, "%s.pdf" % m["slug"])
+        return len(articles), out_dir
+
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir)
@@ -1978,6 +1991,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
         nbr[_rel_dir(a)] = (ordered[i - 1] if i > 0 else None,
                             ordered[i + 1] if i < len(ordered) - 1 else None)
     for m in articles:
+        _reject_symlinked_bib(m)
         # Render the sources page FIRST (if any): the article's reference list
         # links to the keys that have a source-quotes card (card_keys). It is a
         # real navigable page, so it goes in the sitemap like every other page
