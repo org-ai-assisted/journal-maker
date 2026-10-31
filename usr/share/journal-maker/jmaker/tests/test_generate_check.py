@@ -1723,9 +1723,12 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with open(os.path.join(out, "art", "index.html"),
                       encoding="utf-8") as fh:
                 self.assertIn('href="sources/"', fh.read())  # article links it
-            # not advertised in the sitemap (reviewer aid, not an SEO page)
+            # in the sitemap like every navigable page: webcheck's seo_page_urls
+            # includes it (a noindex meta does not drop a page), and the 'previews'
+            # SEO check asserts our sitemap.xml == its render_sitemap.
             with open(os.path.join(out, "sitemap.xml"), encoding="utf-8") as fh:
-                self.assertNotIn("/sources/", fh.read())
+                self.assertIn("<loc>https://e.example/art/sources/</loc>",
+                              fh.read())
             f, found = c.check_site(out)
             self.assertEqual(found, 1)                       # still 1 article
             # the sidecar page raises no error of its own (the only skip-pdf
@@ -1921,6 +1924,21 @@ class TestSidecarDrift(unittest.TestCase):
         d = self._dir(sidecar="## [@alpha] x\n\n![c](figures/c.png)\n")
         with self.assertRaises(g.BuildError):
             g._check_sidecar_drift(d)
+
+    def test_reference_style_relative_target_rejected(self):
+        # Reference-style link definition with a relative target must be caught
+        # too (inline-only checking would let [t][r] + [r]: figures/x.png slip).
+        d = self._dir(sidecar="## [@alpha] x\n\nsee [chart][c]\n\n[c]: figures/x.png\n")
+        with self.assertRaises(g.BuildError) as cm:
+            g._check_sidecar_drift(d)
+        self.assertIn("relative", str(cm.exception))
+
+    def test_reference_style_absolute_target_ok(self):
+        # An absolute (even <bracketed>) reference target is fine; a footnote
+        # definition's prose body is not mistaken for a relative target.
+        d = self._dir(sidecar="## [@alpha] x\n\n[s]: <https://e.example/p>\n"
+                              "[d]: https://e.example/d\n\n[^fn]: see figures later\n")
+        g._check_sidecar_drift(d)  # no raise
 
     def test_absolute_and_anchor_targets_ok(self):
         # An absolute URL, a mailto, and an in-page anchor are all fine; a bare

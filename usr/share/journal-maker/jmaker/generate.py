@@ -227,12 +227,21 @@ def _bib_keys(bib_path):
 # and 404s (figures live at <slug>/figures/), so it is rejected at load. A [@key]
 # citation / [^fn] footnote is never followed by '(', so neither is matched here.
 _MD_LINK_TARGET_RE = re.compile(r'!?\[[^\]]*\]\(\s*([^)\s]+)')
+# Reference-style link/image DEFINITION: `[label]: target [title]` at line start
+# (up to 3 leading spaces). The label's first char is not '^', so a footnote
+# definition ([^fn]: ...), whose body text is prose not a URL, is not scanned.
+_MD_REF_DEF_RE = re.compile(r'(?m)^ {0,3}\[[^\^\]][^\]]*\]:\s*(\S+)')
 _REMOTE_OR_ANCHOR_RE = re.compile(r'(?:[a-z][a-z0-9+.-]*:|//|#)', re.I)
 
 
 def _relative_md_targets(text):
-    return [t for t in _MD_LINK_TARGET_RE.findall(text)
-            if not _REMOTE_OR_ANCHOR_RE.match(t)]
+    bad = []
+    for t in _MD_LINK_TARGET_RE.findall(text) + _MD_REF_DEF_RE.findall(text):
+        if len(t) >= 2 and t[0] == "<" and t[-1] == ">":
+            t = t[1:-1]   # a <bracketed> target; classify the inner URL
+        if not _REMOTE_OR_ANCHOR_RE.match(t):
+            bad.append(t)
+    return bad
 
 
 def _check_sidecar_drift(adir):
@@ -1537,9 +1546,11 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(page)
         # Per-article source-quotes.md reviewer aid -> a read-only HTML page at
-        # <slug>/sources/, linked from the article. Kept OUT of the sitemap: it is
-        # a review aid, not an SEO page, so the sitemap stays byte-identical to
-        # webcheck's render_sitemap (navigable-page-only).
+        # <slug>/sources/, linked from the article. It is a real navigable page, so
+        # it goes in the sitemap like every other page: webcheck's seo_page_urls
+        # includes every HTML page except the ephemeral RESULTS_SUBDIR (a noindex
+        # meta does NOT drop a page), and the 'previews' SEO check asserts our
+        # sitemap.xml == its render_sitemap -- omitting it would read as stale.
         if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
             s_rel, s_page = render_sources(m, journal)
             s_dest = os.path.join(out_dir, s_rel)
@@ -1547,6 +1558,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
             with open(os.path.join(s_dest, "index.html"), "w",
                       encoding="utf-8") as fh:
                 fh.write(s_page)
+            urls.append("%s/%s/" % (journal["base_url"], s_rel))
         figdir = os.path.join(m["_dir"], "figures")
         if os.path.islink(figdir):
             raise BuildError("figures/ must not be a symlink: %s" % figdir)
