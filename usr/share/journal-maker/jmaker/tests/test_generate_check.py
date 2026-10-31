@@ -1692,6 +1692,59 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
 
+    def test_source_quotes_sidecar_published_and_linked(self):
+        # A per-article source-quotes.md is published as a read-only HTML page at
+        # <slug>/sources/, linked from the article, carrying the no-index meta;
+        # the keyed heading anchor is rebound to the stable @citekey, and the
+        # literal [@key] stays visible (no citeproc numbering). check_site stays
+        # clean (the sidecar is a non-article page, exempt from citation parity).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "source-quotes.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# Source quotes (reviewer aid)\n\n"
+                         "Lead paragraph explaining the review aid.\n\n"
+                         "## [@alpha] Alpha source\n\n"
+                         '- Quote: "the alpha verbatim text"\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            spage = os.path.join(out, "art", "sources", "index.html")
+            self.assertTrue(os.path.isfile(spage))
+            with open(spage, encoding="utf-8") as fh:
+                sources = fh.read()
+            self.assertIn("the alpha verbatim text", sources)
+            self.assertIn('<h2 id="alpha">', sources)       # anchor == @citekey
+            self.assertIn("[@alpha]", sources)              # literal key visible
+            self.assertIn('name="robots" content="noindex"', sources)
+            self.assertIn('href="../"', sources)            # back to the paper
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                self.assertIn('href="sources/"', fh.read())  # article links it
+            # not advertised in the sitemap (reviewer aid, not an SEO page)
+            with open(os.path.join(out, "sitemap.xml"), encoding="utf-8") as fh:
+                self.assertNotIn("/sources/", fh.read())
+            f, found = c.check_site(out)
+            self.assertEqual(found, 1)                       # still 1 article
+            # the sidecar page raises no error of its own (the only skip-pdf
+            # error is the absent PDF the canonical meta points at, on the
+            # article page -- not under sources/).
+            self.assertFalse(any("sources" in p for _l, p, _m in f.errors),
+                             [i for i in f.errors])
+
+    def test_no_sidecar_no_sources_page_or_link(self):
+        # No source-quotes.md -> no sources/ page and no link on the article.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            self.assertFalse(os.path.isdir(os.path.join(out, "art", "sources")))
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                self.assertNotIn('href="sources/"', fh.read())
+
 
 _BIB = (
     "@misc{alpha, title={{Alpha page}}, author={{Org A}}, "
@@ -1833,6 +1886,33 @@ class TestSidecarDrift(unittest.TestCase):
         with open(os.path.join(d, "refs.bib"), "wb") as fh:
             fh.write(b"@article{mueller, author={M\xfcller}, title={T}, year={2020}}\n")
         self.assertEqual(g._bib_keys(os.path.join(d, "refs.bib")), {"mueller"})
+
+
+class TestSourcesAnchorIds(unittest.TestCase):
+    """Rebind a sidecar heading's auto-slug id to its stable @citekey (pure)."""
+
+    def test_anchor_id_rebound_to_citekey(self):
+        # pandoc (no citeproc) emits the heading's leading [@key] as a citation
+        # span carrying data-cites; the heading id becomes that key.
+        frag = ('<h2 id="alpha-src-alpha-source">'
+                '<span class="citation" data-cites="alpha">[@alpha]</span>'
+                " Alpha source</h2>\n<ul><li>q</li></ul>")
+        out = g._sources_anchor_ids(frag)
+        self.assertIn('<h2 id="alpha">', out)
+        self.assertNotIn('id="alpha-src-alpha-source"', out)
+        # the readable [@alpha] label and data-cites survive the rebind
+        self.assertIn('data-cites="alpha">[@alpha]</span>', out)
+
+    def test_hyphen_dot_colon_key_preserved(self):
+        frag = ('<h2 id="x"><span class="citation" data-cites="a-b.c:d">'
+                "[@a-b.c:d]</span> L</h2>")
+        self.assertIn('<h2 id="a-b.c:d">', g._sources_anchor_ids(frag))
+
+    def test_non_keyed_heading_untouched(self):
+        # A heading with no leading citation (e.g. "Remaining references") keeps
+        # its pandoc auto-slug id -- canary against an over-broad rewrite.
+        frag = '<h2 id="remaining-references">Remaining references</h2>'
+        self.assertEqual(g._sources_anchor_ids(frag), frag)
 
 
 class TestAsciiEntities(unittest.TestCase):

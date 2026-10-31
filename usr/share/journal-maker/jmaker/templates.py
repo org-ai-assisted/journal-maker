@@ -144,6 +144,15 @@ p.actions a {
   text-decoration: none; font-size: 0.9rem;
 }
 p.actions a.checksum { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.8rem; }
+p.actions a.sources-aid { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.85rem; }
+.sources-back { font-family: var(--sans); font-size: 0.9rem; margin: 0 0 1.2rem; }
+/* The sidecar lists many bare source URLs; wrap any long unbroken token so the
+   page never overflows horizontally on a narrow viewport (as .csl-entry does
+   for the reference list). */
+main.sources { overflow-wrap: anywhere; }
+main.sources h2 { font-size: 1.15rem; font-weight: 650; margin: 2rem 0 0.4rem; }
+main.sources .citation { font-family: var(--mono); font-size: 0.85em; color: var(--muted); }
+main.sources ul { margin: 0.3rem 0 1.2rem; }
 main.page { max-width: var(--measure); }
 section.abstract {
   margin: 1.5rem 0; padding: 1rem 1.25rem;

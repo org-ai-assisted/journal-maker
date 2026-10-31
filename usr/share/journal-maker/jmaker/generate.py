@@ -1107,13 +1107,18 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
     license_bit = _license_footer(m, journal)
     # PDF + sha256 are generated only on a full build (build() gates them on
     # skip_pdf); omit the download anchors in a skip-pdf tree so it carries no
-    # link to an artifact that was never produced.
-    if skip_pdf:
-        actions_bit = ""
-    else:
-        actions_bit = ('<p class="actions"><a href="%s">Download PDF</a> '
-                       '<a class="checksum" href="%s.sha256">SHA-256</a></p>\n'
-                       % (pdf_name, pdf_name))
+    # link to an artifact that was never produced. The source-quotes reviewer-aid
+    # link appears whenever the sidecar exists, independent of the PDF.
+    action_links = []
+    if not skip_pdf:
+        action_links.append('<a href="%s">Download PDF</a>' % pdf_name)
+        action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
+                             % pdf_name)
+    if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
+        action_links.append('<a class="sources-aid" href="sources/">'
+                            "Source quotes</a>")
+    actions_bit = (('<p class="actions">%s</p>\n' % " ".join(action_links))
+                   if action_links else "")
 
     main = (
         '<main id="main" class="article">\n'
@@ -1145,6 +1150,50 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
         "%s -- %s" % (m["title"], journal["title"]),
         description, landing_url, meta, main, journal, root_rel)
     return rel_dir, pdf_name, page
+
+
+# pandoc (no citeproc) renders a sidecar heading's leading [@key] as
+# <span class="citation" data-cites="KEY">[@key]</span>; rebind the heading's
+# auto-slug id to the stable @citekey so the paper can deep-link sources/#KEY.
+# Keys are [\w:.\-]+ (csr-rules), so the captured value is HTML-attribute-safe.
+_SOURCES_H2_RE = re.compile(
+    r'<h2 id="[^"]*"><span class="citation" data-cites="([^"]+)">')
+
+
+def _sources_anchor_ids(frag):
+    return _SOURCES_H2_RE.sub(
+        lambda mo: '<h2 id="%s"><span class="citation" data-cites="%s">'
+        % (mo.group(1), mo.group(1)), frag)
+
+
+def render_sources(m, journal):
+    """Render the per-article source-quotes.md reviewer aid as a standalone,
+    read-only HTML page at <slug>/sources/, linked from the article.
+
+    Verbatim source passages behind the paper's paraphrased claims, keyed by the
+    same @citekey as refs.bib and the body. Rendered WITHOUT citeproc: the literal
+    [@key] stays visible as the human-readable key (no in-text numbering, no
+    duplicated reference list). A review aid, not part of the paper. Auto-generated
+    from source-quotes.md, never hand-written."""
+    sq_path = os.path.join(m["_dir"], "source-quotes.md")
+    with open(sq_path, "r", encoding="utf-8") as fh:
+        md_text = fh.read()
+    rel_dir = _rel_dir(m) + "/sources"
+    root_rel = _root_rel(rel_dir)
+    canonical = "%s/%s/" % (journal["base_url"], rel_dir)
+    frag = _sources_anchor_ids(md_to_html_fragment(md_text))
+    title = "Source quotes -- %s" % m["title"]
+    description = (("Verbatim source quotes backing the paraphrased claims in "
+                    "%s -- a reviewer aid.") % " ".join(m["title"].split()))[:300]
+    back = ('<p class="sources-back"><a href="../">&#8592; Back to the paper</a>'
+            "</p>\n")
+    main = '<main id="main" class="page sources">\n%s%s\n</main>' % (back, frag)
+    extra = (_opengraph(title, description, canonical, journal) + "\n"
+             + _jsonld_page("WebPage", title, description, canonical, journal))
+    page = _page(m.get("language", journal["language"]),
+                 "%s -- %s" % (title, journal["title"]), description, canonical,
+                 extra, main, journal, root_rel)
+    return rel_dir, page
 
 
 def render_page(slug, md_text, journal):
@@ -1452,6 +1501,17 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(page)
+        # Per-article source-quotes.md reviewer aid -> a read-only HTML page at
+        # <slug>/sources/, linked from the article. Kept OUT of the sitemap: it is
+        # a review aid, not an SEO page, so the sitemap stays byte-identical to
+        # webcheck's render_sitemap (navigable-page-only).
+        if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
+            s_rel, s_page = render_sources(m, journal)
+            s_dest = os.path.join(out_dir, s_rel)
+            os.makedirs(s_dest, exist_ok=True)
+            with open(os.path.join(s_dest, "index.html"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(s_page)
         figdir = os.path.join(m["_dir"], "figures")
         if os.path.islink(figdir):
             raise BuildError("figures/ must not be a symlink: %s" % figdir)
