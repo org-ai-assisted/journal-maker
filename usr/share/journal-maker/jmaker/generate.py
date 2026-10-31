@@ -221,43 +221,26 @@ def _bib_keys(bib_path):
         return set(_BIB_KEY_RE.findall(fh.read()))
 
 
-# A markdown link/image target, and whether it is remote/anchor (allowed) or a
-# relative path (rejected). The sidecar carries verbatim quotes + ABSOLUTE source
-# URLs only; a relative target (e.g. figures/x.png) resolves under <slug>/sources/
-# and 404s (figures live at <slug>/figures/), so it is rejected at load. A [@key]
-# citation / [^fn] footnote is never followed by '(', so neither is matched here.
-_MD_LINK_TARGET_RE = re.compile(r'!?\[[^\]]*\]\(\s*([^)\s]+)')
-# Reference-style link/image DEFINITION: `[label]: target [title]` at line start
-# (up to 3 leading spaces). The label's first char is not '^', so a footnote
-# definition ([^fn]: ...), whose body text is prose not a URL, is not scanned.
-_MD_REF_DEF_RE = re.compile(r'(?m)^ {0,3}\[[^\^\]][^\]]*\]:\s*(\S+)')
+# A link/image target is allowed when it is remote (http(s)/mailto/...) or an
+# in-page anchor (#...); a relative path (e.g. figures/x.png) resolves under
+# <slug>/sources/ and 404s (figures live at <slug>/figures/), so it is rejected.
 _REMOTE_OR_ANCHOR_RE = re.compile(r'(?:[a-z][a-z0-9+.-]*:|//|#)', re.I)
-
-
-def _relative_md_targets(text):
-    # Scan OUTSIDE code: a relative path shown as a literal example inside a
-    # `code span` or ```fence``` is sample text, not a live link, so it must not
-    # trip the guard (a false-positive build failure).
-    text = _MD_CODE_RE.sub(" ", text)
-    bad = []
-    for t in _MD_LINK_TARGET_RE.findall(text) + _MD_REF_DEF_RE.findall(text):
-        if len(t) >= 2 and t[0] == "<" and t[-1] == ">":
-            t = t[1:-1]   # a <bracketed> target; classify the inner URL
-        if not _REMOTE_OR_ANCHOR_RE.match(t):
-            bad.append(t)
-    return bad
+# The sidecar is VALIDATED against its RENDERED HTML, never the raw markdown:
+# pandoc is the parser, so a [@key] or a relative path shown inside a `code` /
+# ```fence``` example is <code> text (never an <a>/<img> or a citation), and a
+# reference-style [t][r] link is already resolved -- no code-span modeling, no
+# raw-vs-rendered divergence. These scan that rendered fragment.
+_HREF_SRC_RE = re.compile(r'<(?:a[^>]*?\shref|img[^>]*?\ssrc)="([^"]*)"', re.I)
+_DATA_CITES_RE = re.compile(r'\sdata-cites="([^"]+)"')
 
 
 def _check_sidecar_drift(adir):
-    """Validate the source-quotes.md reviewer aid at load, loudly:
-
-    - not a symlink (it is read + published verbatim; a symlink out of the article
-      dir would leak another file's text onto the sources/ page),
-    - valid UTF-8 (a stray byte would otherwise abort the whole build with a raw
-      UnicodeDecodeError, past the CLI's BuildError handler),
-    - no relative link/image target (would break under <slug>/sources/),
-    - every @key it uses exists in refs.bib (a key renamed/removed in the bib but
-      left dangling in the sidecar is exactly the cross-file drift to catch)."""
+    """File-level source-quotes.md checks at load (fail fast, before any render):
+    not a symlink (read + published verbatim -- a link out of the article dir would
+    leak another file's text onto the sources/ page) and valid UTF-8 (a stray byte
+    would otherwise abort the whole build with a raw UnicodeDecodeError, past the
+    CLI's BuildError handler). The link-target + @key-drift checks run on the
+    RENDERED fragment (_validate_sources, from render_sources)."""
     sq = os.path.join(adir, "source-quotes.md")
     if not os.path.exists(sq):
         return
@@ -265,17 +248,31 @@ def _check_sidecar_drift(adir):
         raise BuildError("%s/source-quotes.md must not be a symlink" % adir)
     try:
         with open(sq, "r", encoding="utf-8") as fh:
-            text = fh.read()
+            fh.read()
     except UnicodeDecodeError as exc:
         raise BuildError("%s/source-quotes.md is not valid UTF-8: %s" % (adir, exc))
-    rel = _relative_md_targets(text)
+
+
+def _validate_sources(frag, adir):
+    """Validate the RENDERED sidecar fragment (the single source of truth):
+
+    - every link/image target is remote or an in-page anchor -- a relative target
+      would 404 under <slug>/sources/;
+    - every cited @key (from the rendered data-cites, so a [@key] inside a code
+      example is not counted) exists in refs.bib -- a renamed/removed bib key left
+      dangling in the sidecar is the cross-file drift to catch."""
+    rel = sorted({t for t in _HREF_SRC_RE.findall(frag)
+                  if t and not _REMOTE_OR_ANCHOR_RE.match(t)})
     if rel:
         raise BuildError("%s/source-quotes.md: relative link/image target(s) not "
                          "allowed (use an absolute URL): %s"
                          % (adir, ", ".join(rel)))
     bib = os.path.join(adir, "refs.bib")
     keys = _bib_keys(bib) if os.path.exists(bib) else set()
-    missing = sorted(_citekeys_in(text) - keys)
+    used = set()
+    for grp in _DATA_CITES_RE.findall(frag):
+        used.update(grp.split())
+    missing = sorted(used - keys)
     if missing:
         raise BuildError("%s/source-quotes.md: @key(s) not in refs.bib: %s"
                          % (adir, ", ".join(missing)))
@@ -512,6 +509,10 @@ CSL_PATH = "/usr/share/citation-style-language/styles/ieee.csl"
 # HTML; drop the class so the stylesheet carries no dead selector (the
 # website-tests check_site gate flags a sole class with no CSS rule / JS use).
 _NOCASE_RE = re.compile(r'\s+class="nocase"')
+# autolink_bare_uris tags each autolinked URL with class="uri" -- a presentational
+# no-op with no CSS rule / JS use, which the check_site orphan-class gate flags
+# (same reason _NOCASE_RE exists). Strip it; the <a href> is what matters.
+_URI_CLASS_RE = re.compile(r'\s+class="uri"')
 
 
 def _check_citeproc(stderr):
@@ -523,7 +524,7 @@ def _check_citeproc(stderr):
         raise BuildError("unresolved citation(s):\n" + "\n".join(bad))
 
 
-def md_to_html_fragment(md_text, bib_path=None):
+def md_to_html_fragment(md_text, bib_path=None, autolink=False):
     # Disable: raw_html (author <script> becomes text); smart (keep output ASCII
     # -- smart would emit curly quotes / en-dashes); and the attribute extensions
     # that let author Markdown attach arbitrary HTML attributes such as an
@@ -531,6 +532,11 @@ def md_to_html_fragment(md_text, bib_path=None):
     # residual event-handler attribute or dangerous URL scheme.
     fmt = ("markdown-raw_html-smart-raw_attribute-link_attributes"
            "-native_divs-native_spans")
+    if autolink:
+        # Turn bare http(s) URLs (and emails) into links -- the source-quotes
+        # sidecar lists many source URLs as plain text. pandoc linkifies only real
+        # absolute URIs, so a label like arXiv:NNNN or "doi 10.x" stays text.
+        fmt += "+autolink_bare_uris"
     cmd = ["pandoc", "-f", fmt, "-t", "html5", "--wrap=none"]
     if bib_path:
         # citeproc renders the in-text numbers (by first appearance), the
@@ -540,7 +546,7 @@ def md_to_html_fragment(md_text, bib_path=None):
                 "-M", "link-citations=true", "-M", "link-bibliography=true"]
     r = _run(cmd, input=md_text)
     _check_citeproc(r.stderr)
-    html = _NOCASE_RE.sub("", r.stdout)
+    html = _URI_CLASS_RE.sub("", _NOCASE_RE.sub("", r.stdout))
     return _ascii_entities_html(_endash_html(_sanitize_html(html)))
 
 
@@ -1200,28 +1206,38 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
 # Keys are [\w:.\-]+ (csr-rules), so the captured value is HTML-attribute-safe.
 # A GROUPED heading ([@a; @b]) yields data-cites="a b": the FIRST key becomes the
 # heading id and each remaining key gets its own empty anchor, so every key
-# resolves (a space-bearing id would select nothing).
+# resolves (a space-bearing id would select nothing). Group 2 is the [@key] label
+# text, wrapped in a self-link so the key is a clickable permalink to its entry.
 _SOURCES_H2_RE = re.compile(
-    r'<h2 id="[^"]*"><span class="citation" data-cites="([^"]+)">')
+    r'<h2 id="[^"]*"><span class="citation" data-cites="([^"]+)">(.*?)</span>',
+    re.S)
 
 
 def _sources_anchor_ids(frag):
     # De-dup ids across the whole page: two headings sharing a @key (or a key
     # repeated across groups) would emit duplicate ids -- invalid HTML, ambiguous
-    # deep-link. First occurrence keeps the bare key; the rest get a -N suffix.
-    seen = {}
+    # deep-link. First occurrence keeps the bare key; the rest get the first free
+    # -N suffix (checked against every id already emitted, so keys like k,k,k-2
+    # cannot collide on k-2).
+    used = set()
 
     def uniq(key):
-        n = seen.get(key, 0) + 1
-        seen[key] = n
-        return key if n == 1 else "%s-%d" % (key, n)
+        cand, n = key, 1
+        while cand in used:
+            n += 1
+            cand = "%s-%d" % (key, n)
+        used.add(cand)
+        return cand
 
     def repl(mo):
         keys = mo.group(1).split()
         hid = uniq(keys[0])
         extra = "".join('<span id="%s"></span>' % uniq(k) for k in keys[1:])
+        # The [@key] label links to the heading's own id -- a clickable permalink
+        # to the entry (shareable deep-link).
         return ('<h2 id="%s">%s<span class="citation" data-cites="%s">'
-                % (hid, extra, mo.group(1)))
+                '<a href="#%s">%s</a></span>'
+                % (hid, extra, mo.group(1), hid, mo.group(2)))
     return _SOURCES_H2_RE.sub(repl, frag)
 
 
@@ -1240,7 +1256,9 @@ def render_sources(m, journal):
     rel_dir = _rel_dir(m) + "/sources"
     root_rel = _root_rel(rel_dir)
     canonical = "%s/%s/" % (journal["base_url"], rel_dir)
-    frag = _sources_anchor_ids(md_to_html_fragment(md_text))
+    rendered = md_to_html_fragment(md_text, autolink=True)
+    _validate_sources(rendered, m["_dir"])
+    frag = _sources_anchor_ids(rendered)
     title = "Source quotes -- %s" % m["title"]
     description = (("Verbatim source quotes backing the paraphrased claims in "
                     "%s -- a reviewer aid.") % " ".join(m["title"].split()))[:300]

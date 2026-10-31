@@ -1705,9 +1705,9 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 fh.write(_BIB)
             with open(os.path.join(ad, "source-quotes.md"), "w",
                       encoding="utf-8") as fh:
-                fh.write("# Source quotes (reviewer aid)\n\n"
-                         "Lead paragraph explaining the review aid.\n\n"
+                fh.write("# Source quotes\n\n"
                          "## [@alpha] Alpha source\n\n"
+                         "- URL: https://e.example/alpha (retrieved 2026-10-26)\n"
                          '- Quote: "the alpha verbatim text"\n')
             out = os.path.join(d, "s")
             g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
@@ -1717,7 +1717,11 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 sources = fh.read()
             self.assertIn("the alpha verbatim text", sources)
             self.assertIn('<h2 id="alpha">', sources)       # anchor == @citekey
-            self.assertIn("[@alpha]", sources)              # literal key visible
+            # the [@alpha] key is a clickable self-permalink to its entry
+            self.assertIn('<a href="#alpha">[@alpha]</a>', sources)
+            # the bare source URL is autolinked (orphan class="uri" stripped)
+            self.assertIn('<a href="https://e.example/alpha">', sources)
+            self.assertNotIn('class="uri"', sources)
             self.assertIn('name="robots" content="noindex"', sources)
             self.assertIn('href="../"', sources)            # back to the paper
             with open(os.path.join(out, "art", "index.html"),
@@ -1736,6 +1740,44 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             # article page -- not under sources/).
             self.assertFalse(any("sources" in p for _l, p, _m in f.errors),
                              [i for i in f.errors])
+
+    def test_sidecar_validated_against_rendered_not_raw(self):
+        # Root-fix end-to-end (needs pandoc): a relative link AND a [@ghost] key
+        # shown as literal examples inside a code span / fence are <code> text in
+        # the rendered HTML -- never an <a>/<img> or a citation -- so they do NOT
+        # trip the guard (no false-positive build failure, no phantom key drift).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "source-quotes.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# Source quotes\n\n## [@alpha] Alpha\n\n"
+                         "inline `[c](figures/x.png)` and `[@ghost]` samples\n\n"
+                         "```\nsee [d](rel/y.png); [@alsoghost]; [r]: rel/z.png\n```\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)  # no raise
+            self.assertTrue(os.path.isfile(
+                os.path.join(out, "art", "sources", "index.html")))
+
+    def test_sidecar_real_relative_link_rejected(self):
+        # A genuine relative link (inline OR reference-style) outside code is a
+        # <a href="..."> in the rendered HTML and must still be rejected.
+        for body in ("see [chart](figures/x.png)\n",
+                     "see [chart][c]\n\n[c]: figures/x.png\n"):
+            with tempfile.TemporaryDirectory() as d:
+                jt = self._site(d)
+                ad = os.path.join(d, "articles", "art")
+                with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                    fh.write(_BIB)
+                with open(os.path.join(ad, "source-quotes.md"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("# Source quotes\n\n## [@alpha] Alpha\n\n" + body)
+                with self.assertRaises(g.BuildError) as cm:
+                    g.build(os.path.join(d, "articles"), jt,
+                            os.path.join(d, "s"), skip_pdf=True)
+                self.assertIn("relative", str(cm.exception))
 
     def test_no_sidecar_no_sources_page_or_link(self):
         # No source-quotes.md -> no sources/ page and no link on the article.
@@ -1848,7 +1890,8 @@ class TestCiteprocFragment(unittest.TestCase):
 
 
 class TestSidecarDrift(unittest.TestCase):
-    """source-quotes.md @keys must all exist in refs.bib (pure; no pandoc)."""
+    """File-level source-quotes.md checks at load: not a symlink, valid UTF-8
+    (pure; no pandoc). Key/target drift is validated on the rendered fragment."""
 
     def _dir(self, bib=_BIB, sidecar=None):
         d = tempfile.mkdtemp()
@@ -1862,27 +1905,13 @@ class TestSidecarDrift(unittest.TestCase):
                 fh.write(sidecar)
         return d
 
-    def test_passes_when_keys_present(self):
-        d = self._dir(sidecar="## [@alpha] a\n- Quote: x\n## [@beta] b\n")
-        g._check_sidecar_drift(d)  # no raise
-
-    def test_fails_on_missing_key(self):
-        d = self._dir(sidecar="## [@alpha] a\n## [@ghost] not in bib\n")
-        with self.assertRaises(g.BuildError) as cm:
-            g._check_sidecar_drift(d)
-        self.assertIn("ghost", str(cm.exception))   # canary: names the key
-
-    def test_grouped_and_remaining_keys_parsed(self):
-        # Keys in a grouped [@a; @b] and in a "Remaining references" bullet are
-        # both validated.
-        d = self._dir(sidecar="## [@alpha; @beta] grouped\n- [@gamma]: paywalled\n")
-        g._check_sidecar_drift(d)
-        d2 = self._dir(sidecar="- [@ghost]: nope\n")
-        with self.assertRaises(g.BuildError):
-            g._check_sidecar_drift(d2)
-
     def test_no_sidecar_is_ok(self):
         g._check_sidecar_drift(self._dir(sidecar=None))  # no raise
+
+    def test_valid_sidecar_file_ok(self):
+        # File-level checks only now (symlink + UTF-8); key/target drift is
+        # validated on the rendered fragment (TestValidateSources).
+        g._check_sidecar_drift(self._dir(sidecar="## [@alpha] a\n- Quote: x\n"))
 
     def test_symlinked_sidecar_rejected(self):
         # A symlinked sidecar is read + published verbatim, so a link out of the
@@ -1890,8 +1919,6 @@ class TestSidecarDrift(unittest.TestCase):
         import shutil as _sh
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: _sh.rmtree(d))
-        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
-            fh.write(_BIB)
         secret = os.path.join(d, "secret.md")
         with open(secret, "w", encoding="utf-8") as fh:
             fh.write("## [@alpha] x\n")
@@ -1906,60 +1933,11 @@ class TestSidecarDrift(unittest.TestCase):
         import shutil as _sh
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: _sh.rmtree(d))
-        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
-            fh.write(_BIB)
         with open(os.path.join(d, "source-quotes.md"), "wb") as fh:
             fh.write(b"## [@alpha] x\n- Quote: caf\xe9\n")
         with self.assertRaises(g.BuildError) as cm:
             g._check_sidecar_drift(d)
         self.assertIn("UTF-8", str(cm.exception))
-
-    def test_relative_link_target_rejected(self):
-        d = self._dir(sidecar="## [@alpha] x\n\nsee [chart](figures/c.png)\n")
-        with self.assertRaises(g.BuildError) as cm:
-            g._check_sidecar_drift(d)
-        self.assertIn("relative", str(cm.exception))
-
-    def test_relative_image_target_rejected(self):
-        d = self._dir(sidecar="## [@alpha] x\n\n![c](figures/c.png)\n")
-        with self.assertRaises(g.BuildError):
-            g._check_sidecar_drift(d)
-
-    def test_reference_style_relative_target_rejected(self):
-        # Reference-style link definition with a relative target must be caught
-        # too (inline-only checking would let [t][r] + [r]: figures/x.png slip).
-        d = self._dir(sidecar="## [@alpha] x\n\nsee [chart][c]\n\n[c]: figures/x.png\n")
-        with self.assertRaises(g.BuildError) as cm:
-            g._check_sidecar_drift(d)
-        self.assertIn("relative", str(cm.exception))
-
-    def test_reference_style_absolute_target_ok(self):
-        # An absolute (even <bracketed>) reference target is fine; a footnote
-        # definition's prose body is not mistaken for a relative target.
-        d = self._dir(sidecar="## [@alpha] x\n\n[s]: <https://e.example/p>\n"
-                              "[d]: https://e.example/d\n\n[^fn]: see figures later\n")
-        g._check_sidecar_drift(d)  # no raise
-
-    def test_relative_target_inside_code_is_allowed(self):
-        # A relative path shown as a literal example inside a code span or a
-        # fenced block is sample text, not a live link -- it must NOT trip the
-        # guard (would be a false-positive build failure).
-        d = self._dir(sidecar="## [@alpha] x\n\n"
-                              "inline `[c](figures/x.png)` sample\n\n"
-                              "```\nsee [d](rel/y.png) and [r]: rel/z.png\n```\n")
-        g._check_sidecar_drift(d)  # no raise
-
-    def test_absolute_and_anchor_targets_ok(self):
-        # An absolute URL, a mailto, and an in-page anchor are all fine; a bare
-        # [@key] / [^fn] (no following paren) is never mistaken for a link.
-        d = self._dir(sidecar="## [@alpha] x\n\n[s](https://e.example/p) "
-                              "[m](mailto:a@e.example) [a](#alpha) [@beta]\n")
-        g._check_sidecar_drift(d)  # no raise
-
-    def test_email_in_quote_not_mistaken_for_cite(self):
-        # A bare user@host inside a quote is not bracketed, so it is not a cite.
-        d = self._dir(sidecar='## [@alpha] a\n- Quote: "mail root@host now"\n')
-        g._check_sidecar_drift(d)  # no raise
 
     def test_bib_keys_parsed(self):
         d = self._dir()
@@ -1974,13 +1952,6 @@ class TestSidecarDrift(unittest.TestCase):
         self.assertEqual(g._citekeys_in("as noted [see @alpha] and [cf. @beta, p. 3]"),
                          {"alpha", "beta"})
 
-    def test_prefixed_key_drift_caught(self):
-        # A prefixed [see @ghost] in the sidecar with no bib entry still drifts.
-        d = self._dir(sidecar="## [@alpha] a\n- also [see @ghost]\n")
-        with self.assertRaises(g.BuildError) as cm:
-            g._check_sidecar_drift(d)
-        self.assertIn("ghost", str(cm.exception))
-
     def test_non_utf8_bib_no_crash(self):
         # A non-UTF-8 byte in an accented author field must not crash key
         # extraction with a raw UnicodeDecodeError (keys are ASCII).
@@ -1989,6 +1960,52 @@ class TestSidecarDrift(unittest.TestCase):
         with open(os.path.join(d, "refs.bib"), "wb") as fh:
             fh.write(b"@article{mueller, author={M\xfcller}, title={T}, year={2020}}\n")
         self.assertEqual(g._bib_keys(os.path.join(d, "refs.bib")), {"mueller"})
+
+
+class TestValidateSources(unittest.TestCase):
+    """Link-target + @key-drift validation on the RENDERED fragment (pure: the
+    fragments here are what pandoc emits, so no pandoc is invoked)."""
+
+    def _dir(self, bib=_BIB):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+            fh.write(bib)
+        return d
+
+    def test_relative_href_rejected(self):
+        frag = '<p>see <a href="figures/c.png">chart</a></p>'
+        with self.assertRaises(g.BuildError) as cm:
+            g._validate_sources(frag, self._dir())
+        self.assertIn("relative", str(cm.exception))
+        self.assertIn("figures/c.png", str(cm.exception))
+
+    def test_relative_img_rejected(self):
+        frag = '<p><img src="figures/c.png" alt="c" /></p>'
+        with self.assertRaises(g.BuildError):
+            g._validate_sources(frag, self._dir())
+
+    def test_remote_and_anchor_targets_ok(self):
+        # http(s) / mailto / in-page #anchor targets are all fine.
+        frag = ('<a href="https://e.example/p">p</a> '
+                '<a href="mailto:a@e.example">m</a> <a href="#alpha">a</a>'
+                '<span class="citation" data-cites="alpha">[@alpha]</span>')
+        g._validate_sources(frag, self._dir())  # no raise
+
+    def test_missing_citekey_rejected(self):
+        frag = '<span class="citation" data-cites="ghost">[@ghost]</span>'
+        with self.assertRaises(g.BuildError) as cm:
+            g._validate_sources(frag, self._dir())
+        self.assertIn("ghost", str(cm.exception))
+
+    def test_grouped_data_cites_parsed(self):
+        g._validate_sources(
+            '<span class="citation" data-cites="alpha beta">x</span>', self._dir())
+        with self.assertRaises(g.BuildError) as cm:
+            g._validate_sources(
+                '<span class="citation" data-cites="alpha ghost">x</span>',
+                self._dir())
+        self.assertIn("ghost", str(cm.exception))
 
 
 class TestSourcesAnchorIds(unittest.TestCase):
@@ -2003,8 +2020,9 @@ class TestSourcesAnchorIds(unittest.TestCase):
         out = g._sources_anchor_ids(frag)
         self.assertIn('<h2 id="alpha">', out)
         self.assertNotIn('id="alpha-src-alpha-source"', out)
-        # the readable [@alpha] label and data-cites survive the rebind
-        self.assertIn('data-cites="alpha">[@alpha]</span>', out)
+        # the readable [@alpha] label survives and is a clickable self-permalink
+        self.assertIn('data-cites="alpha"><a href="#alpha">[@alpha]</a></span>',
+                      out)
 
     def test_hyphen_dot_colon_key_preserved(self):
         frag = ('<h2 id="x"><span class="citation" data-cites="a-b.c:d">'
