@@ -348,11 +348,19 @@ def _csl_entries(bib_path):
 
 
 def _csl_date(parts):
-    """CSL date-parts [[Y,M,D]] -> 'YYYY-MM-DD' (or as many parts as present)."""
+    """CSL date-parts [[Y,M,D]] -> 'YYYY-MM-DD' (or as many parts as present).
+    A date-part is permitted by the CSL spec to be a string; render a non-numeric
+    one verbatim rather than crash with an uncaught ValueError (the CLI catches
+    only BuildError)."""
     if not parts or not parts[0]:
         return ""
-    return "-".join(("%04d" if i == 0 else "%02d") % int(x)
-                    for i, x in enumerate(parts[0]))
+    out = []
+    for i, x in enumerate(parts[0]):
+        try:
+            out.append(("%04d" if i == 0 else "%02d") % int(x))
+        except (ValueError, TypeError):
+            out.append(str(x))
+    return "-".join(out)
 
 
 def _csl_names(entry, field="author"):
@@ -546,10 +554,23 @@ def _site_root(journal):
     return (path + "/") if path else "/"
 
 
-# Neutralize dangerous URL schemes in generated href/src (defense in depth;
-# raw HTML passthrough is already disabled in the reader).
-_DANGEROUS_URL_RE = re.compile(
-    r'((?:href|src)\s*=\s*")\s*(?:javascript|vbscript|data)\s*:', re.I)
+# href/src value guard (defense in depth; raw HTML passthrough is already disabled
+# in the reader). A scheme BLOCKLIST is bypassable -- browsers strip ASCII control/
+# space bytes from a URL before acting on it, so "java&#9;script:" runs -- so match
+# the scheme after stripping those bytes and ALLOW-LIST it: a relative URL (no
+# scheme) or http/https/mailto passes; anything else (javascript/vbscript/data/...)
+# is rewritten to "#".
+_URL_ATTR_RE = re.compile(r'((?:href|src)\s*=\s*")([^"]*)(")', re.I)
+_URL_SCHEME_RE = re.compile(r'^([a-zA-Z][a-zA-Z0-9+.\-]*):')
+_SAFE_URL_SCHEMES = {"http", "https", "mailto"}
+
+
+def _safe_url_attr(m):
+    cleaned = re.sub(r"[\x00-\x20]", "", m.group(2))
+    sm = _URL_SCHEME_RE.match(cleaned)
+    if sm and sm.group(1).lower() not in _SAFE_URL_SCHEMES:
+        return m.group(1) + "#" + m.group(3)
+    return m.group(0)
 _EVENT_ATTR_RE = re.compile(
     r'\son[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', re.I)
 # Inline style attribute: blocked by the strict style-src 'self' CSP (never
@@ -567,7 +588,7 @@ _TAG_RE = re.compile(r'<[a-zA-Z/][^>"\']*(?:(?:"[^"]*"|\'[^\']*\')[^>"\']*)*>', 
 
 
 def _strip_tag_attrs(tag):
-    tag = _DANGEROUS_URL_RE.sub(r"\1#", tag)
+    tag = _URL_ATTR_RE.sub(_safe_url_attr, tag)
     tag = _EVENT_ATTR_RE.sub("", tag)
     # Strict CSP is style-src 'self': an inline style attribute is BLOCKED (never
     # applied) and logs a console error. Pandoc emits them on table parts (col
@@ -1248,7 +1269,7 @@ def _enhance_references(body_html, sidecar_keys):
 
 
 def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None,
-                   quote_blocks=None):
+                   quote_blocks=None, pill_keys=None):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
@@ -1290,6 +1311,18 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
                          "(it is the plain-text meta/OG description)" % m["_dir"])
     body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
     body_html = _enhance_references(body_html, sidecar_keys or set())
+    # A sidecar card's section pill links to ../#cite-<key>; that anchor exists only
+    # where the paper actually cites <key> (stamped by _enhance_references on the
+    # rendered citation). Validate against the rendered body_html -- the authority
+    # pandoc's citation grammar produced -- not a markdown pre-scan: a narrative
+    # "@key showed" (cited) passes and an indented-code "[@key]" (not cited) fails,
+    # either of which a bracket-only regex gets wrong.
+    for k in sorted(pill_keys or set()):
+        if ('id="cite-%s"' % k) not in body_html:
+            raise BuildError(
+                "%s/source-quotes.toml: @%s has a claim section pill linking "
+                "../#cite-%s, but paper.md does not cite %s (no such anchor), so "
+                "the pill would be a dead link" % (m["_dir"], k, k, k))
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
     # Hidden per-citation quote store: the verbatim source quote(s) + attribution
@@ -1471,8 +1504,9 @@ def render_sources(m, journal):
     """Render the structured source-quotes.toml reviewer aid as quotation cards at
     <slug>/sources/, linked from the article. Each verbatim quote becomes a card;
     attribution (name, venue, title, link, retrieved) is pulled from refs.bib via
-    the @key (CSL-JSON). Returns (rel_dir, page, card_keys) -- card_keys are the
-    keys that have a quote (and thus a sources/#key anchor the paper can link to)."""
+    the @key (CSL-JSON). Returns (rel_dir, page, card_keys, quote_blocks, pill_keys)
+    -- card_keys have a quote (a sources/#key anchor the paper links to); pill_keys
+    emit a ../#cite-<key> section pill render_article validates against the body."""
     data = _load_sidecar(m["_dir"])
     csl = _csl_entries(os.path.join(m["_dir"], "refs.bib"))
     rel_dir = _rel_dir(m) + "/sources"
@@ -1480,21 +1514,15 @@ def render_sources(m, journal):
     canonical = "%s/%s/" % (journal["base_url"], rel_dir)
     cards, remaining, card_keys = [], [], set()
     quote_blocks = {}   # key -> processed quote block, for the paper's hovercards
-    # A claim with a `section` renders a pill to ../#cite-<key>, an anchor
-    # _enhance_references stamps only on an actual in-text citation. An uncited key
-    # with such a claim would emit a dead pill (check_citation_parity cannot catch
-    # it -- citeproc never lists an uncited reference), so fail the build.
-    cited = _citekeys_in(_MD_CODE_RE.sub(" ", m["_body_md"]))
+    pill_keys = set()   # keys whose card emits a ../#cite-<key> section pill;
+    #                     render_article validates each is cited in the rendered body
     for key, entry in data.items():
         if key not in csl:
             raise BuildError("%s/source-quotes.toml: @%s has no refs.bib CSL-JSON "
                              "entry (pandoc emitted none -- a @comment/@string block "
                              "cannot back a card)" % (m["_dir"], key))
-        if key not in cited and any(cl.get("section")
-                                    for cl in entry.get("claims", [])):
-            raise BuildError("%s/source-quotes.toml: @%s has a claim section pill "
-                             "but no in-text citation in paper.md (the pill would "
-                             "link to a nonexistent #cite-%s)" % (m["_dir"], key, key))
+        if any(cl.get("section") for cl in entry.get("claims", [])):
+            pill_keys.add(key)
         att = _csl_attribution(csl[key])
         if entry.get("quotes"):
             card_keys.add(key)
@@ -1534,7 +1562,7 @@ def render_sources(m, journal):
     page = _page(m.get("language", journal["language"]),
                  "%s -- %s" % (title, journal["title"]), description, canonical,
                  extra, main, journal, root_rel)
-    return rel_dir, page, card_keys, quote_blocks
+    return rel_dir, page, card_keys, quote_blocks, pill_keys
 
 
 def render_page(slug, md_text, journal):
@@ -1844,8 +1872,10 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         # sitemap.xml byte-equal to its render_sitemap.
         card_keys = set()
         quote_blocks = {}
+        pill_keys = set()
         if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
-            s_rel, s_page, card_keys, quote_blocks = render_sources(m, journal)
+            s_rel, s_page, card_keys, quote_blocks, pill_keys = render_sources(
+                m, journal)
             s_dest = os.path.join(out_dir, s_rel)
             os.makedirs(s_dest, exist_ok=True)
             with open(os.path.join(s_dest, "index.html"), "w",
@@ -1854,7 +1884,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
             urls.append("%s/%s/" % (journal["base_url"], s_rel))
         rel_dir, pdf_name, page = render_article(
             m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf,
-            sidecar_keys=card_keys, quote_blocks=quote_blocks)
+            sidecar_keys=card_keys, quote_blocks=quote_blocks, pill_keys=pill_keys)
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:

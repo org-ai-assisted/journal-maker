@@ -1952,7 +1952,52 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with self.assertRaises(g.BuildError) as cm:
                 g.build(os.path.join(d, "articles"), jt, os.path.join(d, "s"),
                         skip_pdf=True)
-            self.assertIn("no in-text citation", str(cm.exception))
+            self.assertIn("does not cite", str(cm.exception))
+
+    def test_narrative_citation_satisfies_section_pill(self):
+        # F1 regression: a NARRATIVE "@beta showed" (no brackets) is a real pandoc
+        # citation -> #cite-beta exists, so a section pill for beta is valid. The
+        # old bracket-only pre-scan wrongly failed this; the check now reads the
+        # rendered body.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nAs @beta showed, it "
+                         "held.\n\n## 2. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[beta]\nclaims = [{ section = "Sec. 1", text = "c" }]\n'
+                         'quotes = [{ text = "q" }]\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)  # no raise
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                self.assertIn('id="cite-beta"', fh.read())
+
+    def test_indented_code_citation_does_not_satisfy_pill(self):
+        # F2 regression: a [@beta] ONLY inside a 4-space indented code block is not
+        # a citation to pandoc (no #cite-beta), so a section pill for beta must fail
+        # -- the old _MD_CODE_RE missed indented code and wrongly passed it.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\n    sample [@beta] "
+                         "here\n\nmore.\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[beta]\nclaims = [{ section = "Sec. 1", text = "c" }]\n'
+                         'quotes = [{ text = "q" }]\n')
+            with self.assertRaises(g.BuildError) as cm:
+                g.build(os.path.join(d, "articles"), jt, os.path.join(d, "s"),
+                        skip_pdf=True)
+            self.assertIn("does not cite", str(cm.exception))
 
     def test_sidecar_key_without_csl_entry_rejected(self):
         # A key in the raw refs.bib scan but not emitted by pandoc CSL-JSON (an
@@ -2262,6 +2307,28 @@ class TestSidecar(unittest.TestCase):
         self.assertEqual(blk.count('<span class="qlabel-tag">L</span>'), 1)
         self.assertIn('<span class="qlabel-tag">L</span> para one</p>', blk)
         self.assertIn("<p>para two</p>", blk)
+
+    def test_sanitize_url_allowlist_blocks_obfuscated_scheme(self):
+        # The href/src guard allow-lists schemes (http/https/mailto + relative),
+        # so a control-char-obfuscated dangerous scheme (browsers strip the tab/
+        # newline) is neutralized where a named-token blocklist would miss it.
+        san = g._sanitize_html
+        self.assertIn('href="#"', san('<a href="javascript:alert(1)">x</a>'))
+        self.assertIn('href="#"', san('<a href="java\tscript:alert(1)">x</a>'))
+        self.assertIn('href="#"', san('<a href="jav\nascript:alert(1)">x</a>'))
+        self.assertIn('href="#"', san('<a href="data:text/html,x">x</a>'))
+        # safe schemes + relative URLs are preserved unchanged
+        self.assertIn('href="https://e.example/p"',
+                      san('<a href="https://e.example/p">x</a>'))
+        self.assertIn('href="../#cite-k"', san('<a href="../#cite-k">x</a>'))
+        self.assertIn('href="mailto:a@e.example"',
+                      san('<a href="mailto:a@e.example">x</a>'))
+
+    def test_csl_date_nonnumeric_part_no_crash(self):
+        # A CSL date-part may be a string; render it verbatim rather than raising
+        # an uncaught ValueError (the CLI catches only BuildError).
+        self.assertEqual(g._csl_date([["2020a"]]), "2020a")
+        self.assertEqual(g._csl_date([[2020, "spring"]]), "2020-spring")
 
 
 class TestBibLinkPresence(unittest.TestCase):
