@@ -88,9 +88,9 @@ def load_journal(path):
         j["publisher"] = j["title"]
     j.setdefault("license", "")
     j.setdefault("license_url", "")
-    # Optional "view markdown source" base: the repo blob root (e.g.
+    # Optional "view source" base: the repo blob root (e.g.
     # https://github.com/<owner>/<repo>/blob/master). When set, each article links
-    # to .../articles/<slug>/paper.md and its sources page to source-quotes.md.
+    # to .../articles/<dir>/paper.md and its sources page to source-quotes.toml.
     # Must be absolute http(s) with no whitespace (interpolated into an href).
     sb = j.get("source_base_url", "")
     if not isinstance(sb, str):
@@ -257,61 +257,100 @@ def _entries_missing_link(bib_path):
             if not _BIB_LINK_FIELD_RE.search(body)]
 
 
-# A link/image target is allowed when it is remote (http(s)/mailto/...) or an
-# in-page anchor (#...); a relative path (e.g. figures/x.png) resolves under
-# <slug>/sources/ and 404s (figures live at <slug>/figures/), so it is rejected.
-_REMOTE_OR_ANCHOR_RE = re.compile(r'(?:[a-z][a-z0-9+.-]*:|//|#)', re.I)
-# The sidecar is VALIDATED against its RENDERED HTML, never the raw markdown:
-# pandoc is the parser, so a [@key] or a relative path shown inside a `code` /
-# ```fence``` example is <code> text (never an <a>/<img> or a citation), and a
-# reference-style [t][r] link is already resolved -- no code-span modeling, no
-# raw-vs-rendered divergence. These scan that rendered fragment.
-_HREF_SRC_RE = re.compile(r'<(?:a[^>]*?\shref|img[^>]*?\ssrc)="([^"]*)"', re.I)
-_DATA_CITES_RE = re.compile(r'\sdata-cites="([^"]+)"')
+def _load_sidecar(adir):
+    """Load + validate the structured source-quotes.toml reviewer aid.
 
-
-def _check_sidecar_drift(adir):
-    """File-level source-quotes.md checks at load (fail fast, before any render):
-    not a symlink (read + published verbatim -- a link out of the article dir would
-    leak another file's text onto the sources/ page) and valid UTF-8 (a stray byte
-    would otherwise abort the whole build with a raw UnicodeDecodeError, past the
-    CLI's BuildError handler). The link-target + @key-drift checks run on the
-    RENDERED fragment (_validate_sources, from render_sources)."""
-    sq = os.path.join(adir, "source-quotes.md")
+    Returns the parsed dict (citekey -> {label?, claims[], quotes[], no_quote?}),
+    in file order, or None when absent. Fails loud at load on a symlink (it is read
+    + published verbatim), a TOML parse error, a malformed entry, or a @key not in
+    refs.bib (the cross-file drift to catch). Attribution (author, venue, title,
+    url, retrieved) is NOT stored here -- it is pulled from refs.bib by the @key."""
+    sq = os.path.join(adir, "source-quotes.toml")
     if not os.path.exists(sq):
-        return
+        return None
     if os.path.islink(sq):
-        raise BuildError("%s/source-quotes.md must not be a symlink" % adir)
+        raise BuildError("%s/source-quotes.toml must not be a symlink" % adir)
     try:
-        with open(sq, "r", encoding="utf-8") as fh:
-            fh.read()
-    except UnicodeDecodeError as exc:
-        raise BuildError("%s/source-quotes.md is not valid UTF-8: %s" % (adir, exc))
-
-
-def _validate_sources(frag, adir):
-    """Validate the RENDERED sidecar fragment (the single source of truth):
-
-    - every link/image target is remote or an in-page anchor -- a relative target
-      would 404 under <slug>/sources/;
-    - every cited @key (from the rendered data-cites, so a [@key] inside a code
-      example is not counted) exists in refs.bib -- a renamed/removed bib key left
-      dangling in the sidecar is the cross-file drift to catch."""
-    rel = sorted({t for t in _HREF_SRC_RE.findall(frag)
-                  if t and not _REMOTE_OR_ANCHOR_RE.match(t)})
-    if rel:
-        raise BuildError("%s/source-quotes.md: relative link/image target(s) not "
-                         "allowed (use an absolute URL): %s"
-                         % (adir, ", ".join(rel)))
+        with open(sq, "rb") as fh:
+            data = tomllib.load(fh)
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise BuildError("%s/source-quotes.toml: %s" % (adir, exc))
     bib = os.path.join(adir, "refs.bib")
-    keys = _bib_keys(bib) if os.path.exists(bib) else set()
-    used = set()
-    for grp in _DATA_CITES_RE.findall(frag):
-        used.update(grp.split())
-    missing = sorted(used - keys)
-    if missing:
-        raise BuildError("%s/source-quotes.md: @key(s) not in refs.bib: %s"
-                         % (adir, ", ".join(missing)))
+    bib_keys = _bib_keys(bib) if os.path.exists(bib) else set()
+    for key, entry in data.items():
+        if not isinstance(entry, dict):
+            raise BuildError("%s/source-quotes.toml: [%s] must be a table"
+                             % (adir, key))
+        if key not in bib_keys:
+            raise BuildError("%s/source-quotes.toml: @key not in refs.bib: %s"
+                             % (adir, key))
+        claims, quotes = entry.get("claims", []), entry.get("quotes", [])
+        if not isinstance(claims, list) or not isinstance(quotes, list):
+            raise BuildError("%s/source-quotes.toml: [%s] claims/quotes must be "
+                             "arrays of tables" % (adir, key))
+        if not quotes and "no_quote" not in entry:
+            raise BuildError("%s/source-quotes.toml: [%s] needs quotes or a "
+                             "no_quote reason" % (adir, key))
+        for item in claims + quotes:
+            if (not isinstance(item, dict)
+                    or not isinstance(item.get("text"), str)
+                    or not item["text"].strip()):
+                raise BuildError("%s/source-quotes.toml: [%s] each claim/quote "
+                                 "needs a non-empty text" % (adir, key))
+    return data
+
+
+# ---------------------------------------------------------- bib attribution
+# refs.bib -> CSL-JSON via pandoc (the parser of record; no hand-rolled BibTeX
+# parser). howpublished / institution / organization all land in `publisher`;
+# journal / booktitle in `container-title`; urldate in `accessed`.
+
+def _csl_entries(bib_path):
+    r = _run(["pandoc", bib_path, "-t", "csljson"])
+    try:
+        return {e["id"]: e for e in json.loads(r.stdout) if isinstance(e, dict)
+                and "id" in e}
+    except json.JSONDecodeError as exc:
+        raise BuildError("pandoc csljson parse failed for %s: %s" % (bib_path, exc))
+
+
+def _csl_date(parts):
+    """CSL date-parts [[Y,M,D]] -> 'YYYY-MM-DD' (or as many parts as present)."""
+    if not parts or not parts[0]:
+        return ""
+    return "-".join(("%04d" if i == 0 else "%02d") % int(x)
+                    for i, x in enumerate(parts[0]))
+
+
+def _csl_authors(entry):
+    out = []
+    for a in entry.get("author", []):
+        if a.get("literal"):
+            out.append(a["literal"])
+        else:
+            nm = ((a.get("given", "") + " " + a.get("family", "")).strip()
+                  or a.get("family", ""))
+            if nm:
+                out.append(nm)
+    return "; ".join(out)
+
+
+def _csl_attribution(entry):
+    """(name, venue, title, link, retrieved) for an article's source card, from
+    its CSL-JSON entry. name falls back to publisher (orgs/patents/statutes with
+    no author); link falls back to the DOI; retrieved is empty for a formally
+    published (DOI-dated) work with no access date."""
+    name = _csl_authors(entry) or entry.get("publisher", "")
+    pub = entry.get("publisher", "")
+    venue = entry.get("container-title") or (pub if pub and pub != name else "")
+    year = _csl_date(entry.get("issued", {}).get("date-parts"))
+    if year:
+        venue = (venue + ", " + year) if venue else year
+    link = entry.get("URL") or (
+        "https://doi.org/" + entry["DOI"] if entry.get("DOI") else "")
+    return {"name": name, "venue": venue, "title": entry.get("title", ""),
+            "link": link,
+            "retrieved": _csl_date(entry.get("accessed", {}).get("date-parts"))}
 
 
 def load_article(adir):
@@ -423,7 +462,7 @@ def load_article(adir):
         m["correction_url"] = cu
     m["_dir"] = adir
     m["_body_md"] = body
-    _check_sidecar_drift(adir)
+    _load_sidecar(adir)   # validate the structured sidecar at load (drift, shape)
     return m
 
 
@@ -545,10 +584,6 @@ CSL_PATH = "/usr/share/citation-style-language/styles/ieee.csl"
 # HTML; drop the class so the stylesheet carries no dead selector (the
 # website-tests check_site gate flags a sole class with no CSS rule / JS use).
 _NOCASE_RE = re.compile(r'\s+class="nocase"')
-# autolink_bare_uris tags each autolinked URL with class="uri" -- a presentational
-# no-op with no CSS rule / JS use, which the check_site orphan-class gate flags
-# (same reason _NOCASE_RE exists). Strip it; the <a href> is what matters.
-_URI_CLASS_RE = re.compile(r'\s+class="uri"')
 
 
 def _check_citeproc(stderr):
@@ -560,7 +595,7 @@ def _check_citeproc(stderr):
         raise BuildError("unresolved citation(s):\n" + "\n".join(bad))
 
 
-def md_to_html_fragment(md_text, bib_path=None, autolink=False):
+def md_to_html_fragment(md_text, bib_path=None):
     # Disable: raw_html (author <script> becomes text); smart (keep output ASCII
     # -- smart would emit curly quotes / en-dashes); and the attribute extensions
     # that let author Markdown attach arbitrary HTML attributes such as an
@@ -568,11 +603,6 @@ def md_to_html_fragment(md_text, bib_path=None, autolink=False):
     # residual event-handler attribute or dangerous URL scheme.
     fmt = ("markdown-raw_html-smart-raw_attribute-link_attributes"
            "-native_divs-native_spans")
-    if autolink:
-        # Turn bare http(s) URLs (and emails) into links -- the source-quotes
-        # sidecar lists many source URLs as plain text. pandoc linkifies only real
-        # absolute URIs, so a label like arXiv:NNNN or "doi 10.x" stays text.
-        fmt += "+autolink_bare_uris"
     cmd = ["pandoc", "-f", fmt, "-t", "html5", "--wrap=none"]
     if bib_path:
         # citeproc renders the in-text numbers (by first appearance), the
@@ -582,7 +612,7 @@ def md_to_html_fragment(md_text, bib_path=None, autolink=False):
                 "-M", "link-citations=true", "-M", "link-bibliography=true"]
     r = _run(cmd, input=md_text)
     _check_citeproc(r.stderr)
-    html = _URI_CLASS_RE.sub("", _NOCASE_RE.sub("", r.stdout))
+    html = _NOCASE_RE.sub("", r.stdout)
     return _ascii_entities_html(_endash_html(_sanitize_html(html)))
 
 
@@ -1248,11 +1278,14 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
         action_links.append('<a href="%s">Download PDF</a>' % pdf_name)
         action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
                              % pdf_name)
-    if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
+    if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")
     if journal.get("source_base_url"):
-        src = "%s/articles/%s/paper.md" % (journal["source_base_url"], m["slug"])
+        # Blob path from the on-disk dir name (not the slug, which meta.toml can
+        # override): the source lives at articles/<dirname>/paper.md.
+        src = "%s/articles/%s/paper.md" % (
+            journal["source_base_url"], os.path.basename(m["_dir"].rstrip("/")))
         action_links.append('<a class="sources-aid" href="%s">Markdown source</a>'
                             % html.escape(src, quote=True))
     actions_bit = (('<p class="actions">%s</p>\n' % " ".join(action_links))
@@ -1290,87 +1323,127 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     return rel_dir, pdf_name, page
 
 
-# pandoc (no citeproc) renders a sidecar heading's leading [@key] as
-# <span class="citation" data-cites="KEY">[@key]</span>; rebind the heading's
-# auto-slug id to the stable @citekey so the paper can deep-link sources/#KEY.
-# Keys are [\w:.\-]+ (csr-rules), so the captured value is HTML-attribute-safe.
-# A GROUPED heading ([@a; @b]) yields data-cites="a b": the FIRST key becomes the
-# heading id and each remaining key gets its own empty anchor, so every key
-# resolves (a space-bearing id would select nothing). Group 2 is the [@key] label
-# text, wrapped in a self-link so the key is a clickable permalink to its entry.
-_SOURCES_H2_RE = re.compile(
-    r'<h2 id="[^"]*"><span class="citation" data-cites="([^"]+)">(.*?)</span>',
-    re.S)
+def _attribution_html(att):
+    """The quotation card's attribution block (name / venue / linked title +
+    retrieved), from the refs.bib CSL-JSON. Empty parts are omitted."""
+    parts = []
+    if att["name"]:
+        parts.append('<span class="nm">%s</span>' % html.escape(att["name"]))
+    if att["venue"]:
+        parts.append('<span class="rl">%s</span>' % html.escape(att["venue"]))
+    if att["link"] and att["title"]:
+        src = '<a href="%s">%s</a>' % (html.escape(att["link"], quote=True),
+                                       html.escape(att["title"]))
+    else:
+        src = html.escape(att["title"])
+    if src and att["retrieved"]:
+        src += (' <span class="ret">&middot; retrieved %s</span>'
+                % html.escape(att["retrieved"]))
+    if src:
+        parts.append('<span class="src">%s</span>' % src)
+    return ('<span class="blockquote-context">%s</span>' % "".join(parts)
+            if parts else "")
 
 
-def _sources_anchor_ids(frag):
-    # De-dup ids across the whole page: two headings sharing a @key (or a key
-    # repeated across groups) would emit duplicate ids -- invalid HTML, ambiguous
-    # deep-link. First occurrence keeps the bare key; the rest get the first free
-    # -N suffix (checked against every id already emitted, so keys like k,k,k-2
-    # cannot collide on k-2).
-    used = set()
+def _sources_card(key, entry, att):
+    """One source-quote card: clickable [@key], label, the paper claim(s) (each a
+    pill linking to ../#cite-key in the paper), the verbatim quote(s) as a
+    quotation blockquote, and the refs.bib attribution."""
+    head = ('<div class="qhead"><a class="qkey" href="#%s">[@%s]</a>'
+            '<span class="qlabel">%s</span></div>'
+            % (key, key, html.escape(entry.get("label", ""))))
+    claims = entry.get("claims", [])
+    claim_html = ""
+    if len(claims) == 1 and claims[0].get("section"):
+        c = claims[0]
+        claim_html = (
+            '<div class="qclaim"><div class="qclaim-row">'
+            '<span class="qclaim-label">Paper claim</span>'
+            '<a class="qclaim-sec" href="../#cite-%s">%s &rarr;</a></div>'
+            '<p class="qclaim-text">%s</p></div>'
+            % (key, html.escape(c["section"]), html.escape(c["text"])))
+    elif claims:
+        lis = "".join(
+            '<li><a class="qclaim-sec" href="../#cite-%s">%s</a>'
+            '<span class="ct">%s</span></li>'
+            % (key, html.escape(c.get("section", "")), html.escape(c["text"]))
+            for c in claims)
+        label = "Paper claims" if len(claims) > 1 else "Paper claim"
+        claim_html = ('<div class="qclaim"><div class="qclaim-row">'
+                      '<span class="qclaim-label">%s</span></div>'
+                      '<ul class="qclaim-list">%s</ul></div>' % (label, lis))
+    quotes = "".join(
+        '<p>%s%s</p>' % (
+            ('<span class="qlabel-tag">%s</span> ' % html.escape(q["label"]))
+            if q.get("label") else "",
+            html.escape(q["text"]))
+        for q in entry["quotes"])
+    return ('<article class="qcard" id="%s">%s%s'
+            '<blockquote class="quotation">%s%s</blockquote></article>\n'
+            % (key, head, claim_html, quotes, _attribution_html(att)))
 
-    def uniq(key):
-        cand, n = key, 1
-        while cand in used:
-            n += 1
-            cand = "%s-%d" % (key, n)
-        used.add(cand)
-        return cand
 
-    def repl(mo):
-        keys = mo.group(1).split()
-        hid = uniq(keys[0])
-        extra = "".join('<span id="%s"></span>' % uniq(k) for k in keys[1:])
-        # The [@key] label links to the heading's own id -- a clickable permalink
-        # to the entry (shareable deep-link).
-        return ('<h2 id="%s">%s<span class="citation" data-cites="%s">'
-                '<a href="#%s">%s</a></span>'
-                % (hid, extra, mo.group(1), hid, mo.group(2)))
-    return _SOURCES_H2_RE.sub(repl, frag)
+def _sources_remaining(key, entry, att):
+    """A 'Remaining references' list item: a cited source with no retrievable
+    verbatim text, with its reason and refs.bib attribution."""
+    if att["link"] and att["title"]:
+        title = '<a href="%s">%s</a>' % (html.escape(att["link"], quote=True),
+                                         html.escape(att["title"]))
+    else:
+        title = html.escape(att["title"])
+    name = (" &middot; " + html.escape(att["name"])) if att["name"] else ""
+    return ('<li id="%s"><span class="qkey">[@%s]</span> %s%s. '
+            '<span class="rmn-reason">%s</span></li>'
+            % (key, key, title, name, html.escape(entry["no_quote"])))
 
 
 def render_sources(m, journal):
-    """Render the per-article source-quotes.md reviewer aid as a standalone,
-    read-only HTML page at <slug>/sources/, linked from the article.
-
-    Verbatim source passages behind the paper's paraphrased claims, keyed by the
-    same @citekey as refs.bib and the body. Rendered WITHOUT citeproc: the literal
-    [@key] stays visible as the human-readable key (no in-text numbering, no
-    duplicated reference list). A review aid, not part of the paper. Auto-generated
-    from source-quotes.md, never hand-written."""
-    sq_path = os.path.join(m["_dir"], "source-quotes.md")
-    with open(sq_path, "r", encoding="utf-8") as fh:
-        md_text = fh.read()
+    """Render the structured source-quotes.toml reviewer aid as quotation cards at
+    <slug>/sources/, linked from the article. Each verbatim quote becomes a card;
+    attribution (name, venue, title, link, retrieved) is pulled from refs.bib via
+    the @key (CSL-JSON). Returns (rel_dir, page, card_keys) -- card_keys are the
+    keys that have a quote (and thus a sources/#key anchor the paper can link to)."""
+    data = _load_sidecar(m["_dir"])
+    csl = _csl_entries(os.path.join(m["_dir"], "refs.bib"))
     rel_dir = _rel_dir(m) + "/sources"
     root_rel = _root_rel(rel_dir)
     canonical = "%s/%s/" % (journal["base_url"], rel_dir)
-    rendered = md_to_html_fragment(md_text, autolink=True)
-    _validate_sources(rendered, m["_dir"])
-    # Heading keys (first key of each `## [@key]` entry) -- the keys that have a
-    # sources/#key anchor, so the paper's reference list can link to them.
-    heading_keys = {dc.split()[0] for dc in re.findall(
-        r'<h2[^>]*><span class="citation" data-cites="([^"]+)">', rendered)}
-    frag = _sources_anchor_ids(rendered)
+    cards, remaining, card_keys = [], [], set()
+    for key, entry in data.items():
+        att = _csl_attribution(csl.get(key, {}))
+        if entry.get("quotes"):
+            card_keys.add(key)
+            cards.append(_sources_card(key, entry, att))
+        else:
+            remaining.append(_sources_remaining(key, entry, att))
+    body = "".join(cards)
+    if remaining:
+        body += ('<section class="sources-remaining"><h2>Remaining references</h2>'
+                 '<p class="sources-remaining-note">Cited but no verbatim source '
+                 'text could be retrieved; the claim rests on the citation.</p>'
+                 '<ul class="rmn-list">%s</ul></section>' % "".join(remaining))
+    # ASCII gate + typeset en dash for the whole assembled fragment (quote text is
+    # verbatim plain text; " -- " renders as an en dash, non-ASCII folds to entity).
+    frag = _ascii_entities_html(_endash_html(body))
     title = "Source quotes -- %s" % m["title"]
     description = (("Verbatim source quotes backing the paraphrased claims in "
                     "%s -- a reviewer aid.") % " ".join(m["title"].split()))[:300]
     src_link = ""
     if journal.get("source_base_url"):
-        su = "%s/articles/%s/source-quotes.md" % (journal["source_base_url"],
-                                                  m["slug"])
-        src_link = (' &middot; <a href="%s">Markdown source</a>'
+        su = "%s/articles/%s/source-quotes.toml" % (
+            journal["source_base_url"], os.path.basename(m["_dir"].rstrip("/")))
+        src_link = (' &middot; <a href="%s">Source file</a>'
                     % html.escape(su, quote=True))
     back = ('<p class="sources-back"><a href="../">&#8592; Back to the paper</a>%s'
             "</p>\n" % src_link)
-    main = '<main id="main" class="page sources">\n%s%s\n</main>' % (back, frag)
+    main = ('<main id="main" class="page sources">\n%s<h1>Source quotes</h1>\n%s\n'
+            "</main>" % (back, frag))
     extra = (_opengraph(title, description, canonical, journal) + "\n"
              + _jsonld_page("WebPage", title, description, canonical, journal))
     page = _page(m.get("language", journal["language"]),
                  "%s -- %s" % (title, journal["title"]), description, canonical,
                  extra, main, journal, root_rel)
-    return rel_dir, page, heading_keys
+    return rel_dir, page, card_keys
 
 
 def render_page(slug, md_text, journal):
@@ -1673,14 +1746,14 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
                             ordered[i + 1] if i < len(ordered) - 1 else None)
     for m in articles:
         # Render the sources page FIRST (if any): the article's reference list
-        # links to the keys that have a source-quotes entry (heading_keys).
+        # links to the keys that have a source-quotes entry (card_keys).
         s_rel = s_page = None
-        heading_keys = set()
-        if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
-            s_rel, s_page, heading_keys = render_sources(m, journal)
+        card_keys = set()
+        if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
+            s_rel, s_page, card_keys = render_sources(m, journal)
         rel_dir, pdf_name, page = render_article(
             m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf,
-            sidecar_keys=heading_keys)
+            sidecar_keys=card_keys)
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
@@ -1788,7 +1861,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         # The <slug>/sources/ reviewer-aid page renders the sidecar verbatim, so
         # it shares the article's allowance -- its own dir is a distinct per-file
         # key, else an allow-listed phrase quoted in the sidecar would be flagged.
-        if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
+        if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
             vendor_manifest[_rel_dir(m) + "/sources"] = av
     for slug, _title in pages:
         ph = journal["page_allow_vendor_mentions"].get(slug)

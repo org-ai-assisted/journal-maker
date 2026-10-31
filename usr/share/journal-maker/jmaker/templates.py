@@ -146,13 +146,48 @@ p.actions a {
 p.actions a.checksum { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.8rem; }
 p.actions a.sources-aid { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.85rem; }
 .sources-back { font-family: var(--sans); font-size: 0.9rem; margin: 0 0 1.2rem; }
-/* The sidecar lists many bare source URLs; wrap any long unbroken token so the
-   page never overflows horizontally on a narrow viewport (as .csl-entry does
-   for the reference list). */
+.sources-back a { color: var(--accent); }
+/* Wrap any long unbroken token (attribution URLs) so the page never overflows. */
 main.sources { overflow-wrap: anywhere; }
-main.sources h2 { font-size: 1.15rem; font-weight: 650; margin: 2rem 0 0.4rem; }
-main.sources .citation { font-family: var(--mono); font-size: 0.85em; color: var(--muted); }
-main.sources ul { margin: 0.3rem 0 1.2rem; }
+main.sources > h1 { margin-bottom: 1.5rem; }
+/* One source-quote card: header ([@key] + label), the paper claim(s), the
+   verbatim quote(s) as a quotation blockquote, and the refs.bib attribution. */
+.qcard { margin: 1.8rem 0; }
+.qhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin-bottom: 0.5rem; }
+.qkey { font-family: var(--mono); font-size: 0.82rem; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.qkey:hover { text-decoration: underline; }
+.qlabel { font-family: var(--sans); font-weight: 650; font-size: 1.02rem; min-width: 0; }
+/* Paper claim: a structured block above the quote; the section pill links into
+   the paper at the exact citation (#cite-key, highlighted on :target). */
+.qclaim { margin: 0 0 0.7rem; padding-left: 0.75rem; border-left: 2px solid var(--rule); }
+.qclaim-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; margin-bottom: 0.25rem; }
+.qclaim-label { font-family: var(--sans); font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.qclaim-sec { font-family: var(--sans); font-size: 0.72rem; font-weight: 650; color: var(--accent); text-decoration: none; border: 1px solid var(--rule); border-radius: 999px; padding: 0.03rem 0.52rem; white-space: nowrap; }
+.qclaim-sec:hover, .qclaim-sec:focus-visible { background: var(--surface); text-decoration: underline; }
+.qclaim-text { font-family: var(--sans); font-size: 0.92rem; color: var(--fg); margin: 0; line-height: 1.5; }
+ul.qclaim-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+ul.qclaim-list li { font-family: var(--sans); font-size: 0.92rem; color: var(--fg); line-height: 1.5; display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: baseline; }
+ul.qclaim-list li .ct { min-width: 0; }
+/* Verbatim quote styled as a quotation card (mw-static-generator Template:Quotation). */
+blockquote.quotation { position: relative; margin: 0; background: var(--surface); color: var(--fg); border: none; border-left: 6px solid var(--accent); box-shadow: 2px 2px 4px 1px rgba(0, 0, 0, 0.07); padding: 1rem 1.4rem 1rem 3.4rem; border-radius: 2px; }
+blockquote.quotation::before { content: "\\201C"; position: absolute; left: 0.7rem; top: 0.1rem; font-family: Georgia, "Times New Roman", serif; font-size: 3.2rem; line-height: 1; color: var(--accent); opacity: 0.3; pointer-events: none; }
+blockquote.quotation p { margin: 0 0 0.7rem; }
+blockquote.quotation p:last-child { margin-bottom: 0; }
+.qlabel-tag { font-family: var(--sans); font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.blockquote-context { display: block; margin: 0.9rem 0 0; font-family: var(--sans); }
+.blockquote-context .nm { display: block; font-weight: 600; font-size: 0.9rem; color: var(--fg); }
+.blockquote-context .rl { display: block; font-size: 0.84rem; color: var(--muted); }
+.blockquote-context .src { display: block; font-size: 0.84rem; margin-top: 0.3rem; }
+.blockquote-context .src a { color: var(--accent); }
+.blockquote-context .src .ret { color: var(--muted); }
+/* Remaining references: cited sources with no retrievable verbatim text. */
+.sources-remaining { margin-top: 2.5rem; border-top: 1px solid var(--rule); padding-top: 1rem; }
+.sources-remaining h2 { font-family: var(--sans); font-size: 1.2rem; font-weight: 650; margin: 0 0 0.3rem; }
+.sources-remaining-note { font-family: var(--sans); font-size: 0.85rem; color: var(--muted); margin: 0 0 0.8rem; }
+ul.rmn-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+ul.rmn-list li { font-size: 0.92rem; line-height: 1.5; }
+ul.rmn-list .qkey { font-family: var(--mono); font-size: 0.82rem; color: var(--accent); }
+ul.rmn-list .rmn-reason { color: var(--muted); }
 main.page { max-width: var(--measure); }
 section.abstract {
   margin: 1.5rem 0; padding: 1rem 1.25rem;
