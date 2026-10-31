@@ -2028,16 +2028,16 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
                                          % os.path.join(froot, nm))
             shutil.copytree(figdir, os.path.join(dest, "figures"))
         urls.append("%s/%s/" % (journal["base_url"], rel_dir))
-        # LaTeX submission source: regenerated into the article dir (committed
-        # beside paper.md for a tracked diff) and served from _site next to the
-        # PDF. Generated on EVERY build (pandoc only, no TeX engine) so it exists
-        # in the --skip-pdf CI tree too; a stale committed .tex is caught by the
-        # content repo's CI `git diff --exit-code` guard. refs.bib is copied
-        # alongside so the served .tex's \bibliography{refs} resolves on download.
+        # LaTeX submission source (natbib + refs.bib), served from _site next to
+        # the PDF. Written DIRECTLY into the build-created output dir, NEVER into
+        # the article SOURCE dir: pandoc's -o (and the post-process open) follow
+        # symlinks, so a committed symlink named <slug>.tex in the article dir
+        # would otherwise have its target truncated+overwritten (arbitrary-file
+        # overwrite on every build). Generated on EVERY build (pandoc only, no TeX
+        # engine) so it exists in the --skip-pdf tree too; refs.bib ships beside it
+        # so the served .tex's \bibliography{refs} resolves on download.
         tex_name = "%s.tex" % m["slug"]
-        src_tex = os.path.join(m["_dir"], tex_name)
-        md_to_tex(m, journal, src_tex)
-        shutil.copyfile(src_tex, os.path.join(dest, tex_name))
+        md_to_tex(m, journal, os.path.join(dest, tex_name))
         bib_src = os.path.join(m["_dir"], "refs.bib")
         if os.path.exists(bib_src):
             shutil.copyfile(bib_src, os.path.join(dest, "refs.bib"))

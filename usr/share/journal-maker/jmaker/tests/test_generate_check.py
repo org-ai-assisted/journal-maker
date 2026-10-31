@@ -1462,6 +1462,25 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                         os.path.join(d, "nope"), pdf_only=True)
             self.assertIn("existing built tree", str(cm.exception))
 
+    def test_symlinked_source_tex_is_not_overwritten(self):
+        # Security: a committed symlink named <slug>.tex in the article SOURCE
+        # dir must NOT have its target truncated -- the .tex is written into
+        # _site (build output), never the source dir. (Fails on the pre-fix code,
+        # which wrote <slug>.tex into m["_dir"] and followed the symlink.)
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)                       # article slug "art"
+            sentinel = os.path.join(d, "sentinel.txt")
+            with open(sentinel, "w", encoding="utf-8") as fh:
+                fh.write("DO-NOT-OVERWRITE\n")
+            os.symlink(sentinel, os.path.join(d, "articles", "art", "art.tex"))
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(sentinel, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "DO-NOT-OVERWRITE\n")   # untouched
+            site_tex = os.path.join(out, "art", "art.tex")
+            self.assertTrue(os.path.isfile(site_tex))
+            self.assertFalse(os.path.islink(site_tex))
+
     def test_inline_styles_stripped_and_favicon_linked(self):
         # Strict CSP style-src 'self' blocks inline styles (pandoc emits them on
         # aligned/sized table cells); the page must carry none. Every page links a
