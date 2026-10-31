@@ -1940,6 +1940,15 @@ class TestSidecarDrift(unittest.TestCase):
                               "[d]: https://e.example/d\n\n[^fn]: see figures later\n")
         g._check_sidecar_drift(d)  # no raise
 
+    def test_relative_target_inside_code_is_allowed(self):
+        # A relative path shown as a literal example inside a code span or a
+        # fenced block is sample text, not a live link -- it must NOT trip the
+        # guard (would be a false-positive build failure).
+        d = self._dir(sidecar="## [@alpha] x\n\n"
+                              "inline `[c](figures/x.png)` sample\n\n"
+                              "```\nsee [d](rel/y.png) and [r]: rel/z.png\n```\n")
+        g._check_sidecar_drift(d)  # no raise
+
     def test_absolute_and_anchor_targets_ok(self):
         # An absolute URL, a mailto, and an in-page anchor are all fine; a bare
         # [@key] / [^fn] (no following paren) is never mistaken for a link.
@@ -2001,6 +2010,16 @@ class TestSourcesAnchorIds(unittest.TestCase):
         frag = ('<h2 id="x"><span class="citation" data-cites="a-b.c:d">'
                 "[@a-b.c:d]</span> L</h2>")
         self.assertIn('<h2 id="a-b.c:d">', g._sources_anchor_ids(frag))
+
+    def test_duplicate_key_headings_get_unique_ids(self):
+        # Two headings sharing a @key must not emit duplicate <h2 id="key">
+        # (invalid HTML / ambiguous deep-link); first keeps the key, next is -2.
+        frag = ('<h2 id="k-a"><span class="citation" data-cites="k">[@k]</span> A</h2>'
+                '<h2 id="k-b"><span class="citation" data-cites="k">[@k]</span> B</h2>')
+        out = g._sources_anchor_ids(frag)
+        self.assertIn('<h2 id="k">', out)
+        self.assertIn('<h2 id="k-2">', out)
+        self.assertEqual(out.count('id="k"'), 1)
 
     def test_grouped_keys_each_get_an_anchor(self):
         # A grouped heading ([@a; @b]) yields data-cites="a b"; the first key is

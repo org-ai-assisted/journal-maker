@@ -235,6 +235,10 @@ _REMOTE_OR_ANCHOR_RE = re.compile(r'(?:[a-z][a-z0-9+.-]*:|//|#)', re.I)
 
 
 def _relative_md_targets(text):
+    # Scan OUTSIDE code: a relative path shown as a literal example inside a
+    # `code span` or ```fence``` is sample text, not a live link, so it must not
+    # trip the guard (a false-positive build failure).
+    text = _MD_CODE_RE.sub(" ", text)
     bad = []
     for t in _MD_LINK_TARGET_RE.findall(text) + _MD_REF_DEF_RE.findall(text):
         if len(t) >= 2 and t[0] == "<" and t[-1] == ">":
@@ -1202,11 +1206,22 @@ _SOURCES_H2_RE = re.compile(
 
 
 def _sources_anchor_ids(frag):
+    # De-dup ids across the whole page: two headings sharing a @key (or a key
+    # repeated across groups) would emit duplicate ids -- invalid HTML, ambiguous
+    # deep-link. First occurrence keeps the bare key; the rest get a -N suffix.
+    seen = {}
+
+    def uniq(key):
+        n = seen.get(key, 0) + 1
+        seen[key] = n
+        return key if n == 1 else "%s-%d" % (key, n)
+
     def repl(mo):
         keys = mo.group(1).split()
-        extra = "".join('<span id="%s"></span>' % k for k in keys[1:])
+        hid = uniq(keys[0])
+        extra = "".join('<span id="%s"></span>' % uniq(k) for k in keys[1:])
         return ('<h2 id="%s">%s<span class="citation" data-cites="%s">'
-                % (keys[0], extra, mo.group(1)))
+                % (hid, extra, mo.group(1)))
     return _SOURCES_H2_RE.sub(repl, frag)
 
 
