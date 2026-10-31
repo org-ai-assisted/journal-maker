@@ -853,6 +853,10 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn("navigator.clipboard", js)        # copy
         self.assertIn('setAttribute("title"', js)        # hover preview
         self.assertIn('"lightbox"', js)                  # figure lightbox
+        # hovercard nav is on TOP (nav appended before body) and keyboard-steppable
+        self.assertLess(js.index("appendChild(cnav)"), js.index("appendChild(cbody)"))
+        self.assertIn("ArrowLeft", js)
+        self.assertIn("ArrowRight", js)
 
     def test_opengraph_tags(self):
         og = g._opengraph("T", "An abstract.", "https://e.example/x/",

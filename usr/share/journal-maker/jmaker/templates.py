@@ -207,7 +207,7 @@ article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 
 /* A citeproc .csl-entry is cloned into the card; keep its [n]/text split inline
    so the preview reads as one line, not two stacked flex rows. */
 .hovercard .csl-left-margin, .hovercard .csl-right-inline { display: inline; }
-.hovercard-nav { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin-top: 0.4rem; }
+.hovercard-nav { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin-bottom: 0.4rem; }
 .hovercard-nav[hidden] { display: none; }
 .hovercard-navbtn { font-family: var(--sans); font-size: 0.8rem; line-height: 1; padding: 0.15rem 0.45rem; border: 1px solid var(--rule); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer; }
 .hovercard-navbtn:disabled { opacity: 0.4; cursor: default; }
@@ -344,7 +344,8 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     cnext.type = "button"; cnext.className = "hovercard-navbtn";
     cnext.textContent = String.fromCharCode(0x25B6); cnext.setAttribute("aria-label", "Next reference");
     cnav.appendChild(cprev); cnav.appendChild(cpos); cnav.appendChild(cnext);
-    card.appendChild(cbody); card.appendChild(cnav);
+    // Nav on TOP: prev/next buttons appended before the reference body.
+    card.appendChild(cnav); card.appendChild(cbody);
     document.body.appendChild(card);
 
     var hideTimer = null, curIdx = -1, curAnchor = null, pinned = false;
@@ -414,7 +415,18 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     card.addEventListener("mouseleave", hideSoon);
     cprev.addEventListener("click", function () { step(-1); });
     cnext.addEventListener("click", function () { step(1); });
-    document.addEventListener("keydown", function (e) { if (e.key === "Escape") { dismiss(); } });
+    // Keyboard: Escape dismisses; Left/Right step prev/next while the card is
+    // open and either pinned or the focus is on a cite anchor / inside the card
+    // (so arrow keys are not hijacked from ordinary page scrolling).
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { dismiss(); return; }
+      if (card.hidden) { return; }
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") { return; }
+      var ae = document.activeElement;
+      if (!(pinned || card.contains(ae) || cites.indexOf(ae) >= 0)) { return; }
+      e.preventDefault();
+      step(e.key === "ArrowLeft" ? -1 : 1);
+    });
     // A pinned card is dismissed by a click outside it (the nav click that pins
     // is inside the card, so it never self-dismisses).
     document.addEventListener("click", function (e) {
