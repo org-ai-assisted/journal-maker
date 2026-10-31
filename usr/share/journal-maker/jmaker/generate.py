@@ -233,6 +233,28 @@ def _bib_keys(bib_path):
         return set(_BIB_KEY_RE.findall(fh.read()))
 
 
+# One bib entry: `@type{key, <body up to the next entry or EOF>`. The lookahead
+# splits on a line-leading @, so an @ inside a field value does not cut short.
+_BIB_ENTRY_RE = re.compile(r'@\w+\s*\{\s*([^,\s]+)\s*,(.*?)(?=\n@|\Z)', re.S)
+# A resolvable source link: a comma-preceded url/doi field with a NON-EMPTY
+# braced/quoted value, or an explicit nolink opt-out. Comma-anchored so urldate
+# is not mistaken for url (url needs = right after it). The [^\s}"] requires a
+# real first value character, so url={} does not count as a link.
+_BIB_LINK_FIELD_RE = re.compile(
+    r'(?i),\s*(?:url|doi|nolink)\s*=\s*[{"]\s*[^\s}"]')
+
+
+def _entries_missing_link(bib_path):
+    """Keys of refs.bib entries carrying neither a url nor a doi (nor an explicit
+    non-empty nolink opt-out). House style: every cited source must be
+    independently checkable, so a reference ships with a resolvable link by
+    default and opts out only by naming a reason in nolink."""
+    with open(bib_path, "r", encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    return [key for key, body in _BIB_ENTRY_RE.findall(text)
+            if not _BIB_LINK_FIELD_RE.search(body)]
+
+
 # A link/image target is allowed when it is remote (http(s)/mailto/...) or an
 # in-page anchor (#...); a relative path (e.g. figures/x.png) resolves under
 # <slug>/sources/ and 404s (figures live at <slug>/figures/), so it is rejected.
@@ -1169,6 +1191,18 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     if not has_bib and _citekeys_in(_MD_CODE_RE.sub(" ", m["_body_md"])):
         raise BuildError("%s: body has [@...] citations but no refs.bib"
                          % m["_dir"])
+    # Every reference carries a resolvable source link (house style: a cited
+    # source must be independently checkable). Fail the build on any entry with
+    # neither url nor doi, so a reference cannot ship linkless by omission; a
+    # genuinely offline source opts out by naming a reason in nolink.
+    if has_bib:
+        missing = _entries_missing_link(bib_path)
+        if missing:
+            raise BuildError(
+                "%s/refs.bib: %d entr%s with no source link (add a url or doi, "
+                "or an explicit nolink={reason} for a genuinely offline source): "
+                "%s" % (m["_dir"], len(missing),
+                        "y" if len(missing) == 1 else "ies", ", ".join(missing)))
     # The abstract is rendered WITHOUT citeproc (a cited abstract would append a
     # whole reference list), and it is reused verbatim as the plain-text meta /
     # OpenGraph description -- so a citation there cannot render and would ship as

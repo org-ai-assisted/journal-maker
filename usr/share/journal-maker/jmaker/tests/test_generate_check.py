@@ -1539,6 +1539,27 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
             self.assertIn("abstract", str(cm.exception))
 
+    def test_linkless_reference_fails_build(self):
+        # A refs.bib entry with neither url nor doi fails the build loud (house
+        # style: every cited source must be independently checkable). Guards the
+        # build-path wiring, not only the pure checker.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@article{nolinkref, author={A}, title={{T}}, "
+                         "journal={{J}}, year={2004}}\n")
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation purposes here.\n\n## 1. Intro\n\n"
+                         "Body [@nolinkref].\n\n## 2. References\n\n"
+                         "::: {#refs}\n:::\n")
+            out = os.path.join(d, "s")
+            with self.assertRaises(g.BuildError) as cm:
+                g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            self.assertIn("source link", str(cm.exception))
+            self.assertIn("nolinkref", str(cm.exception))
+
     def test_body_citation_requires_bib(self):
         # A [@key] in the body with no refs.bib is a build error (no silent
         # literal "[@key]" shipping).
@@ -1899,7 +1920,8 @@ _BIB = (
     "@misc{beta, title={{Beta page}}, author={{Org B}}, "
     "url={https://b.example/y}, urldate={2026-01-01}}\n"
     "@article{gamma, author={R. Writer}, title={Paper}, "
-    "journal={J. Testing}, volume={2}, number={3}, pages={1--28}, year={2004}}\n"
+    "journal={J. Testing}, volume={2}, number={3}, pages={1--28}, year={2004}, "
+    "doi={10.1000/example.gamma}}\n"
     "@misc{delta, title={{DOI item}}, author={A. Author}, year={2020}, "
     "doi={10.1000/example.doi}}\n"
 )
@@ -2034,6 +2056,57 @@ class TestSidecarDrift(unittest.TestCase):
         with open(os.path.join(d, "refs.bib"), "wb") as fh:
             fh.write(b"@article{mueller, author={M\xfcller}, title={T}, year={2020}}\n")
         self.assertEqual(g._bib_keys(os.path.join(d, "refs.bib")), {"mueller"})
+
+
+class TestBibLinkPresence(unittest.TestCase):
+    """_entries_missing_link: every reference carries a resolvable source link
+    (url or doi), else the build fails. Pure; no pandoc."""
+
+    def _missing(self, bib):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        p = os.path.join(d, "refs.bib")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(bib)
+        return g._entries_missing_link(p)
+
+    def test_url_and_doi_both_count_as_links(self):
+        self.assertEqual(self._missing(_BIB), [])
+
+    def test_entry_with_neither_is_flagged(self):
+        bib = ("@article{bare, author={A}, title={{T}}, journal={{J}}, "
+               "year={2004}}\n")
+        self.assertEqual(self._missing(bib), ["bare"])
+
+    def test_urldate_is_not_mistaken_for_url(self):
+        # urldate without url must still flag: url needs = right after it.
+        bib = ("@misc{x, title={{T}}, author={{A}}, urldate={2026-01-01}}\n")
+        self.assertEqual(self._missing(bib), ["x"])
+
+    def test_empty_value_does_not_count(self):
+        bib = ("@misc{x, title={{T}}, url={}}\n"
+               "@misc{y, title={{T}}, doi={  }}\n")
+        self.assertEqual(sorted(self._missing(bib)), ["x", "y"])
+
+    def test_nolink_opt_out_with_reason(self):
+        bib = ("@misc{offline, title={{Print only}}, "
+               "nolink={out-of-print book, no online edition}}\n")
+        self.assertEqual(self._missing(bib), [])
+
+    def test_multiline_entry_fields(self):
+        # The real refs.bib layout: one field per line.
+        good = ("@inproceedings{p,\n  author = {A},\n  title = {{T}},\n"
+                "  year = {2019},\n  url = {https://e.example/p},\n"
+                "  urldate = {2026-10-31},\n}\n")
+        bad = ("@inproceedings{q,\n  author = {A},\n  title = {{T}},\n"
+               "  year = {2019},\n}\n")
+        self.assertEqual(self._missing(good + bad), ["q"])
+
+    def test_at_sign_in_field_value_does_not_split_entry(self):
+        # An @ inside a value must not be read as a new entry start.
+        bib = ("@misc{e, title={{Contact a@b.example}}, "
+               "url={https://e.example}}\n")
+        self.assertEqual(self._missing(bib), [])
 
 
 class TestValidateSources(unittest.TestCase):
