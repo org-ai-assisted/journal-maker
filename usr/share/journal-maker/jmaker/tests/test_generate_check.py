@@ -1999,6 +1999,37 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                         skip_pdf=True)
             self.assertIn("does not cite", str(cm.exception))
 
+    def test_remaining_reference_key_must_be_cited(self):
+        # A no_quote ("Remaining references") entry presents itself as a cited
+        # source ("cited but no verbatim text"), so paper.md must cite it; an
+        # uncited one fails the build rather than publish a false claim.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)   # default paper.md cites nothing
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[gamma]\nno_quote = "paywalled; no free full text."\n')
+            with self.assertRaises(g.BuildError) as cm:
+                g.build(os.path.join(d, "articles"), jt, os.path.join(d, "s"),
+                        skip_pdf=True)
+            self.assertIn("does not cite", str(cm.exception))
+
+    def test_leftover_source_quotes_md_rejected(self):
+        # A leftover source-quotes.md (superseded by .toml) is no longer read; fail
+        # loudly rather than silently drop the sources page/link/sitemap entry.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "source-quotes.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("## [@alpha] label\n")
+            with self.assertRaises(g.BuildError) as cm:
+                g.build(os.path.join(d, "articles"), jt, os.path.join(d, "s"),
+                        skip_pdf=True)
+            self.assertIn("source-quotes.md", str(cm.exception))
+
     def test_sidecar_key_without_csl_entry_rejected(self):
         # A key in the raw refs.bib scan but not emitted by pandoc CSL-JSON (an
         # @comment block) would render a card with empty attribution; fail instead.
@@ -2278,6 +2309,14 @@ class TestSidecar(unittest.TestCase):
             with self.assertRaises(g.BuildError) as cm:
                 g._load_sidecar(d)
             self.assertIn("unknown field", str(cm.exception))
+
+    def test_no_quote_entry_with_claims_rejected(self):
+        # A no_quote entry renders no card, so claims on it would be dropped.
+        d = self._dir(toml='[alpha]\nno_quote = "paywalled"\n'
+                           'claims = [{ section = "S", text = "c" }]\n')
+        with self.assertRaises(g.BuildError) as cm:
+            g._load_sidecar(d)
+        self.assertIn("cannot carry claims", str(cm.exception))
 
     def test_csl_attribution_editor_before_publisher(self):
         # No author: credit editors (with an ed./eds. tag) before the publisher.

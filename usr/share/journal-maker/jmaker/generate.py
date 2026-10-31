@@ -304,6 +304,11 @@ def _load_sidecar(adir):
         if not quotes and not (isinstance(nq, str) and nq.strip()):
             raise BuildError("%s/source-quotes.toml: [%s] needs quotes or a "
                              "non-empty no_quote string" % (adir, key))
+        # A no_quote entry renders only as a terse "Remaining references" line
+        # (no card), so claims on it would be dropped silently -- reject them.
+        if not quotes and claims:
+            raise BuildError("%s/source-quotes.toml: [%s] a no_quote entry cannot "
+                             "carry claims (it renders no card)" % (adir, key))
         # Every rendered field is html.escape()d, which needs a str -- validate
         # the shapes here so a non-string fails as a BuildError at load, not an
         # AttributeError mid-render (the CLI only catches BuildError).
@@ -414,6 +419,12 @@ def load_article(adir):
         raise BuildError("%s: missing meta.toml" % adir)
     if not os.path.isfile(body_path):
         raise BuildError("%s: missing paper.md" % adir)
+    # The sidecar is source-quotes.toml; a leftover source-quotes.md is silently
+    # ignored (its sources page, article link, and sitemap entry would vanish),
+    # so fail loudly and name the replacement.
+    if os.path.exists(os.path.join(adir, "source-quotes.md")):
+        raise BuildError("%s: source-quotes.md is no longer read; migrate it to the "
+                         "structured source-quotes.toml" % adir)
     with open(meta_path, "rb") as fh:
         m = tomllib.load(fh)
     with open(body_path, "r", encoding="utf-8") as fh:
@@ -1269,7 +1280,7 @@ def _enhance_references(body_html, sidecar_keys):
 
 
 def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None,
-                   quote_blocks=None, pill_keys=None):
+                   quote_blocks=None, cite_keys=None):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
@@ -1311,18 +1322,19 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
                          "(it is the plain-text meta/OG description)" % m["_dir"])
     body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
     body_html = _enhance_references(body_html, sidecar_keys or set())
-    # A sidecar card's section pill links to ../#cite-<key>; that anchor exists only
-    # where the paper actually cites <key> (stamped by _enhance_references on the
-    # rendered citation). Validate against the rendered body_html -- the authority
-    # pandoc's citation grammar produced -- not a markdown pre-scan: a narrative
-    # "@key showed" (cited) passes and an indented-code "[@key]" (not cited) fails,
-    # either of which a bracket-only regex gets wrong.
-    for k in sorted(pill_keys or set()):
+    # A sidecar entry that presents <key> as cited -- a claim section pill linking
+    # ../#cite-<key>, or a no_quote "Remaining references" line whose note says
+    # "cited but no verbatim text" -- requires the paper to actually cite <key>.
+    # The #cite-<key> anchor is stamped (by _enhance_references) only on a rendered
+    # citation, so validate against the rendered body_html, the authority pandoc's
+    # citation grammar produced -- not a markdown pre-scan, which a narrative
+    # "@key showed" (cited) or an indented-code "[@key]" (not cited) would fool.
+    for k in sorted(cite_keys or set()):
         if ('id="cite-%s"' % k) not in body_html:
             raise BuildError(
-                "%s/source-quotes.toml: @%s has a claim section pill linking "
-                "../#cite-%s, but paper.md does not cite %s (no such anchor), so "
-                "the pill would be a dead link" % (m["_dir"], k, k, k))
+                "%s/source-quotes.toml: @%s is presented as a cited source (a claim "
+                "section pill or a Remaining-references entry), but paper.md does "
+                "not cite %s -- no #cite-%s anchor" % (m["_dir"], k, k, k))
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
     # Hidden per-citation quote store: the verbatim source quote(s) + attribution
@@ -1504,9 +1516,10 @@ def render_sources(m, journal):
     """Render the structured source-quotes.toml reviewer aid as quotation cards at
     <slug>/sources/, linked from the article. Each verbatim quote becomes a card;
     attribution (name, venue, title, link, retrieved) is pulled from refs.bib via
-    the @key (CSL-JSON). Returns (rel_dir, page, card_keys, quote_blocks, pill_keys)
-    -- card_keys have a quote (a sources/#key anchor the paper links to); pill_keys
-    emit a ../#cite-<key> section pill render_article validates against the body."""
+    the @key (CSL-JSON). Returns (rel_dir, page, card_keys, quote_blocks, cite_keys)
+    -- card_keys have a quote (a sources/#key anchor the paper links to); cite_keys
+    must be cited in the paper (a section pill links ../#cite-<key>, or a no_quote
+    entry is listed as a cited reference), which render_article validates."""
     data = _load_sidecar(m["_dir"])
     csl = _csl_entries(os.path.join(m["_dir"], "refs.bib"))
     rel_dir = _rel_dir(m) + "/sources"
@@ -1514,15 +1527,16 @@ def render_sources(m, journal):
     canonical = "%s/%s/" % (journal["base_url"], rel_dir)
     cards, remaining, card_keys = [], [], set()
     quote_blocks = {}   # key -> processed quote block, for the paper's hovercards
-    pill_keys = set()   # keys whose card emits a ../#cite-<key> section pill;
-    #                     render_article validates each is cited in the rendered body
+    cite_keys = set()   # keys the paper MUST cite: a section pill links ../#cite-key,
+    #                     or a no_quote "Remaining references" entry claims to be cited
     for key, entry in data.items():
         if key not in csl:
             raise BuildError("%s/source-quotes.toml: @%s has no refs.bib CSL-JSON "
                              "entry (pandoc emitted none -- a @comment/@string block "
                              "cannot back a card)" % (m["_dir"], key))
-        if any(cl.get("section") for cl in entry.get("claims", [])):
-            pill_keys.add(key)
+        if any(cl.get("section") for cl in entry.get("claims", [])) \
+                or not entry.get("quotes"):
+            cite_keys.add(key)
         att = _csl_attribution(csl[key])
         if entry.get("quotes"):
             card_keys.add(key)
@@ -1562,7 +1576,7 @@ def render_sources(m, journal):
     page = _page(m.get("language", journal["language"]),
                  "%s -- %s" % (title, journal["title"]), description, canonical,
                  extra, main, journal, root_rel)
-    return rel_dir, page, card_keys, quote_blocks, pill_keys
+    return rel_dir, page, card_keys, quote_blocks, cite_keys
 
 
 def render_page(slug, md_text, journal):
@@ -1872,9 +1886,9 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
         # sitemap.xml byte-equal to its render_sitemap.
         card_keys = set()
         quote_blocks = {}
-        pill_keys = set()
+        cite_keys = set()
         if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
-            s_rel, s_page, card_keys, quote_blocks, pill_keys = render_sources(
+            s_rel, s_page, card_keys, quote_blocks, cite_keys = render_sources(
                 m, journal)
             s_dest = os.path.join(out_dir, s_rel)
             os.makedirs(s_dest, exist_ok=True)
@@ -1884,7 +1898,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
             urls.append("%s/%s/" % (journal["base_url"], s_rel))
         rel_dir, pdf_name, page = render_article(
             m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf,
-            sidecar_keys=card_keys, quote_blocks=quote_blocks, pill_keys=pill_keys)
+            sidecar_keys=card_keys, quote_blocks=quote_blocks, cite_keys=cite_keys)
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
