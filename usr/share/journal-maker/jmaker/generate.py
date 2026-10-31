@@ -1446,8 +1446,7 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
         action_links.append('<a href="%s">Download PDF</a>' % pdf_name)
         action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
                              % pdf_name)
-    action_links.append('<a class="tex-source" href="%s.tex">LaTeX source</a>'
-                        % m["slug"])
+    action_links.append('<a href="%s.tex">LaTeX source</a>' % m["slug"])
     if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")
