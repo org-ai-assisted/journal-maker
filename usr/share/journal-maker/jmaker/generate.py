@@ -88,6 +88,18 @@ def load_journal(path):
         j["publisher"] = j["title"]
     j.setdefault("license", "")
     j.setdefault("license_url", "")
+    # Optional "view markdown source" base: the repo blob root (e.g.
+    # https://github.com/<owner>/<repo>/blob/master). When set, each article links
+    # to .../articles/<slug>/paper.md and its sources page to source-quotes.md.
+    # Must be absolute http(s) with no whitespace (interpolated into an href).
+    sb = j.get("source_base_url", "")
+    if not isinstance(sb, str):
+        raise BuildError("site.toml: source_base_url must be a string")
+    sb = sb.strip().rstrip("/")
+    if sb and not re.fullmatch(r"https?://[^/\s]+(/[^\s]*)?", sb):
+        raise BuildError("site.toml: source_base_url must be an absolute http(s) "
+                         "URL with no whitespace, got %r" % j.get("source_base_url"))
+    j["source_base_url"] = sb
     # Optional consistent footer navigation (same links/order on every page).
     j.setdefault("footer_links", [])
     if not isinstance(j["footer_links"], list):
@@ -1165,6 +1177,10 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
     if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")
+    if journal.get("source_base_url"):
+        src = "%s/articles/%s/paper.md" % (journal["source_base_url"], m["slug"])
+        action_links.append('<a class="sources-aid" href="%s">Markdown source</a>'
+                            % html.escape(src, quote=True))
     actions_bit = (('<p class="actions">%s</p>\n' % " ".join(action_links))
                    if action_links else "")
 
@@ -1262,8 +1278,14 @@ def render_sources(m, journal):
     title = "Source quotes -- %s" % m["title"]
     description = (("Verbatim source quotes backing the paraphrased claims in "
                     "%s -- a reviewer aid.") % " ".join(m["title"].split()))[:300]
-    back = ('<p class="sources-back"><a href="../">&#8592; Back to the paper</a>'
-            "</p>\n")
+    src_link = ""
+    if journal.get("source_base_url"):
+        su = "%s/articles/%s/source-quotes.md" % (journal["source_base_url"],
+                                                  m["slug"])
+        src_link = (' &middot; <a href="%s">Markdown source</a>'
+                    % html.escape(su, quote=True))
+    back = ('<p class="sources-back"><a href="../">&#8592; Back to the paper</a>%s'
+            "</p>\n" % src_link)
     main = '<main id="main" class="page sources">\n%s%s\n</main>' % (back, frag)
     extra = (_opengraph(title, description, canonical, journal) + "\n"
              + _jsonld_page("WebPage", title, description, canonical, journal))

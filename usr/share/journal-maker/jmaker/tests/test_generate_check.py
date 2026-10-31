@@ -482,6 +482,21 @@ class TestLoading(unittest.TestCase):
             j = g.load_journal(self._write_site_toml(base + extra))
             self.assertEqual(j["publisher"], "J", extra)
 
+    def test_source_base_url_validated(self):
+        base = 'title = "J"\nbase_url = "https://e.example"\n'
+        # absent -> ""
+        self.assertEqual(g.load_journal(self._write_site_toml(base))
+                         ["source_base_url"], "")
+        # valid kept, trailing slash stripped
+        self.assertEqual(
+            g.load_journal(self._write_site_toml(
+                base + 'source_base_url = "https://github.com/o/r/blob/master/"\n'))
+            ["source_base_url"], "https://github.com/o/r/blob/master")
+        # non-absolute rejected
+        with self.assertRaises(g.BuildError):
+            g.load_journal(self._write_site_toml(
+                base + 'source_base_url = "not a url"\n'))
+
     def test_nonstring_required_key_rejected(self):
         # An unquoted title parses as a TOML date (non-string); reject early with
         # a clear error, not a later TypeError in a string/JSON context.
@@ -1778,6 +1793,30 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                     g.build(os.path.join(d, "articles"), jt,
                             os.path.join(d, "s"), skip_pdf=True)
                 self.assertIn("relative", str(cm.exception))
+
+    def test_markdown_source_links(self):
+        # With source_base_url set, the article links to its paper.md and the
+        # sources page to its source-quotes.md, under articles/<slug>/.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with open(jt, "a", encoding="utf-8") as fh:
+                fh.write('source_base_url = "https://github.com/o/r/blob/master"\n')
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "source-quotes.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# Source quotes\n\n## Alpha\n\n- Quote: y\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                art = fh.read()
+            self.assertIn('href="https://github.com/o/r/blob/master/articles/art/'
+                          'paper.md"', art)
+            self.assertIn(">Markdown source</a>", art)
+            with open(os.path.join(out, "art", "sources", "index.html"),
+                      encoding="utf-8") as fh:
+                self.assertIn('href="https://github.com/o/r/blob/master/articles/'
+                              'art/source-quotes.md"', fh.read())
 
     def test_no_sidecar_no_sources_page_or_link(self):
         # No source-quotes.md -> no sources/ page and no link on the article.
