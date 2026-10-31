@@ -1781,6 +1781,28 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertFalse(any("sources" in p for _l, p, _m in f.errors),
                              [i for i in f.errors])
 
+    def test_sidecar_neutralizes_dangerous_url(self):
+        # A dangerous scheme in a refs.bib url must be neutralized on the sources
+        # page (the hand-assembled card HTML runs through _sanitize_html).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write('@misc{alpha, author={{Org}}, title={{T}}, '
+                         'url={javascript:alert(1)}}\n')
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[alpha]\nquotes = [{ text = "q" }]\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "sources", "index.html"),
+                      encoding="utf-8") as fh:
+                sources = fh.read()
+            # _sanitize_html rewrites the dangerous scheme to '#', so no live
+            # javascript: href survives.
+            self.assertNotIn("javascript:", sources)
+            self.assertIn('class="src"><a href="#', sources)
+
     def test_reference_backlinks_and_source_links(self):
         # #6: the first in-text citation gets id=cite-KEY and the reference [n]
         # backlinks to it. #5: a reference whose key has a sidecar card links to
@@ -2016,6 +2038,26 @@ class TestSidecar(unittest.TestCase):
         d = self._dir(toml='[alpha]\nno_quote = "paywalled"\n')
         self.assertIn("alpha", g._load_sidecar(d))
 
+    def test_bad_key_charset_rejected(self):
+        # A key with HTML-unsafe chars (would break out of id/href) is refused.
+        d = self._dir(toml='["a<b"]\nquotes = [{ text = "x" }]\n')
+        with self.assertRaises(g.BuildError) as cm:
+            g._load_sidecar(d)
+        self.assertIn("[\\w:.-]+", str(cm.exception))
+
+    def test_nonstring_fields_rejected(self):
+        # Every rendered field must be a string -- else html.escape crashes with
+        # an AttributeError the CLI does not catch. Validate at load as BuildError.
+        for toml in ('[alpha]\nlabel = 1\nquotes = [{ text = "x" }]\n',
+                     '[alpha]\nquotes = [{ text = "x", label = 2 }]\n',
+                     '[alpha]\nclaims = [{ section = 3, text = "c" }]\n'
+                     'quotes = [{ text = "x" }]\n',
+                     '[alpha]\nno_quote = true\n',
+                     '[alpha]\nno_quote = ""\n'):
+            d = self._dir(toml=toml)
+            with self.assertRaises(g.BuildError):
+                g._load_sidecar(d)
+
     # --- refs.bib CSL attribution (pure: hand-built CSL-JSON entries) ---
     def test_csl_attribution_author_venue_retrieved(self):
         att = g._csl_attribution({
@@ -2069,6 +2111,23 @@ class TestSidecar(unittest.TestCase):
                                 "link": "", "retrieved": ""})
         self.assertIn("qclaim-list", card)
         self.assertEqual(card.count('href="../#cite-k">'), 2)
+
+    def test_card_claim_without_section_no_empty_pill(self):
+        # A claim with no section emits NO pill (not an empty <a> pill).
+        entry = {"claims": [{"text": "sectionless claim"}],
+                 "quotes": [{"text": "q"}]}
+        card = g._sources_card("k", entry,
+                               {"name": "", "venue": "", "title": "",
+                                "link": "", "retrieved": ""})
+        self.assertNotIn("qclaim-sec", card)
+        self.assertIn("sectionless claim", card)
+
+    def test_csl_authors_keeps_particles_and_suffix(self):
+        att = g._csl_attribution({"title": "T", "author": [
+            {"given": "Vincent", "non-dropping-particle": "van",
+             "family": "Gogh"},
+            {"given": "Martin Luther", "family": "King", "suffix": "Jr."}]})
+        self.assertEqual(att["name"], "Vincent van Gogh; Martin Luther King, Jr.")
 
     def test_bib_keys_parsed(self):
         d = self._dir()
