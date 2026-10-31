@@ -1195,7 +1195,8 @@ class TestIndexPolicy(unittest.TestCase):
     NOINDEX = '<meta name="robots" content="noindex">'
     DISALLOW = "User-agent: *\nDisallow: /\n"
     ALLOW = "User-agent: *\nAllow: /\n\nSitemap: https://e.example/sitemap.xml\n"
-    NOINDEX_ROBOTS = ("User-agent: *\nAllow: /\nDisallow: /*.pdf$\n\n"
+    NOINDEX_ROBOTS = ("User-agent: *\nAllow: /\nDisallow: /*.pdf$\n"
+                      "Disallow: /*.tex$\nDisallow: /*.bib$\n\n"
                       "Sitemap: https://e.example/sitemap.xml\n")
 
     def _check(self, robots, home, extra=None):
@@ -1227,6 +1228,14 @@ class TestIndexPolicy(unittest.TestCase):
         # indexable -- a PDF carries no noindex meta and Pages has no X-Robots-Tag.
         self.assertTrue(any("must Disallow" in m for m in
                             self._check(self.ALLOW, "<html>" + self.NOINDEX + "</html>")))
+
+    def test_noindex_with_only_pdf_disallow_errors(self):
+        # The LaTeX source + .bib are served non-HTML artifacts too; a no-index
+        # robots that blocks only the PDF leaves them crawlable -- flagged stale.
+        robots = ("User-agent: *\nAllow: /\nDisallow: /*.pdf$\n\n"
+                  "Sitemap: https://e.example/sitemap.xml\n")
+        errs = self._check(robots, "<html>" + self.NOINDEX + "</html>")
+        self.assertTrue(any(".tex" in m and ".bib" in m for m in errs), errs)
 
     def test_published_with_any_disallow_errors(self):
         # A published (indexable) build must Disallow NOTHING -- not the PDF rule
@@ -1298,14 +1307,16 @@ class TestIndexPolicy(unittest.TestCase):
 
 
 class TestNoIndexDefault(unittest.TestCase):
-    def test_write_robots_noindex_disallows_pdf(self):
+    def test_write_robots_noindex_disallows_artifacts(self):
         # Exact bytes must match dist_ai.webcheck.site.render_robots (the webcheck
         # 'previews' policy re-derives and compares). Both modes Allow (HTML
-        # de-indexes via the per-page meta); a no-index build ALSO Disallows PDFs
-        # (no meta possible, no X-Robots-Tag on Pages).
+        # de-indexes via the per-page meta); a no-index build ALSO Disallows the
+        # non-HTML served artifacts -- PDF, LaTeX source, .bib (no meta possible,
+        # no X-Robots-Tag on Pages).
         base = "User-agent: *\nAllow: /\n"
         tail = "\nSitemap: https://e.example/sitemap.xml\n"
-        cases = {True: base + "Disallow: /*.pdf$\n" + tail,
+        disallows = "Disallow: /*.pdf$\nDisallow: /*.tex$\nDisallow: /*.bib$\n"
+        cases = {True: base + disallows + tail,
                  False: base + tail}
         with tempfile.TemporaryDirectory() as d:
             for noindex, expect in cases.items():
@@ -2444,6 +2455,83 @@ class TestAsciiEntities(unittest.TestCase):
     def test_preserves_ascii(self):
         s = '<div class="x">plain &amp; safe</div>'
         self.assertEqual(g._ascii_entities_html(s), s)
+
+
+class TestTexSource(unittest.TestCase):
+    """md_to_tex: natbib + refs.bib submission source, ASCII, refs-div stripped."""
+
+    def _capture(self, body, with_bib=True):
+        captured = {}
+
+        def fake_run(argv, **kw):
+            captured["argv"] = argv
+            captured["kw"] = kw
+            # md_to_tex post-processes the -o file; write a stub for it to edit.
+            out = argv[argv.index("-o") + 1]
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write("\\bibliography{refs.bib}\n")
+            class R:
+                stdout = ""
+                stderr = ""
+            return R()
+        orig = g._run
+        setattr(g, "_run", fake_run)
+        self.addCleanup(lambda: setattr(g, "_run", orig))
+        with tempfile.TemporaryDirectory() as d:
+            if with_bib:
+                with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+                    fh.write("@misc{k, title={{T}}, url={https://e/}}\n")
+            m = dict(META)
+            m["doi"] = ""
+            m["_dir"] = d
+            m["_body_md"] = body
+            out_tex = os.path.join(d, "x.tex")
+            g.md_to_tex(m, JOURNAL, out_tex)
+            with open(out_tex, encoding="utf-8") as fh:
+                captured["out"] = fh.read()
+        return captured
+
+    def test_uses_natbib_numeric_from_article_dir(self):
+        cap = self._capture("Body [@k].\n\n## References\n\n::: {#refs}\n:::\n")
+        argv = cap["argv"]
+        self.assertIn("--natbib", argv)
+        self.assertIn("latex", argv)              # -t latex
+        self.assertIn("--standalone", argv)
+        self.assertIn("biblio-style=unsrtnat", argv)
+        self.assertIn("natbiboptions=numbers", argv)
+        # bare basename + cwd=article dir -> \bibliography{refs}, not an abs path
+        self.assertEqual(argv[argv.index("--bibliography") + 1], "refs.bib")
+        self.assertTrue(cap["kw"].get("cwd"))  # run from the article dir
+
+    def test_strips_references_section(self):
+        cap = self._capture("Body [@k].\n\n## References\n\n::: {#refs}\n:::\n")
+        sent = cap["kw"]["input"]
+        self.assertNotIn("## References", sent)
+        self.assertNotIn("{#refs}", sent)
+        self.assertIn("Body [@k].", sent)
+
+    def test_keeps_ascii_double_hyphen_not_endash(self):
+        # LaTeX renders "--" itself; the source must stay ASCII (check_ascii gate).
+        cap = self._capture("A -- B [@k].\n\n## References\n\n::: {#refs}\n:::\n")
+        self.assertIn("A -- B", cap["kw"]["input"])
+        self.assertNotIn("\u2013", cap["kw"]["input"])
+
+    def test_bibliography_basename_rewritten(self):
+        cap = self._capture("Body [@k].\n\n## References\n\n::: {#refs}\n:::\n")
+        self.assertIn("\\bibliography{refs}", cap["out"])
+        self.assertNotIn("refs.bib}", cap["out"])
+
+
+class TestVendorScanCoversTex(unittest.TestCase):
+    def test_tex_file_is_vendor_scanned(self):
+        # .tex/.bib are served text, so the vendor-neutral gate must read them.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "x.tex"), "w", encoding="utf-8") as fh:
+                fh.write("\\section{Intro} Whonix is named here.\n")
+            f = c.Findings()
+            c.check_no_vendor_refs(d, f)
+            msgs = [m for _lvl, _p, m in f.errors]
+            self.assertTrue(any("whonix" in m.lower() for m in msgs), msgs)
 
 
 if __name__ == "__main__":

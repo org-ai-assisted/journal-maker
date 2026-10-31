@@ -353,7 +353,7 @@ def check_pdf(path, f):
         f.err(path, "active content in PDF: %s" % ", ".join(hits))
 
 
-_TEXT_EXT = {".html", ".css", ".xml", ".txt", ".svg", ".json"}
+_TEXT_EXT = {".html", ".css", ".xml", ".txt", ".svg", ".json", ".tex", ".bib"}
 
 
 def check_ascii(out_dir, f):
@@ -444,11 +444,12 @@ def check_no_vendor_refs(out_dir, f):
 
 def check_index_policy(out_dir, f):
     """robots.txt must Allow crawling (so each page's noindex meta is read) and
-    never blanket-Disallow. A no-index build MUST additionally Disallow PDFs --
-    they carry no noindex meta and Pages serves no X-Robots-Tag, so blocking the
-    crawl is the only way to keep them unindexed; a PUBLISHED build must NOT (PDFs
-    become indexable). Separately, a published (indexable) site must carry no
-    leftover TODO edit-marker on a standalone page. A violation is a hard error."""
+    never blanket-Disallow. A no-index build MUST additionally Disallow the non-
+    HTML served artifacts (PDF, LaTeX source, .bib) -- they carry no noindex meta
+    and Pages serves no X-Robots-Tag, so blocking the crawl is the only way to keep
+    them unindexed; a PUBLISHED build must NOT (they become indexable). Separately,
+    a published (indexable) site must carry no leftover TODO edit-marker on a
+    standalone page. A violation is a hard error."""
     robots_path = os.path.join(out_dir, "robots.txt")
     home = os.path.join(out_dir, "index.html")
     if not (os.path.isfile(robots_path) and os.path.isfile(home)):
@@ -459,16 +460,22 @@ def check_index_policy(out_dir, f):
         noindexed = 'name="robots" content="noindex"' in fh.read()
     allows = re.search(r"(?mi)^Allow: /\s*$", robots) is not None
     blanket_disallow = re.search(r"(?mi)^Disallow: /\s*$", robots) is not None
-    pdf_disallow = re.search(r"(?mi)^Disallow: /\*\.pdf\$\s*$", robots) is not None
+    # Every non-HTML served artifact (PDF, LaTeX source, .bib) must be crawl-
+    # blocked in a no-index build -- none carries a noindex meta.
+    artifact_disallows = {
+        ext: re.search(r"(?mi)^Disallow: /\*\.%s\$\s*$" % ext, robots) is not None
+        for ext in ("pdf", "tex", "bib")}
     if not allows or blanket_disallow:
         f.err(robots_path, "robots.txt must Allow: / and never blanket Disallow: / "
                            "-- HTML de-indexing relies on the crawler reading the "
                            "per-page noindex meta")
     if noindexed:
-        if not pdf_disallow:
-            f.err(robots_path, "no-index build must Disallow: /*.pdf$ -- a PDF carries "
-                               "no noindex meta and Pages serves no X-Robots-Tag, so "
-                               "crawling must be blocked to keep it unindexed")
+        missing = [ext for ext, present in artifact_disallows.items() if not present]
+        if missing:
+            f.err(robots_path, "no-index build must Disallow %s -- these served "
+                               "artifacts carry no noindex meta and Pages serves no "
+                               "X-Robots-Tag, so crawling must be blocked to keep them "
+                               "unindexed" % ", ".join("/*.%s$" % e for e in missing))
         # robots Allows crawling, so EVERY HTML page of a no-index build must carry
         # the noindex meta -- an inner page that lost it would be crawled AND
         # indexed (the mirror of the published-only scan below). A no-index build

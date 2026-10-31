@@ -768,6 +768,70 @@ def md_to_pdf(m, journal, out_pdf):
         os.unlink(hdr.name)
 
 
+# Strip the citeproc reference section (## References + the ::: {#refs} div) from
+# the body for the LaTeX submission source. The .tex is natbib: bibtex + the .bst
+# generate the list from \bibliography{refs}, so leaving the div in emits a
+# spurious empty "References" heading before the bst's own list. References is the
+# final body section (csr content model), so stripping from its heading to EOF is
+# safe and needs no parser.
+_TEX_REFS_STRIP_RE = re.compile(r"\n+#{1,6}[ \t]+References\b.*\Z", re.S)
+
+
+def md_to_tex(m, journal, out_tex):
+    r"""Emit an editable LaTeX submission source (natbib + refs.bib) from paper.md.
+
+    Venue-neutral `article` class with real \cite commands and \bibliography{refs},
+    numeric style (unsrtnat) matching the site's IEEE numbering. An author
+    retargets it to a venue class (IEEEtran / elsarticle / sn-jnl / acmart) by
+    swapping \documentclass + \bibliographystyle. This is a DIFFERENT artifact from
+    the citeproc PDF, so the build compiles it (bibtex pass) to prove valid LaTeX.
+    """
+    authors_yaml = "\n".join("  - " + _yaml_dq(a["name"]) for a in m["authors"])
+    abstract = " ".join(m["abstract"].split())
+    meta_block = (
+        "---\n"
+        "title: %s\n"
+        "author:\n%s\n"
+        "date: %s\n"
+        "abstract: %s\n"
+        "documentclass: article\n"
+        "---\n\n"
+    ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(m["date"]),
+         _yaml_dq(abstract))
+    doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
+    body = _TEX_REFS_STRIP_RE.sub("", m["_body_md"])
+    # No en-dash substitution (unlike md_to_pdf): LaTeX source keeps ASCII "--"
+    # and renders the en-dash ligature itself, so the served .tex stays ASCII for
+    # the check_ascii gate.
+    doc = meta_block + doi_line + body
+    # Same reader as md_to_pdf: author raw TeX (\input{...}) is NOT passed through
+    # -- it becomes literal text, so paper.md cannot inject engine-level file reads
+    # when the emitted .tex is later compiled by an author.
+    cmd = [
+        "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute",
+        "-t", "latex", "--standalone",
+        # -o must be ABSOLUTE: _run sets cwd=m["_dir"], so a relative out_tex (a
+        # relative --articles path) would be written under the article dir twice.
+        "-o", os.path.abspath(out_tex),
+        "--natbib",
+        "-V", "biblio-style=unsrtnat",
+        "-V", "natbiboptions=numbers",
+        "--resource-path", m["_dir"],
+    ]
+    # cwd = article dir + bare basename so pandoc emits \bibliography{refs.bib}
+    # (not an absolute path); refs.bib ships beside the .tex so citation keys
+    # resolve when the author compiles.
+    if os.path.exists(os.path.join(m["_dir"], "refs.bib")):
+        cmd += ["--bibliography", "refs.bib"]
+    _run(cmd, input=doc, cwd=m["_dir"])
+    # \bibliography{refs.bib} -> \bibliography{refs}: the idiomatic basename form.
+    with open(out_tex, "r", encoding="utf-8") as fh:
+        tex = fh.read()
+    tex = tex.replace("\\bibliography{refs.bib}", "\\bibliography{refs}")
+    with open(out_tex, "w", encoding="utf-8") as fh:
+        fh.write(tex)
+
+
 # ---------------------------------------------------------------- meta tags
 
 def citation_meta(m, journal, landing_url, pdf_url):
@@ -1373,13 +1437,17 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     license_bit = _license_footer(m, journal)
     # PDF + sha256 are generated only on a full build (build() gates them on
     # skip_pdf); omit the download anchors in a skip-pdf tree so it carries no
-    # link to an artifact that was never produced. The source-quotes reviewer-aid
-    # link appears whenever the sidecar exists, independent of the PDF.
+    # link to an artifact that was never produced. The LaTeX submission source is
+    # generated on EVERY build (pandoc only, no TeX engine), so its link is
+    # unconditional. The source-quotes reviewer-aid link appears whenever the
+    # sidecar exists, independent of the PDF.
     action_links = []
     if not skip_pdf:
         action_links.append('<a href="%s">Download PDF</a>' % pdf_name)
         action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
                              % pdf_name)
+    action_links.append('<a class="tex-source" href="%s.tex">LaTeX source</a>'
+                        % m["slug"])
     if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")
@@ -1794,15 +1862,21 @@ def write_robots(journal, out_dir):
     # Byte-identical to dist_ai.webcheck.site.render_robots. Always allows
     # crawling HTML so each page's <meta noindex> is read (a crawler must fetch a
     # page to honor its meta), and advertises the sitemap. A no-index build ALSO
-    # Disallows PDFs: a PDF carries no noindex meta and GitHub Pages serves no
-    # X-Robots-Tag, so a crawl block is the only Pages-compatible lever. It keeps
-    # PDF CONTENT out of search (uncrawled -> no snippet/indexed text); it does
-    # NOT guarantee the bare URL never appears if externally linked (a known
+    # Disallows the non-HTML served artifacts -- the PDF, the LaTeX submission
+    # source, and its .bib -- which carry no noindex meta and get no X-Robots-Tag
+    # from GitHub Pages, so a crawl block is the only Pages-compatible lever. It
+    # keeps their CONTENT out of search (uncrawled -> no snippet/indexed text); it
+    # does NOT guarantee the bare URL never appears if externally linked (a known
     # robots limitation), but the interim host is unlinked. Users still download
-    # it (robots binds crawlers, not browsers).
+    # them (robots binds crawlers, not browsers).
     lines = ["User-agent: *", "Allow: /"]
     if journal.get("_no_index"):
+        # Non-HTML served artifacts carry no noindex meta and Pages serves no
+        # X-Robots-Tag, so a crawl block is the only Pages-compatible lever: the
+        # PDF, the LaTeX submission source, and its .bib bibliography.
         lines.append("Disallow: /*.pdf$")
+        lines.append("Disallow: /*.tex$")
+        lines.append("Disallow: /*.bib$")
     txt = "\n".join(lines) + "\n\nSitemap: %s/sitemap.xml\n" % journal["base_url"]
     with open(os.path.join(out_dir, "robots.txt"), "w", encoding="utf-8") as fh:
         fh.write(txt)
@@ -1914,6 +1988,19 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
                                          % os.path.join(froot, nm))
             shutil.copytree(figdir, os.path.join(dest, "figures"))
         urls.append("%s/%s/" % (journal["base_url"], rel_dir))
+        # LaTeX submission source: regenerated into the article dir (committed
+        # beside paper.md for a tracked diff) and served from _site next to the
+        # PDF. Generated on EVERY build (pandoc only, no TeX engine) so it exists
+        # in the --skip-pdf CI tree too; a stale committed .tex is caught by the
+        # content repo's CI `git diff --exit-code` guard. refs.bib is copied
+        # alongside so the served .tex's \bibliography{refs} resolves on download.
+        tex_name = "%s.tex" % m["slug"]
+        src_tex = os.path.join(m["_dir"], tex_name)
+        md_to_tex(m, journal, src_tex)
+        shutil.copyfile(src_tex, os.path.join(dest, tex_name))
+        bib_src = os.path.join(m["_dir"], "refs.bib")
+        if os.path.exists(bib_src):
+            shutil.copyfile(bib_src, os.path.join(dest, "refs.bib"))
         if not skip_pdf:
             pdf_path = os.path.join(dest, pdf_name)
             md_to_pdf(m, journal, pdf_path)
