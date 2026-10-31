@@ -221,19 +221,48 @@ def _bib_keys(bib_path):
         return set(_BIB_KEY_RE.findall(fh.read()))
 
 
+# A markdown link/image target, and whether it is remote/anchor (allowed) or a
+# relative path (rejected). The sidecar carries verbatim quotes + ABSOLUTE source
+# URLs only; a relative target (e.g. figures/x.png) resolves under <slug>/sources/
+# and 404s (figures live at <slug>/figures/), so it is rejected at load. A [@key]
+# citation / [^fn] footnote is never followed by '(', so neither is matched here.
+_MD_LINK_TARGET_RE = re.compile(r'!?\[[^\]]*\]\(\s*([^)\s]+)')
+_REMOTE_OR_ANCHOR_RE = re.compile(r'(?:[a-z][a-z0-9+.-]*:|//|#)', re.I)
+
+
+def _relative_md_targets(text):
+    return [t for t in _MD_LINK_TARGET_RE.findall(text)
+            if not _REMOTE_OR_ANCHOR_RE.match(t)]
+
+
 def _check_sidecar_drift(adir):
-    """Every @key used in the source-quotes.md reviewer aid must exist in
-    refs.bib. The sidecar is keyed by @citekey; a key renamed or removed in the
-    bib but left dangling in the sidecar is exactly the cross-file drift this
-    migration removes from the body -- catch it at build time, loudly."""
+    """Validate the source-quotes.md reviewer aid at load, loudly:
+
+    - not a symlink (it is read + published verbatim; a symlink out of the article
+      dir would leak another file's text onto the sources/ page),
+    - valid UTF-8 (a stray byte would otherwise abort the whole build with a raw
+      UnicodeDecodeError, past the CLI's BuildError handler),
+    - no relative link/image target (would break under <slug>/sources/),
+    - every @key it uses exists in refs.bib (a key renamed/removed in the bib but
+      left dangling in the sidecar is exactly the cross-file drift to catch)."""
     sq = os.path.join(adir, "source-quotes.md")
     if not os.path.exists(sq):
         return
+    if os.path.islink(sq):
+        raise BuildError("%s/source-quotes.md must not be a symlink" % adir)
+    try:
+        with open(sq, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except UnicodeDecodeError as exc:
+        raise BuildError("%s/source-quotes.md is not valid UTF-8: %s" % (adir, exc))
+    rel = _relative_md_targets(text)
+    if rel:
+        raise BuildError("%s/source-quotes.md: relative link/image target(s) not "
+                         "allowed (use an absolute URL): %s"
+                         % (adir, ", ".join(rel)))
     bib = os.path.join(adir, "refs.bib")
     keys = _bib_keys(bib) if os.path.exists(bib) else set()
-    with open(sq, "r", encoding="utf-8", errors="replace") as fh:
-        used = _citekeys_in(fh.read())
-    missing = sorted(used - keys)
+    missing = sorted(_citekeys_in(text) - keys)
     if missing:
         raise BuildError("%s/source-quotes.md: @key(s) not in refs.bib: %s"
                          % (adir, ", ".join(missing)))
@@ -1156,14 +1185,20 @@ def render_article(m, journal, neighbors=None, skip_pdf=False):
 # <span class="citation" data-cites="KEY">[@key]</span>; rebind the heading's
 # auto-slug id to the stable @citekey so the paper can deep-link sources/#KEY.
 # Keys are [\w:.\-]+ (csr-rules), so the captured value is HTML-attribute-safe.
+# A GROUPED heading ([@a; @b]) yields data-cites="a b": the FIRST key becomes the
+# heading id and each remaining key gets its own empty anchor, so every key
+# resolves (a space-bearing id would select nothing).
 _SOURCES_H2_RE = re.compile(
     r'<h2 id="[^"]*"><span class="citation" data-cites="([^"]+)">')
 
 
 def _sources_anchor_ids(frag):
-    return _SOURCES_H2_RE.sub(
-        lambda mo: '<h2 id="%s"><span class="citation" data-cites="%s">'
-        % (mo.group(1), mo.group(1)), frag)
+    def repl(mo):
+        keys = mo.group(1).split()
+        extra = "".join('<span id="%s"></span>' % k for k in keys[1:])
+        return ('<h2 id="%s">%s<span class="citation" data-cites="%s">'
+                % (keys[0], extra, mo.group(1)))
+    return _SOURCES_H2_RE.sub(repl, frag)
 
 
 def render_sources(m, journal):
@@ -1596,8 +1631,15 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False):
     # allowance never licenses a mention anywhere else. Absent/empty = strictest.
     vendor_manifest = {}
     for m in articles:
-        if m.get("allow_vendor_mentions"):
-            vendor_manifest[_rel_dir(m)] = m["allow_vendor_mentions"]
+        av = m.get("allow_vendor_mentions")
+        if not av:
+            continue
+        vendor_manifest[_rel_dir(m)] = av
+        # The <slug>/sources/ reviewer-aid page renders the sidecar verbatim, so
+        # it shares the article's allowance -- its own dir is a distinct per-file
+        # key, else an allow-listed phrase quoted in the sidecar would be flagged.
+        if os.path.exists(os.path.join(m["_dir"], "source-quotes.md")):
+            vendor_manifest[_rel_dir(m) + "/sources"] = av
     for slug, _title in pages:
         ph = journal["page_allow_vendor_mentions"].get(slug)
         if ph:

@@ -1745,6 +1745,34 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                       encoding="utf-8") as fh:
                 self.assertNotIn('href="sources/"', fh.read())
 
+    def test_sources_page_inherits_article_vendor_allowance(self):
+        # The sources/ page renders the sidecar verbatim; a vendor phrase the
+        # article allow-lists and that is quoted in the sidecar must be allowed on
+        # the sources page too (its dir is a distinct per-file key). Without the
+        # <slug>/sources manifest entry, check_no_vendor_refs would flag the token.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "meta.toml"), "a", encoding="utf-8") as fh:
+                fh.write('allow_vendor_mentions = ["Kicksecure wiki"]\n')
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "source-quotes.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# Source quotes\n\n## [@alpha] Alpha\n\n"
+                         '- Quote: "see the Kicksecure wiki for details"\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            # the manifest carries the allowance under the sources dir key
+            with open(os.path.join(out, ".github", "vendor-allowlist.json"),
+                      encoding="utf-8") as fh:
+                manifest = json.load(fh)
+            self.assertIn("art/sources", manifest)
+            # and the vendor-ref gate is clean for the sources page
+            f = c.Findings()
+            c.check_no_vendor_refs(out, f)
+            self.assertEqual([m for _l, p, m in f.errors], [])
+
 
 _BIB = (
     "@misc{alpha, title={{Alpha page}}, author={{Org A}}, "
@@ -1853,6 +1881,54 @@ class TestSidecarDrift(unittest.TestCase):
     def test_no_sidecar_is_ok(self):
         g._check_sidecar_drift(self._dir(sidecar=None))  # no raise
 
+    def test_symlinked_sidecar_rejected(self):
+        # A symlinked sidecar is read + published verbatim, so a link out of the
+        # article dir would leak another file's text; reject it loudly.
+        import shutil as _sh
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: _sh.rmtree(d))
+        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+            fh.write(_BIB)
+        secret = os.path.join(d, "secret.md")
+        with open(secret, "w", encoding="utf-8") as fh:
+            fh.write("## [@alpha] x\n")
+        os.symlink(secret, os.path.join(d, "source-quotes.md"))
+        with self.assertRaises(g.BuildError) as cm:
+            g._check_sidecar_drift(d)
+        self.assertIn("symlink", str(cm.exception))
+
+    def test_non_utf8_sidecar_rejected(self):
+        # A stray non-UTF-8 byte must fail as a BuildError (the CLI catches that),
+        # not abort the whole build with a raw UnicodeDecodeError.
+        import shutil as _sh
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: _sh.rmtree(d))
+        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+            fh.write(_BIB)
+        with open(os.path.join(d, "source-quotes.md"), "wb") as fh:
+            fh.write(b"## [@alpha] x\n- Quote: caf\xe9\n")
+        with self.assertRaises(g.BuildError) as cm:
+            g._check_sidecar_drift(d)
+        self.assertIn("UTF-8", str(cm.exception))
+
+    def test_relative_link_target_rejected(self):
+        d = self._dir(sidecar="## [@alpha] x\n\nsee [chart](figures/c.png)\n")
+        with self.assertRaises(g.BuildError) as cm:
+            g._check_sidecar_drift(d)
+        self.assertIn("relative", str(cm.exception))
+
+    def test_relative_image_target_rejected(self):
+        d = self._dir(sidecar="## [@alpha] x\n\n![c](figures/c.png)\n")
+        with self.assertRaises(g.BuildError):
+            g._check_sidecar_drift(d)
+
+    def test_absolute_and_anchor_targets_ok(self):
+        # An absolute URL, a mailto, and an in-page anchor are all fine; a bare
+        # [@key] / [^fn] (no following paren) is never mistaken for a link.
+        d = self._dir(sidecar="## [@alpha] x\n\n[s](https://e.example/p) "
+                              "[m](mailto:a@e.example) [a](#alpha) [@beta]\n")
+        g._check_sidecar_drift(d)  # no raise
+
     def test_email_in_quote_not_mistaken_for_cite(self):
         # A bare user@host inside a quote is not bracketed, so it is not a cite.
         d = self._dir(sidecar='## [@alpha] a\n- Quote: "mail root@host now"\n')
@@ -1907,6 +1983,18 @@ class TestSourcesAnchorIds(unittest.TestCase):
         frag = ('<h2 id="x"><span class="citation" data-cites="a-b.c:d">'
                 "[@a-b.c:d]</span> L</h2>")
         self.assertIn('<h2 id="a-b.c:d">', g._sources_anchor_ids(frag))
+
+    def test_grouped_keys_each_get_an_anchor(self):
+        # A grouped heading ([@a; @b]) yields data-cites="a b"; the first key is
+        # the heading id and each remaining key gets its own empty anchor, so
+        # sources/#a and sources/#b both resolve (a space-bearing id resolves to
+        # nothing -- the bug this guards).
+        frag = ('<h2 id="a-b-grouped">'
+                '<span class="citation" data-cites="a b">[@a; @b]</span> G</h2>')
+        out = g._sources_anchor_ids(frag)
+        self.assertIn('<h2 id="a">', out)
+        self.assertIn('<span id="b"></span>', out)
+        self.assertNotIn('id="a b"', out)
 
     def test_non_keyed_heading_untouched(self):
         # A heading with no leading citation (e.g. "Remaining references") keeps
