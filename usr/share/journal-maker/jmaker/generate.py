@@ -236,12 +236,14 @@ def _bib_keys(bib_path):
 # One bib entry: `@type{key, <body up to the next entry or EOF>`. The lookahead
 # splits on a line-leading @, so an @ inside a field value does not cut short.
 _BIB_ENTRY_RE = re.compile(r'@\w+\s*\{\s*([^,\s]+)\s*,(.*?)(?=\n@|\Z)', re.S)
-# A resolvable source link: a comma-preceded url/doi field with a NON-EMPTY
-# braced/quoted value, or an explicit nolink opt-out. Comma-anchored so urldate
-# is not mistaken for url (url needs = right after it). The [^\s}"] requires a
-# real first value character, so url={} does not count as a link.
+# A resolvable source link: a url/doi field with a NON-EMPTY braced/quoted
+# value, or an explicit nolink opt-out. Anchored to start-of-body OR a comma so
+# a link placed as the FIRST field (the entry-split regex consumes the post-key
+# comma, so the first field has no leading comma in the body) is still matched;
+# urldate is still excluded because url needs = right after it. The [^\s}"]
+# requires a real first value character, so url={} does not count as a link.
 _BIB_LINK_FIELD_RE = re.compile(
-    r'(?i),\s*(?:url|doi|nolink)\s*=\s*[{"]\s*[^\s}"]')
+    r'(?i)(?:^|,)\s*(?:url|doi|nolink)\s*=\s*[{"]\s*[^\s}"]')
 
 
 def _entries_missing_link(bib_path):

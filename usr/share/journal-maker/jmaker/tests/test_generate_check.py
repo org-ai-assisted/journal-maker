@@ -2108,6 +2108,19 @@ class TestBibLinkPresence(unittest.TestCase):
                "url={https://e.example}}\n")
         self.assertEqual(self._missing(bib), [])
 
+    def test_link_as_first_field_counts(self):
+        # The entry-split consumes the post-key comma, so a url/doi placed as
+        # the FIRST field has no leading comma in the body -- it must still count
+        # (else a valid url-first entry falsely fails the build).
+        bib = ("@misc{x, url={https://e.example}, title={{T}}}\n"
+               "@inproceedings{y,\n  doi = {10.1/z},\n  title = {{T}},\n}\n")
+        self.assertEqual(self._missing(bib), [])
+
+    def test_urldate_as_first_field_still_flags(self):
+        # The start-of-body anchor must not let a first-field urldate pass as url.
+        bib = ("@misc{x, urldate={2026-01-01}, title={{T}}}\n")
+        self.assertEqual(self._missing(bib), ["x"])
+
 
 class TestValidateSources(unittest.TestCase):
     """Link-target + @key-drift validation on the RENDERED fragment (pure: the
