@@ -1438,10 +1438,13 @@ _HTML_TAG_OR_ANCHOR_RE = re.compile(
     re.S | re.I)
 _DIGITS_RE = re.compile(r'\d+')
 # A claim's `section` field names the paper section(s) a citation backs, e.g.
-# "Sec. 3", "Sec. 8, 12", "Secs. 5, 7", "Sec. 13, Table 4" (-> [13], "Table 4" is
-# not a section run), "Sec. 2/Sec. 3,13" (two runs -> [2, 3, 13]).
+# "Sec. 3", "Sec. 8, 12", "Secs. 5, 7", "Secs. 1, 2, and 3" (Oxford comma -> all
+# three), "Sec. 13, Table 4" (-> [13], "Table 4" is not a section run),
+# "Sec. 2/Sec. 3,13" (two runs -> [2, 3, 13]). \b anchors keep "mySec." and an
+# ordinal like "4th" out (each number must end on a word boundary).
 _SEC_NUM_RUN_RE = re.compile(
-    r'Secs?\.\s*(\d+(?:(?:\s*,\s*|\s+and\s+|\s*&amp;\s*|\s*&\s*)\d+)*)', re.I)
+    r'\bSecs?\.\s*(\d+\b(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&(?:amp;)?\s*)\d+\b)*)',
+    re.I)
 
 
 def _claim_section_nums(section_str):

@@ -35,6 +35,26 @@ class TestGenerateHelpers(unittest.TestCase):
     def test_yaml_dq_escapes(self):
         self.assertEqual(g._yaml_dq('a"b\\c'), '"a\\"b\\\\c"')
 
+    def test_claim_section_nums(self):
+        f = g._claim_section_nums
+        self.assertEqual(f("Sec. 1"), [1])
+        self.assertEqual(f("Sec. 8, 12"), [8, 12])
+        self.assertEqual(f("Secs. 5, 7"), [5, 7])
+        self.assertEqual(f("Sec. 10"), [10])
+        # multiple "Sec." runs across a slash
+        self.assertEqual(f("Sec. 2/Sec. 3,13"), [2, 3, 13])
+        # "Table N" is not a section run
+        self.assertEqual(f("Sec. 13, Table 4"), [13])
+        # Oxford comma must keep the trailing number (was dropped)
+        self.assertEqual(f("Secs. 1, 2, and 3"), [1, 2, 3])
+        self.assertEqual(f("Secs. 5, 7 and 9"), [5, 7, 9])
+        self.assertEqual(f("Secs. 1, 2 & 3"), [1, 2, 3])
+        # a word-boundary: an ordinal "4th" is not section 4
+        self.assertEqual(f("Sec. 3, 4th"), [3])
+        # "Sec" must be its own word, not a suffix ("mySec.")
+        self.assertEqual(f("mySec. 4"), [])
+        self.assertEqual(f(""), [])
+
     def test_citation_meta_has_required(self):
         landing = "https://computer-security-research.github.io/v1/i1/x/"
         pdf = landing + "x.pdf"
