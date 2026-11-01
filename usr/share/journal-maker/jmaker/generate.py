@@ -1462,7 +1462,7 @@ def _linkify_section_refs(body_html):
     name (aria-label="Section N") so the axe identical-links-same-purpose rule is
     satisfied, and the visible digit is a substring of that label (label-in-name).
     The citeproc reference container (<div id="refs">) is left untouched."""
-    anchors = {}
+    anchors: dict[int, str] = {}
     for mo in _SECTION_H2_RE.finditer(body_html):
         anchors.setdefault(int(mo.group(2)), mo.group(1))
     if not anchors:
