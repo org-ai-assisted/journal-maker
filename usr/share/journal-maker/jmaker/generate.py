@@ -1322,14 +1322,19 @@ _REF_ENTRY_RE = re.compile(
     r'(</div><div class="csl-right-inline">)(.*?)(</div>\s*</div>)', re.S)
 
 
-def _enhance_references(body_html, sidecar_keys):
-    """Cross-link the citeproc reference list (HTML only, never the PDF):
+def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
+    """Cross-link + enrich the citeproc reference list (HTML ONLY, never the PDF --
+    md_to_pdf never calls this, and the quotes live in the sidecar, not paper.md):
     - give the FIRST in-text citation of each key an id so it is a :target, and
-      make the reference's [n] a backlink to it (click [n] -> jump to the citation,
-      which the stylesheet highlights on :target);
-    - when a key has a source-quotes entry, append a 'quote' link from the
-      reference to its verbatim quote at sources/#key."""
+      make the reference's [n] a visible backlink to it (click -> jump to the
+      citation, highlighted on :target);
+    - add a stable, human-readable [@key] backlink (the [n] number is not stable
+      across edits; the @key is);
+    - inline the verbatim source quote + attribution (the SAME block the citation
+      hovercard shows), plus a link to its full sources-page card, so the preview
+      and the reference area carry the same information."""
     seen = set()
+    quote_blocks = quote_blocks or {}
 
     def id_first(mo):
         key = mo.group(1)
@@ -1344,9 +1349,15 @@ def _enhance_references(body_html, sidecar_keys):
         pre, key, num, mid, inner, close = mo.groups()
         num_html = ('<a class="csl-backref" href="#cite-%s">%s</a>' % (key, num)
                     if key in seen else num)
-        src = ('<a class="csl-source" href="sources/#%s">quote</a>' % key
-               if key in sidecar_keys else "")
-        return pre + num_html + mid + inner + src + close
+        meta = ('<a class="csl-citekey" href="#cite-%s">[@%s]</a>' % (key, key)
+                if key in seen else "")
+        if key in sidecar_keys:
+            meta += (' <a class="csl-source" href="sources/#%s">full card</a>'
+                     % key)
+        refmeta = '<div class="csl-refmeta">%s</div>' % meta if meta else ""
+        qb = quote_blocks.get(key, "")
+        quote = '<div class="csl-quote">%s</div>' % qb if qb else ""
+        return pre + num_html + mid + inner + refmeta + quote + close
     return _REF_ENTRY_RE.sub(entry, body_html)
 
 
@@ -1392,7 +1403,8 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
         raise BuildError("%s: abstract must not contain [@...] citations "
                          "(it is the plain-text meta/OG description)" % m["_dir"])
     body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
-    body_html = _enhance_references(body_html, sidecar_keys or set())
+    body_html = _enhance_references(body_html, sidecar_keys or set(),
+                                    quote_blocks or {})
     # A sidecar entry that presents <key> as cited -- a claim section pill linking
     # ../#cite-<key>, or a no_quote "Remaining references" line whose note says
     # "cited but no verbatim text" -- requires the paper to actually cite <key>.
@@ -1408,17 +1420,6 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
                 "not cite %s -- no #cite-%s anchor" % (m["_dir"], k, k, k))
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
-    # Hidden per-citation quote store: the verbatim source quote(s) + attribution
-    # for each cited key that has a sidecar card, so the citation hovercard (site.js)
-    # can preview the full quote (HTML-only; the PDF never carries it). Keyed off
-    # the #cite-<key> anchor _enhance_references stamped on the first citation, so
-    # only actually-cited keys are embedded.
-    quote_store = "".join(
-        '<div class="cite-quote" id="cq-%s" hidden>%s</div>' % (k, blk)
-        for k, blk in (quote_blocks or {}).items()
-        if ('id="cite-%s"' % k) in body_html)
-    quote_store = ('<div class="cite-quotes" hidden>%s</div>\n' % quote_store
-                   if quote_store else "")
 
     authors_line = _authors_html(m)
     affils = []
@@ -1496,13 +1497,12 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
         "%s"                                   # toc
         '<article class="body">\n%s\n</article>\n'
-        "%s"                                   # hidden citation quote store
         "%s"                                   # statements (data/funding/COI)
         "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
          doi_bit, history, subjects, ccs, status_line, actions_bit,
-         cite_box, abstract_html, toc, body_html, quote_store, statements,
+         cite_box, abstract_html, toc, body_html, statements,
          _article_nav(neighbors, root_rel), license_bit)
 
     page = _page(

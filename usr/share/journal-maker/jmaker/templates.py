@@ -247,9 +247,15 @@ article.body blockquote { margin: 1rem 0; padding-left: 1.25rem; border-left: 3p
 /* Reference [n] is a backlink to its first in-text citation: looks like the
    plain number, clickable on hover; the citation it jumps to is highlighted via
    :target below (backwards-navigation aid). */
-.csl-backref { color: inherit; text-decoration: none; }
-.csl-backref:hover, .csl-backref:focus-visible { color: var(--accent); text-decoration: underline; }
-.csl-source { font-family: var(--sans); font-size: 0.8rem; margin-left: 0.5rem; white-space: nowrap; }
+.csl-backref { color: var(--accent); text-decoration: underline dotted; }
+.csl-backref:hover, .csl-backref:focus-visible { text-decoration: underline; }
+.csl-source { font-family: var(--sans); font-size: 0.8rem; margin-left: 0.6rem; white-space: nowrap; }
+/* Reference-area enrichments (HTML only): a stable [@key] backlink to the in-text
+   citation + the verbatim quote inlined, matching the citation hovercard. */
+.csl-citekey { font-family: var(--mono); font-size: 0.78rem; color: var(--accent); text-decoration: none; }
+.csl-citekey:hover, .csl-citekey:focus-visible { text-decoration: underline; }
+.csl-refmeta { margin-top: 0.15rem; font-size: 0.78rem; }
+.csl-quote { margin: 0.45rem 0 0.3rem; }
 article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 2px var(--warn-rule); border-radius: 3px; }
 .hovercard { position: absolute; z-index: 50; max-width: min(90vw, 30rem); background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18); padding: 0.55rem 0.75rem; font-size: 0.85rem; line-height: 1.5; }
 .hovercard[hidden] { display: none; }
@@ -257,23 +263,23 @@ article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 
 /* A citeproc .csl-entry is cloned into the card; keep its [n]/text split inline
    so the preview reads as one line, not two stacked flex rows. */
 .hovercard .csl-left-margin, .hovercard .csl-right-inline { display: inline; }
-/* Hidden per-citation quote store; its quote blocks are cloned into a hovercard. */
-.cite-quotes, .cite-quote { display: none; }
-/* A source-quote block shown in a hovercard: the quote LEADS as an italic intro
-   panel (IntroLike), the attribution/link sit quietly below a short rule. The big
-   drop-quote mark and left accent bar are dropped here so the quote text is the
-   focus (the sources-page CARD keeps the base quotation styling). */
-.hovercard blockquote.quotation { margin: 0; padding: 0; background: transparent; box-shadow: none; border-left: none; border-radius: 0; }
-.hovercard blockquote.quotation::before { content: none; }
-.hovercard blockquote.quotation p { margin: 0 0 0.4rem; font-size: 1.02rem; line-height: 1.6; font-style: italic; color: var(--fg); background: var(--introbg); border-radius: 9px; padding: 0.6rem 0.85rem 0.7rem 1rem; box-shadow: inset 10px 0 8px -8px rgba(0, 0, 0, 0.12); }
-.hovercard blockquote.quotation p:last-of-type { margin-bottom: 0; }
-.hovercard blockquote.quotation .qlabel-tag { display: block; font-style: normal; margin-bottom: 0.3rem; }
-.hovercard .blockquote-context { display: block; position: relative; margin-top: 0.7rem; padding-left: 2.4rem; font-size: 0.75rem; line-height: 1.5; }
-.hovercard .blockquote-context::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 1.8rem; border-top: 2px solid var(--fg); }
-.hovercard .blockquote-context .nm { display: inline; font-weight: 600; font-size: 0.78rem; color: var(--fg); }
-.hovercard .blockquote-context .rl { display: inline; font-size: 0.75rem; color: var(--muted); }
-.hovercard .blockquote-context .rl:not(:first-child)::before { content: " \\00B7\\20"; }
-.hovercard .blockquote-context .src { display: block; margin-top: 0.15rem; font-size: 0.75rem; color: var(--muted); }
+/* A source-quote block shown in a hovercard OR inlined in the reference area: the
+   quote LEADS as an italic intro panel (IntroLike), the attribution/link sit
+   quietly below a short rule. The big drop-quote mark and left accent bar are
+   dropped here so the quote text is the focus (the sources-page CARD keeps the
+   base quotation styling). Shared so the footnote preview and the reference area
+   render the same. */
+:is(.hovercard, .csl-quote) blockquote.quotation { margin: 0; padding: 0; background: transparent; box-shadow: none; border-left: none; border-radius: 0; }
+:is(.hovercard, .csl-quote) blockquote.quotation::before { content: none; }
+:is(.hovercard, .csl-quote) blockquote.quotation p { margin: 0 0 0.4rem; font-size: 1.02rem; line-height: 1.6; font-style: italic; color: var(--fg); background: var(--introbg); border-radius: 9px; padding: 0.6rem 0.85rem 0.7rem 1rem; box-shadow: inset 10px 0 8px -8px rgba(0, 0, 0, 0.12); }
+:is(.hovercard, .csl-quote) blockquote.quotation p:last-of-type { margin-bottom: 0; }
+:is(.hovercard, .csl-quote) blockquote.quotation .qlabel-tag { display: block; font-style: normal; margin-bottom: 0.3rem; }
+:is(.hovercard, .csl-quote) .blockquote-context { display: block; position: relative; margin-top: 0.7rem; padding-left: 2.4rem; font-size: 0.75rem; line-height: 1.5; }
+:is(.hovercard, .csl-quote) .blockquote-context::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 1.8rem; border-top: 2px solid var(--fg); }
+:is(.hovercard, .csl-quote) .blockquote-context .nm { display: inline; font-weight: 600; font-size: 0.78rem; color: var(--fg); }
+:is(.hovercard, .csl-quote) .blockquote-context .rl { display: inline; font-size: 0.75rem; color: var(--muted); }
+:is(.hovercard, .csl-quote) .blockquote-context .rl:not(:first-child)::before { content: " \\00B7\\20"; }
+:is(.hovercard, .csl-quote) .blockquote-context .src { display: block; margin-top: 0.15rem; font-size: 0.75rem; color: var(--muted); }
 /* Nav bar doubles as the drag handle (reposition the pinned card by mouse); the
    dotted grip is pushed left, the buttons stay right. */
 .hovercard-nav { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin-bottom: 0.4rem; cursor: grab; touch-action: none; }
@@ -423,11 +429,13 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     var hideTimer = null, curIdx = -1, curAnchor = null, pinned = false, moved = false;
     function refFragment(id) {
       var frag = document.createDocumentFragment();
-      // Prefer the verbatim source-quote block when one is embedded for this key
-      // (id is "ref-<key>"); fall back to the reference-list entry otherwise.
-      var key = id.indexOf("ref-") === 0 ? id.slice(4) : id;
-      var r = document.getElementById("cq-" + key) || document.getElementById(id);
-      if (!r) { return frag; }
+      // id is "ref-<key>". Prefer the verbatim source-quote block inlined in the
+      // reference entry (.csl-quote) -- a single source of the quote, shared with
+      // the reference area (no duplicate hidden store); fall back to the whole
+      // reference entry when the key has no quote.
+      var ref = document.getElementById(id);
+      if (!ref) { return frag; }
+      var r = ref.querySelector(".csl-quote") || ref;
       var kids = r.childNodes;
       for (var i = 0; i < kids.length; i++) {
         frag.appendChild(kids[i].cloneNode(true));
@@ -490,6 +498,9 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     }
     card.addEventListener("mouseenter", cancelHide);
     card.addEventListener("mouseleave", hideSoon);
+    // A pointer press anywhere inside the card pins it, so selecting text on touch
+    // (no hover there) is not cut short by the blur/hideSoon closing the card.
+    card.addEventListener("pointerdown", function () { pinned = true; cancelHide(); });
     cprev.addEventListener("click", function () { step(-1); });
     cnext.addEventListener("click", function () { step(1); });
     // Drag the card by its nav bar to reposition it (pointer); dragging pins it so

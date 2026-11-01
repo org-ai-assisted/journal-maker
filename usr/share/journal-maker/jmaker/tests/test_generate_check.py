@@ -857,7 +857,7 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertLess(js.index("appendChild(cnav)"), js.index("appendChild(cbody)"))
         self.assertIn("ArrowLeft", js)
         self.assertIn("ArrowRight", js)
-        self.assertIn('getElementById("cq-"', js)   # prefer the quote block
+        self.assertIn('querySelector(".csl-quote")', js)  # clone the inline quote
         # hovercard is draggable by its nav bar, single-pointer (no multi-touch hijack)
         self.assertIn("setPointerCapture", js)
         self.assertIn("activeId", js)
@@ -1929,15 +1929,22 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertIn('<a class="csl-backref" href="#cite-beta">', page)
             self.assertIn('<a class="csl-source" href="sources/#beta">', page)  # #5
             self.assertNotIn('href="sources/#alpha"', page)   # alpha has no card
+            # stable [@key] backlink (#21) on every cited key + the quote inlined
+            # in beta's reference entry (#22); alpha (no card) has neither quote nor link
+            self.assertIn('<a class="csl-citekey" href="#cite-beta">[@beta]</a>', page)
+            self.assertIn('<a class="csl-citekey" href="#cite-alpha">[@alpha]</a>', page)
+            self.assertIn('<div class="csl-quote">', page)
+            self.assertIn('>full card</a>', page)
             f = c.Findings()
             c.check_citation_parity(page, "p", f)
             self.assertEqual([m for _l, _p, m in f.errors], [])
 
     def test_citation_quote_store_for_hovercards(self):
-        # The paper embeds a hidden per-citation quote block (the source card's
-        # verbatim quote + attribution) for each CITED key that has a sidecar card,
-        # so the citation hovercard can preview it. An uncited card key is not
-        # embedded.
+        # The verbatim quote for a cited key is INLINED in that key's reference
+        # entry (.csl-quote) -- one source, shared by the reference area and the
+        # hovercard (which clones it); there is NO separate hidden store. An
+        # uncited card key is absent from the reference list, so its quote never
+        # appears.
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
             ad = os.path.join(d, "articles", "art")
@@ -1956,12 +1963,15 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with open(os.path.join(out, "art", "index.html"),
                       encoding="utf-8") as fh:
                 page = fh.read()
-            self.assertIn('<div class="cite-quotes" hidden>', page)
-            self.assertIn('<div class="cite-quote" id="cq-beta" hidden>', page)
+            # quote inlined in the reference entry, not a hidden store
+            self.assertNotIn('class="cite-quotes"', page)
+            self.assertIn('<div class="csl-quote">', page)
             self.assertIn("verbatim beta quote", page)
-            self.assertIn('blockquote class="quotation"', page)  # reused block
-            # gamma has a card but is not cited in the paper -> not embedded
-            self.assertNotIn('id="cq-gamma"', page)
+            self.assertIn('blockquote class="quotation"', page)
+            # stable [@key] backlink + visible [n] backref in the reference entry
+            self.assertIn('<a class="csl-citekey" href="#cite-beta">[@beta]</a>', page)
+            self.assertIn('<a class="csl-backref" href="#cite-beta">', page)
+            # gamma has a card but is not cited -> not in the reference list at all
             self.assertNotIn("uncited quote", page)
 
     def test_source_links_use_dir_name_and_toml(self):
