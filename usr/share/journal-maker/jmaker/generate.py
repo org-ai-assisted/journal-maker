@@ -1610,6 +1610,7 @@ def render_sources(m, journal):
     root_rel = _root_rel(rel_dir)
     canonical = "%s/%s/" % (journal["base_url"], rel_dir)
     cards, remaining, card_keys = [], [], set()
+    toc_items = []      # (key, label) list items for the on-page contents nav
     quote_blocks = {}   # key -> processed quote block, for the paper's hovercards
     cite_keys = set()   # keys the paper MUST cite: a section pill links ../#cite-key,
     #                     or a no_quote "Remaining references" entry claims to be cited
@@ -1625,13 +1626,28 @@ def render_sources(m, journal):
         if entry.get("quotes"):
             card_keys.add(key)
             cards.append(_sources_card(key, entry, att))
+            lbl = entry.get("label", "")
+            toc_items.append(
+                '<li><a href="#%s">[@%s]</a>%s</li>'
+                % (key, key, (' <span class="toc-lbl">%s</span>'
+                              % html.escape(lbl)) if lbl else ""))
             quote_blocks[key] = _ascii_entities_html(_endash_html(
                 _sanitize_html(_quote_block(entry["quotes"], att))))
         else:
             remaining.append(_sources_remaining(key, entry, att))
-    body = "".join(cards)
+    # On-page contents: a compact index of the cards (and the Remaining section),
+    # each linking to its #key anchor -- the sources page has no H2 sections of its
+    # own to feed the article TOC, so build this one explicitly.
+    toc = ""
+    if toc_items:
+        rmn = ('<li class="toc-rmn"><a href="#sources-remaining">Remaining '
+               'references (%d)</a></li>' % len(remaining)) if remaining else ""
+        toc = ('<nav class="sources-toc" aria-label="Source quotes contents">'
+               '<h2>Contents</h2><ul>%s%s</ul></nav>' % ("".join(toc_items), rmn))
+    body = toc + "".join(cards)
     if remaining:
-        body += ('<section class="sources-remaining"><h2>Remaining references</h2>'
+        body += ('<section id="sources-remaining" class="sources-remaining">'
+                 '<h2>Remaining references</h2>'
                  '<p class="sources-remaining-note">Cited but no verbatim source '
                  'text could be retrieved; the claim rests on the citation.</p>'
                  '<ul class="rmn-list">%s</ul></section>' % "".join(remaining))

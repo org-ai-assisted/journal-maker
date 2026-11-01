@@ -153,6 +153,18 @@ p.actions a.sources-aid { background: none; color: var(--accent); padding: 0.35r
 /* Wrap any long unbroken token (attribution URLs) so the page never overflows. */
 main.sources { overflow-wrap: anywhere; }
 main.sources > h1 { margin-bottom: 1.5rem; }
+/* On-page contents index: compact multi-column list of the cards + the Remaining
+   section, each linking to its anchor. */
+.sources-toc { margin: 0 0 2.2rem; border: 1px solid var(--rule); border-radius: 6px; padding: 0.9rem 1.1rem; background: var(--surface); }
+.sources-toc h2 { font-family: var(--sans); font-size: 1rem; font-weight: 650; margin: 0 0 0.6rem; }
+.sources-toc ul { list-style: none; margin: 0; padding: 0; columns: 2; column-gap: 1.8rem; }
+.sources-toc li { break-inside: avoid; margin: 0 0 0.32rem; line-height: 1.4; }
+.sources-toc a { font-family: var(--mono); font-size: 0.8rem; color: var(--accent); text-decoration: none; }
+.sources-toc a:hover { text-decoration: underline; }
+.sources-toc .toc-lbl { font-family: var(--sans); font-size: 0.8rem; color: var(--muted); }
+.sources-toc .toc-rmn { margin-top: 0.55rem; }
+.sources-toc .toc-rmn a { font-family: var(--sans); font-size: 0.82rem; }
+@media (max-width: 640px) { .sources-toc ul { columns: 1; } }
 /* One source-quote card: header ([@key] + label), the paper claim(s), the
    verbatim quote(s) as a quotation blockquote, and the refs.bib attribution. */
 .qcard { margin: 1.8rem 0; }

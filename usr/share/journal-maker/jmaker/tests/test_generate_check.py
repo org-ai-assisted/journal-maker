@@ -1861,6 +1861,11 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             # gamma has no quote -> Remaining references, not a card
             self.assertIn("Remaining references", sources)
             self.assertIn("paywalled", sources)
+            # contents nav: links each card + the Remaining section to its anchor
+            self.assertIn('<nav class="sources-toc"', sources)
+            self.assertIn('<a href="#alpha">[@alpha]</a>', sources)
+            self.assertIn('href="#sources-remaining">Remaining references (1)', sources)
+            self.assertIn('id="sources-remaining"', sources)
             self.assertIn('name="robots" content="noindex"', sources)
             self.assertIn('href="../"', sources)            # back to the paper
             with open(os.path.join(out, "art", "index.html"),
