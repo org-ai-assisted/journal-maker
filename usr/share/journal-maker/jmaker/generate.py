@@ -118,6 +118,12 @@ def load_journal(path):
         if ".." in h or h.startswith("/"):
             raise BuildError("site.toml: footer_link href must be relative "
                              "(no leading / or ..) or absolute http(s): %r" % h)
+        # A backslash or whitespace/control byte can be normalized by the browser
+        # into a protocol-relative "//" (off-origin) once resolved against the
+        # site root; reject it rather than emit a surprising cross-origin link.
+        if re.search(r"[\s\\]", h):
+            raise BuildError("site.toml: footer_link href must not contain "
+                             "whitespace or a backslash: %r" % h)
     # Per-PAGE vendor-mention allowlist: slug -> exact phrases, applied ONLY to
     # that page's files. Articles carry their own allow_vendor_mentions in
     # meta.toml. There is no global allowlist -- an allowance is always scoped to
@@ -1531,6 +1537,23 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     return rel_dir, pdf_name, page
 
 
+def _attrib_title_link(att):
+    """Linked (or plain) source title for an attribution. The aria-label keeps the
+    visible title as a leading substring (WCAG 2.5.3 label-in-name) and appends the
+    publisher AND venue, so two references that share a title get distinct
+    accessible names (axe identical-links-same-purpose, WCAG 2.4.9). HTML only. A
+    true duplicate (same title+name+venue, different url) stays ambiguous -- that is
+    a duplicated citation in the data, not a rendering concern."""
+    if not att["link"]:
+        return html.escape(att["title"])
+    text = att["title"] or att["link"]
+    extra = ", ".join(p for p in (att["name"], att["venue"]) if p)
+    label = (' aria-label="%s, %s"' % (html.escape(text, quote=True),
+                                       html.escape(extra, quote=True))) if extra else ""
+    return ('<a href="%s"%s>%s</a>'
+            % (html.escape(att["link"], quote=True), label, html.escape(text)))
+
+
 def _attribution_html(att):
     """The quotation card's attribution block (name / venue / linked title +
     retrieved), from the refs.bib CSL-JSON. Empty parts are omitted."""
@@ -1539,20 +1562,7 @@ def _attribution_html(att):
         parts.append('<span class="nm">%s</span>' % html.escape(att["name"]))
     if att["venue"]:
         parts.append('<span class="rl">%s</span>' % html.escape(att["venue"]))
-    if att["link"]:
-        # Two references can share a title (e.g. "microG" on CalyxOS vs /e/OS); the
-        # title-text link would then collide under axe identical-links-same-purpose
-        # (same accessible name, different href). Disambiguate with an aria-label
-        # that appends the publisher/venue when one is present.
-        disambig = att["name"] or att["venue"]
-        label = (' aria-label="%s, %s"'
-                 % (html.escape(att["title"] or att["link"], quote=True),
-                    html.escape(disambig, quote=True))) if disambig else ""
-        src = ('<a href="%s"%s>%s</a>'
-               % (html.escape(att["link"], quote=True), label,
-                  html.escape(att["title"] or att["link"])))
-    else:
-        src = html.escape(att["title"])
+    src = _attrib_title_link(att)
     if src and att["retrieved"]:
         src += (' <span class="ret">&middot; retrieved %s</span>'
                 % html.escape(att["retrieved"]))
@@ -1624,11 +1634,7 @@ def _sources_card(key, entry, att):
 def _sources_remaining(key, entry, att):
     """A 'Remaining references' list item: a cited source with no retrievable
     verbatim text, with its reason and refs.bib attribution."""
-    if att["link"]:
-        title = '<a href="%s">%s</a>' % (html.escape(att["link"], quote=True),
-                                         html.escape(att["title"] or att["link"]))
-    else:
-        title = html.escape(att["title"])
+    title = _attrib_title_link(att)
     name = (" &middot; " + html.escape(att["name"])) if att["name"] else ""
     return ('<li id="%s"><span class="qkey">[@%s]</span> %s%s. '
             '<span class="rmn-reason">%s</span></li>'

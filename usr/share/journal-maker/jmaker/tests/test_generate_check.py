@@ -1099,6 +1099,22 @@ class TestFooterNav(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.load_journal(jt)
 
+    def test_backslash_footer_link_rejected(self):
+        # A backslash can be browser-normalized into a protocol-relative "//"
+        # (off-origin) once resolved against site_root -- reject at load.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._journal(d, r'footer_links=[{title="X", href=".\\evil"}]' + "\n")
+            with self.assertRaises(g.BuildError):
+                g.load_journal(jt)
+
+    def test_whitespace_footer_link_rejected(self):
+        # A leading control/whitespace byte is stripped by the browser, exposing a
+        # protocol-relative "//" -- reject it rather than emit an off-origin link.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._journal(d, 'footer_links=[{title="X", href="\\n//evil"}]\n')
+            with self.assertRaises(g.BuildError):
+                g.load_journal(jt)
+
     def test_valid_footer_links(self):
         with tempfile.TemporaryDirectory() as d:
             jt = self._journal(d,
@@ -1960,7 +1976,8 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         visible text (entities decoded); the generator emits no nested <a>."""
         import re as _re
         import html as _h
-        seen, bad = {}, []
+        seen: dict = {}
+        bad: list = []
         for mo in _re.finditer(r'<a\b([^>]*)>(.*?)</a>', page, _re.S):
             attrs, inner = mo.group(1), mo.group(2)
             hm = _re.search(r'href="([^"]*)"', attrs)
@@ -1991,7 +2008,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         def norm(s):
             return " ".join(_re.sub(r'[^0-9a-z]+', ' ', _h.unescape(s).lower()).split())
 
-        bad = []
+        bad: list = []
         for mo in _re.finditer(r'<a\b([^>]*)>(.*?)</a>', page, _re.S):
             attrs, inner = mo.group(1), mo.group(2)
             am = _re.search(r'aria-label="([^"]*)"', attrs)
@@ -2513,7 +2530,7 @@ class TestSidecar(unittest.TestCase):
         self.assertIn('<span class="qlabel-tag">abstract</span>', card)
         self.assertIn("qt", card)
         self.assertIn('<span class="nm">N</span>', card)
-        self.assertIn('href="https://e.example/p" aria-label="Ti, N">Ti</a>', card)
+        self.assertIn('href="https://e.example/p" aria-label="Ti, N, V">Ti</a>', card)
         self.assertIn("retrieved 2026-10-31", card)
 
     def test_card_multi_claim_list(self):

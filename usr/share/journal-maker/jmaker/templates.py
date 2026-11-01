@@ -9,6 +9,7 @@ references, light + dark via prefers-color-scheme.
 """
 
 import html
+from urllib.parse import urljoin
 
 # Site icon: a shield (security) carrying a check (research/verification), on the
 # blue accent (--accent #0b5cad). Static shapes only -- no script/on*/external url
@@ -588,12 +589,12 @@ def site_footer(journal, site_root):
     if links:
         items = []
         for link in links:
-            href = link["href"]
-            if not href.startswith(("http://", "https://")):
-                # Absolute from site_root -- the SAME convention as the header nav,
-                # so a shared target (e.g. "Home") yields a byte-identical href in
-                # both navs and does not trip axe identical-links-same-purpose.
-                href = site_root + (href[2:] if href.startswith("./") else href)
+            # Resolve against site_root -- the SAME convention as the header nav --
+            # so a shared target (e.g. "Home" -> "./") is a byte-identical href in
+            # both navs and does not trip axe identical-links-same-purpose. urljoin
+            # keeps a mailto:/tel: (or http) scheme intact and, for the clean
+            # relative paths load_journal permits, cannot emit an off-origin URL.
+            href = urljoin(site_root, link["href"])
             items.append('<a href="%s">%s</a>'
                          % (html.escape(href, quote=True),
                             html.escape(link["title"])))
