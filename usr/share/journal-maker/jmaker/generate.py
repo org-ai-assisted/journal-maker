@@ -1347,15 +1347,20 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
 
     def entry(mo):
         pre, key, num, mid, inner, close = mo.groups()
+        # `key` is captured from the (ASCII-entity-encoded) body, so it matches the
+        # #cite-/#ref- anchors and stays ASCII in the hrefs; the sidecar dict/set
+        # are keyed by the RAW citekey, so decode for those lookups (a non-ASCII
+        # key would otherwise miss and silently drop its quote).
+        rawkey = html.unescape(key)
         num_html = ('<a class="csl-backref" href="#cite-%s">%s</a>' % (key, num)
                     if key in seen else num)
         meta = ('<a class="csl-citekey" href="#cite-%s">[@%s]</a>' % (key, key)
                 if key in seen else "")
-        if key in sidecar_keys:
+        if rawkey in sidecar_keys:
             meta += (' <a class="csl-source" href="sources/#%s">full card</a>'
                      % key)
         refmeta = '<div class="csl-refmeta">%s</div>' % meta if meta else ""
-        qb = quote_blocks.get(key, "")
+        qb = quote_blocks.get(rawkey, "")
         quote = '<div class="csl-quote">%s</div>' % qb if qb else ""
         return pre + num_html + mid + inner + refmeta + quote + close
     return _REF_ENTRY_RE.sub(entry, body_html)

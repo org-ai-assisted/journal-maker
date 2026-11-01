@@ -401,7 +401,12 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     var rid = href.slice(1);
     var ref = document.getElementById(rid);
     if (!ref) { continue; }
-    cites[j].setAttribute("title", ref.textContent.replace(/\s+/g, " ").trim());
+    // Native tooltip = the reference text WITHOUT the inlined .csl-quote (the
+    // quote is shown in the hovercard; repeating it in the title is noise).
+    var titleSrc = ref.cloneNode(true);
+    var cq = titleSrc.querySelector(".csl-quote");
+    if (cq && cq.parentNode) { cq.parentNode.removeChild(cq); }
+    cites[j].setAttribute("title", titleSrc.textContent.replace(/\s+/g, " ").trim());
     if (!seen[rid]) { seen[rid] = true; refOrder.push(rid); }
   }
   if (refOrder.length) {

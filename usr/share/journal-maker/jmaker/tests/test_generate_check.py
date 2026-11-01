@@ -858,6 +858,7 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn("ArrowLeft", js)
         self.assertIn("ArrowRight", js)
         self.assertIn('querySelector(".csl-quote")', js)  # clone the inline quote
+        self.assertIn("titleSrc", js)  # native tooltip excludes the inlined quote
         # hovercard is draggable by its nav bar, single-pointer (no multi-touch hijack)
         self.assertIn("setPointerCapture", js)
         self.assertIn("activeId", js)
@@ -1938,6 +1939,23 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             f = c.Findings()
             c.check_citation_parity(page, "p", f)
             self.assertEqual([m for _l, _p, m in f.errors], [])
+
+    def test_enhance_references_decodes_nonascii_key(self):
+        # A non-ASCII citekey is ASCII-entity-encoded in body_html, but the sidecar
+        # dict/set are keyed by the RAW key; _enhance_references must decode for the
+        # lookups so the quote is still inlined (not silently dropped).
+        body = ('<article class="body"><span class="citation">'
+                '<a href="#ref-m&#252;ller" role="doc-biblioref">[1]</a>'
+                '</span></article>'
+                '<div id="ref-m&#252;ller" class="csl-entry">'
+                '<div class="csl-left-margin">[1]</div>'
+                '<div class="csl-right-inline">M&#252;ller, Title.</div></div>')
+        k = "m" + chr(0xfc) + "ller"   # non-ASCII citekey, ASCII source
+        out = g._enhance_references(body, {k},
+                                   {k: "<blockquote>Q</blockquote>"})
+        self.assertIn('id="cite-m&#252;ller"', out)                 # pretty anchor
+        self.assertIn('<div class="csl-quote"><blockquote>Q</blockquote></div>', out)
+        self.assertIn('href="sources/#m&#252;ller">full card</a>', out)
 
     def test_citation_quote_store_for_hovercards(self):
         # The verbatim quote for a cited key is INLINED in that key's reference
