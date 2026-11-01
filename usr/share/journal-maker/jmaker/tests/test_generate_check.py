@@ -1115,6 +1115,26 @@ class TestFooterNav(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.load_journal(jt)
 
+    def test_dangerous_scheme_footer_link_rejected(self):
+        # javascript:/data:/vbscript: have no "://" and would slip a ://-keyed
+        # check; the footer is emitted without the body URL sanitizer, so a bad
+        # scheme would be live (stored XSS). Must be rejected at load.
+        for bad in ("javascript:alert(1)", "data:text/html,<script>x</script>",
+                    "vbscript:msgbox"):
+            with tempfile.TemporaryDirectory() as d:
+                jt = self._journal(d,
+                                   'footer_links=[{title="X", href="%s"}]\n' % bad)
+                with self.assertRaises(g.BuildError):
+                    g.load_journal(jt)
+
+    def test_mailto_and_tel_footer_links_allowed(self):
+        # The safe absolute schemes a site legitimately uses for a contact link.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._journal(d,
+                               'footer_links=[{title="M", href="mailto:x@e.example"},'
+                               '{title="T", href="tel:+10000000000"}]\n')
+            self.assertEqual(len(g.load_journal(jt)["footer_links"]), 2)
+
     def test_valid_footer_links(self):
         with tempfile.TemporaryDirectory() as d:
             jt = self._journal(d,

@@ -112,9 +112,15 @@ def load_journal(path):
             raise BuildError("site.toml: each footer_link needs a non-empty "
                              "string title and href")
         h = link["href"]
-        if "://" in h and not h.startswith(("http://", "https://")):
-            raise BuildError("site.toml: footer_link href scheme not allowed: "
-                             "%r" % h)
+        # Scheme ALLOWLIST. The footer is interpolated WITHOUT the body's URL
+        # sanitizer (_page sanitizes only the pandoc body), so a dangerous scheme
+        # here would be live: a `javascript:`/`data:`/`vbscript:` href has no
+        # "://" and would otherwise slip through. Permit a relative path or one of
+        # the safe absolute schemes; reject any other scheme loudly.
+        if re.match(r"[a-zA-Z][a-zA-Z0-9+.\-]*:", h) and not h.startswith(
+                ("http://", "https://", "mailto:", "tel:")):
+            raise BuildError("site.toml: footer_link href scheme not allowed (use a "
+                             "relative path, http(s), mailto: or tel:): %r" % h)
         if ".." in h or h.startswith("/"):
             raise BuildError("site.toml: footer_link href must be relative "
                              "(no leading / or ..) or absolute http(s): %r" % h)
