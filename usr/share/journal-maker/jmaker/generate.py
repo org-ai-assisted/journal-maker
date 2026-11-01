@@ -1453,7 +1453,17 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
         action_links.append('<a href="%s">Download PDF</a>' % pdf_name)
         action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
                              % pdf_name)
-    action_links.append('<a href="%s.tex">LaTeX source</a>' % m["slug"])
+    # LaTeX source: link the COMMITTED .tex on the source host (the published
+    # _site tree in the repo) when a source_base_url is set -- a browsable,
+    # citable committed file -- else the served same-origin copy. The route
+    # segment + slug are csr-rules slugs (lowercase-hyphen), already URL-safe.
+    if journal.get("source_base_url"):
+        tex_src = "%s/_site/%s/%s.tex" % (
+            journal["source_base_url"], _rel_dir(m), m["slug"])
+        action_links.append('<a href="%s">LaTeX source</a>'
+                            % html.escape(tex_src, quote=True))
+    else:
+        action_links.append('<a href="%s.tex">LaTeX source</a>' % m["slug"])
     if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")

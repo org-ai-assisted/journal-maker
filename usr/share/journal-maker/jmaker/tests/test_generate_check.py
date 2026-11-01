@@ -1481,6 +1481,22 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertTrue(os.path.isfile(site_tex))
             self.assertFalse(os.path.islink(site_tex))
 
+    def test_latex_link_points_to_committed_tex_on_source_host(self):
+        # With source_base_url set, the LaTeX-source link targets the committed
+        # .tex in the published _site tree on the source host (not the relative
+        # served copy).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with open(jt, "a", encoding="utf-8") as fh:
+                fh.write('source_base_url = "https://example.com/r/blob/master"\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn(
+                '<a href="https://example.com/r/blob/master/_site/art/art.tex">'
+                "LaTeX source</a>", page)
+
     def test_inline_styles_stripped_and_favicon_linked(self):
         # Strict CSP style-src 'self' blocks inline styles (pandoc emits them on
         # aligned/sized table cells); the page must carry none. Every page links a
