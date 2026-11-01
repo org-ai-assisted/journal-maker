@@ -1450,25 +1450,33 @@ _HTML_TAG_OR_ANCHOR_RE = re.compile(
 _DIGITS_RE = re.compile(r'\d+')
 # A claim's `section` field names the paper section(s) a citation backs, e.g.
 # "Sec. 3", "Sec. 8, 12", "Secs. 5, 7", "Secs. 1, 2, and 3" (Oxford comma -> all
-# three), "Sec. 13, Table 4" (-> [13], "Table 4" is not a section run),
+# three), "Secs. 1 through 5" / "Sec. 1-3" / "Secs. 1 to 3" (a range -> every
+# section in it), "Sec. 13, Table 4" (-> [13], "Table 4" is not a section run),
 # "Sec. 2/Sec. 3,13" (two runs -> [2, 3, 13]). \b anchors keep "mySec." and an
-# ordinal like "4th" out (each number must end on a word boundary).
-# (?!\.\d) drops a dotted subsection number ("Sec. 3.5"/"3.1" -> no section, like
-# _SECTION_REF_RE) so it is never mis-read as integer section 3.
+# ordinal like "4th" out (each number must end on a word boundary). (?!\.\d) drops a
+# dotted subsection number ("Sec. 3.5"/"3.1" -> no section, like _SECTION_REF_RE) so
+# it is never mis-read as integer section 3.
+_SEC_ITEM = r'\d+(?!\.\d)\b(?:\s*(?:-|to|through)\s*\d+(?!\.\d)\b)?'   # number or range
+_SEC_SEP = r'(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&(?:amp;)?\s*)'
 _SEC_NUM_RUN_RE = re.compile(
-    r'\bSecs?\.\s*(\d+(?!\.\d)\b'
-    r'(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&(?:amp;)?\s*)\d+(?!\.\d)\b)*)', re.I)
+    r'\bSecs?\.\s*(' + _SEC_ITEM + r'(?:' + _SEC_SEP + _SEC_ITEM + r')*)', re.I)
+# One item inside a run: a single number, or a "a <-|to|through> b" range.
+_SEC_ITEM_RE = re.compile(r'(\d+)(?:\s*(?:-|to|through)\s*(\d+))?', re.I)
 
 
 def _claim_section_nums(section_str):
-    """Ordered, de-duplicated section numbers named by a claim's `section` string
-    (only genuine "Sec. N"/"Secs. N, M" runs; a trailing "Table 4" is ignored)."""
+    """Ordered, de-duplicated section numbers named by a claim's `section` string --
+    genuine "Sec. N"/"Secs. N, M" runs (a trailing "Table 4" is ignored), with a
+    range ("Secs. 1-3"/"1 through 5"/"1 to 5") expanded to every section it spans."""
     nums = []
     for mo in _SEC_NUM_RUN_RE.finditer(section_str or ""):
-        for d in _DIGITS_RE.findall(mo.group(1)):
-            n = int(d)
-            if n not in nums:
-                nums.append(n)
+        for it in _SEC_ITEM_RE.finditer(mo.group(1)):
+            a = int(it.group(1))
+            b = int(it.group(2)) if it.group(2) else a
+            lo, hi = (a, b) if a <= b else (b, a)
+            for n in range(lo, hi + 1):
+                if n not in nums:
+                    nums.append(n)
     return nums
 
 
@@ -1573,9 +1581,10 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     # (#citesec-<key>-<N>, stamped by _enhance_references only where the key is cited
     # in that section). Fail the build if a declared section has no such citation --
     # the label is wrong (or the citation is missing) and the pill would mislead.
-    # SCOPE: a section label is an integer "Sec. N" list (comma/and, Oxford comma
-    # allowed); a RANGE ("Sec. 1-3"), "through", or a subsection ("Sec. 3.5") is not
-    # expanded -- only the integers parsed by _claim_section_nums are validated/linked.
+    # SCOPE: a section label is an integer "Sec. N" list (comma/and/Oxford comma) or a
+    # range ("Sec. 1-3" / "1 through 5"), all expanded by _claim_section_nums; a
+    # subsection ("Sec. 3.5") is out of scope (-> no section, pill falls back to
+    # #cite-<key>).
     for k in sorted(claim_sections or {}):
         ek = _ascii_entities_html(k)
         for n in claim_sections[k]:

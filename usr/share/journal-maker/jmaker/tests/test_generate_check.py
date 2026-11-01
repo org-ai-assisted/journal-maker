@@ -49,6 +49,11 @@ class TestGenerateHelpers(unittest.TestCase):
         self.assertEqual(f("Secs. 1, 2, and 3"), [1, 2, 3])
         self.assertEqual(f("Secs. 5, 7 and 9"), [5, 7, 9])
         self.assertEqual(f("Secs. 1, 2 & 3"), [1, 2, 3])
+        # a range is expanded to every section it spans
+        self.assertEqual(f("Secs. 1 through 5"), [1, 2, 3, 4, 5])
+        self.assertEqual(f("Sec. 1-3"), [1, 2, 3])
+        self.assertEqual(f("Secs. 1 to 3"), [1, 2, 3])
+        self.assertEqual(f("Secs. 1-3, 7"), [1, 2, 3, 7])
         # a word-boundary: an ordinal "4th" is not section 4
         self.assertEqual(f("Sec. 3, 4th"), [3])
         # "Sec" must be its own word, not a suffix ("mySec.")
