@@ -1462,18 +1462,28 @@ _SEC_NUM_RUN_RE = re.compile(
     r'\bSecs?\.\s*(' + _SEC_ITEM + r'(?:' + _SEC_SEP + _SEC_ITEM + r')*)', re.I)
 # One item inside a run: a single number, or a "a <-|to|through> b" range.
 _SEC_ITEM_RE = re.compile(r'(\d+)(?:\s*(?:-|to|through)\s*(\d+))?', re.I)
+# No real paper has this many sections; a wider range is a label typo. Cap BEFORE
+# expanding so a contributor-editable "Secs. 1-10000000" fails loud instead of
+# OOMing the build (this gate must not crash on bad input).
+_MAX_SECTION_SPAN = 50
 
 
 def _claim_section_nums(section_str):
     """Ordered, de-duplicated section numbers named by a claim's `section` string --
     genuine "Sec. N"/"Secs. N, M" runs (a trailing "Table 4" is ignored), with a
-    range ("Secs. 1-3"/"1 through 5"/"1 to 5") expanded to every section it spans."""
+    range ("Secs. 1-3"/"1 through 5"/"1 to 5") expanded to every section it spans.
+    Raises BuildError on an implausibly wide range (> _MAX_SECTION_SPAN)."""
     nums = []
     for mo in _SEC_NUM_RUN_RE.finditer(section_str or ""):
         for it in _SEC_ITEM_RE.finditer(mo.group(1)):
             a = int(it.group(1))
             b = int(it.group(2)) if it.group(2) else a
             lo, hi = (a, b) if a <= b else (b, a)
+            if hi - lo + 1 > _MAX_SECTION_SPAN:
+                raise BuildError(
+                    "source-quotes.toml: implausible section range %d-%d in %r "
+                    "(> %d sections) -- fix the label"
+                    % (lo, hi, section_str, _MAX_SECTION_SPAN))
             for n in range(lo, hi + 1):
                 if n not in nums:
                     nums.append(n)

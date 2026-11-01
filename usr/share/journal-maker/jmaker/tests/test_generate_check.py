@@ -54,6 +54,10 @@ class TestGenerateHelpers(unittest.TestCase):
         self.assertEqual(f("Sec. 1-3"), [1, 2, 3])
         self.assertEqual(f("Secs. 1 to 3"), [1, 2, 3])
         self.assertEqual(f("Secs. 1-3, 7"), [1, 2, 3, 7])
+        # an implausibly wide range fails loud instead of OOMing the build
+        with self.assertRaises(g.BuildError):
+            f("Secs. 1-10000000")
+        self.assertEqual(f("Secs. 1-50"), list(range(1, 51)))   # at the cap: ok
         # a word-boundary: an ordinal "4th" is not section 4
         self.assertEqual(f("Sec. 3, 4th"), [3])
         # "Sec" must be its own word, not a suffix ("mySec.")
