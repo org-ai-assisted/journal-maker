@@ -53,6 +53,8 @@ class TestGenerateHelpers(unittest.TestCase):
         self.assertEqual(f("Sec. 3, 4th"), [3])
         # "Sec" must be its own word, not a suffix ("mySec.")
         self.assertEqual(f("mySec. 4"), [])
+        # a dotted subsection number is not integer section 3 (run breaks at 3.5)
+        self.assertEqual(f("Sec. 3.5"), [])
         self.assertEqual(f(""), [])
 
     def test_citation_meta_has_required(self):
@@ -1914,7 +1916,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertIn('<article class="qcard" id="alpha">', sources)
             self.assertIn("the alpha verbatim text", sources)
             self.assertIn('<a class="qkey" href="#alpha">[@alpha]</a>', sources)
-            self.assertIn('href="../#cite-alpha-s1" aria-label="Sec. 1 in the paper, '
+            self.assertIn('href="../#citesec-alpha-1" aria-label="Sec. 1 in the paper, '
                           'reference alpha">Sec. 1', sources)   # per-section claim pill
             # attribution from refs.bib (CSL-JSON): author "Org A", linked title
             self.assertIn('<span class="nm">Org A</span>', sources)
@@ -1968,14 +1970,14 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with open(os.path.join(out, "art", "index.html"),
                       encoding="utf-8") as fh:
                 page = fh.read()
-            self.assertIn('id="cite-beta-s1"', page)        # per-section anchors
-            self.assertIn('id="cite-beta-s3"', page)
+            self.assertIn('id="citesec-beta-1"', page)      # per-section anchors
+            self.assertIn('id="citesec-beta-3"', page)
             self.assertIn('id="cite-beta"', page)           # document-wide kept
             with open(os.path.join(out, "art", "sources", "index.html"),
                       encoding="utf-8") as fh:
                 sources = fh.read()
-            self.assertIn('href="../#cite-beta-s1"', sources)   # pills -> per-section
-            self.assertIn('href="../#cite-beta-s3"', sources)
+            self.assertIn('href="../#citesec-beta-1"', sources)   # pills -> per-section
+            self.assertIn('href="../#citesec-beta-3"', sources)
 
     def test_mislabeled_claim_section_fails_build(self):
         # Canary: a claim labeled with a section where its key is NOT cited must fail
@@ -2725,7 +2727,7 @@ class TestSidecar(unittest.TestCase):
         self.assertIn('<article class="qcard" id="alpha">', card)
         self.assertIn('<a class="qkey" href="#alpha">[@alpha]</a>', card)
         self.assertIn("Lbl", card)
-        self.assertIn('href="../#cite-alpha-s3" aria-label="Sec. 3 in the paper, '
+        self.assertIn('href="../#citesec-alpha-3" aria-label="Sec. 3 in the paper, '
                       'reference alpha">Sec. 3', card)   # per-section claim pill
         self.assertIn('<span class="qlabel-tag">abstract</span>', card)
         self.assertIn("qt", card)
@@ -2742,9 +2744,9 @@ class TestSidecar(unittest.TestCase):
                                 "link": "", "retrieved": ""})
         self.assertIn("qclaim-list", card)
         # each pill links to its own section's per-section anchor
-        self.assertIn('href="../#cite-k-s7"', card)
-        self.assertIn('href="../#cite-k-s13"', card)
-        self.assertEqual(card.count('href="../#cite-k-s'), 2)
+        self.assertIn('href="../#citesec-k-7"', card)
+        self.assertIn('href="../#citesec-k-13"', card)
+        self.assertEqual(card.count('href="../#citesec-k-'), 2)
 
     def test_card_claim_without_section_no_empty_pill(self):
         # A claim with no section emits NO pill (not an empty <a> pill).

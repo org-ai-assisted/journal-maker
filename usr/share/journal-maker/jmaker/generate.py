@@ -1328,6 +1328,12 @@ def _article_nav(neighbors, root_rel):
 # citeproc in-text citation anchor (href only; no id yet) and a full reference
 # list entry. Used to cross-link the reference list with the body + the sidecar.
 _CITE_ANCHOR_RE = re.compile(r'<a href="#ref-([^"]+)" role="doc-biblioref">')
+# EVERY <h2> is a section boundary (capturing its leading "N." number when it has
+# one, else None), so a citation under an UNnumbered heading -- the footnotes block
+# pandoc appends after the bibliography, or a "Notes" heading -- is attributed to no
+# numbered section rather than leaking into the previous one. (?!\.\d) ignores a
+# subsection heading number ("3.5").
+_H2_ANY_RE = re.compile(r'<h2\b[^>]*>\s*(?:(\d+)(?!\.\d)\.)?', re.I)
 _REF_ENTRY_RE = re.compile(
     r'(<div id="ref-([^"]+)" class="csl-entry"[^>]*>\s*'
     r'<div class="csl-left-margin">)([^<]*)'
@@ -1345,17 +1351,22 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
     - inline the verbatim source quote + attribution (the SAME block the citation
       hovercard shows), plus a link to its full sources-page card, so the preview
       and the reference area carry the same information;
-    - drop a per-section anchor (cite-<key>-s<N>) before the first citation of each
+    - drop a per-section anchor (citesec-<key>-<N>) before the first citation of each
       key in each section, so a sources-card "Sec. N" pill can jump to THAT
       section's citation -- pandoc puts the single #cite-<key> on the first citation
-      document-wide, which may sit in a different section than the claim names."""
+      document-wide, which may sit in a different section than the claim names. The
+      anchor lives in its OWN id namespace (citesec-, not cite-) so it can never
+      collide with a reference's #cite-<key> even for a key literally named
+      "<other>-s<N>"."""
     seen = set()
     seen_sec = set()        # (key, section_number) already anchored within-section
     quote_blocks = quote_blocks or {}
-    # Section boundaries (char offset -> number) from the numbered <h2>s, so each
-    # in-text citation can be tagged with the section it falls in.
-    headings = sorted((mo.start(), int(mo.group(2)))
-                      for mo in _SECTION_H2_RE.finditer(body_html))
+    # Section boundaries (char offset -> number-or-None) from EVERY <h2>, so a
+    # citation under an unnumbered heading maps to no section (None) instead of the
+    # previous numbered one.
+    headings = sorted((mo.start(),
+                       int(mo.group(1)) if mo.group(1) else None)
+                      for mo in _H2_ANY_RE.finditer(body_html))
 
     def _section_at(pos):
         sec = None
@@ -1375,7 +1386,7 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
         sec = _section_at(mo.start())
         if sec is not None and (key, sec) not in seen_sec:
             seen_sec.add((key, sec))
-            prefix = ('<span class="cite-sec-anchor" id="cite-%s-s%d"></span>'
+            prefix = ('<span class="citesec-anchor" id="citesec-%s-%d"></span>'
                       % (key, sec))
         if key in seen:
             return prefix + mo.group(0)
@@ -1442,9 +1453,11 @@ _DIGITS_RE = re.compile(r'\d+')
 # three), "Sec. 13, Table 4" (-> [13], "Table 4" is not a section run),
 # "Sec. 2/Sec. 3,13" (two runs -> [2, 3, 13]). \b anchors keep "mySec." and an
 # ordinal like "4th" out (each number must end on a word boundary).
+# (?!\.\d) drops a dotted subsection number ("Sec. 3.5"/"3.1" -> no section, like
+# _SECTION_REF_RE) so it is never mis-read as integer section 3.
 _SEC_NUM_RUN_RE = re.compile(
-    r'\bSecs?\.\s*(\d+\b(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&(?:amp;)?\s*)\d+\b)*)',
-    re.I)
+    r'\bSecs?\.\s*(\d+(?!\.\d)\b'
+    r'(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&(?:amp;)?\s*)\d+(?!\.\d)\b)*)', re.I)
 
 
 def _claim_section_nums(section_str):
@@ -1557,17 +1570,20 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
                 "section pill or a Remaining-references entry), but paper.md does "
                 "not cite %s -- no #cite-%s anchor" % (m["_dir"], k, k, k))
     # A claim's "Sec. N" pill links to the key's citation IN section N
-    # (#cite-<key>-s<N>, stamped by _enhance_references only where the key is cited
+    # (#citesec-<key>-<N>, stamped by _enhance_references only where the key is cited
     # in that section). Fail the build if a declared section has no such citation --
     # the label is wrong (or the citation is missing) and the pill would mislead.
+    # SCOPE: a section label is an integer "Sec. N" list (comma/and, Oxford comma
+    # allowed); a RANGE ("Sec. 1-3"), "through", or a subsection ("Sec. 3.5") is not
+    # expanded -- only the integers parsed by _claim_section_nums are validated/linked.
     for k in sorted(claim_sections or {}):
         ek = _ascii_entities_html(k)
         for n in claim_sections[k]:
-            if ('id="cite-%s-s%d"' % (ek, n)) not in body_html:
+            if ('id="citesec-%s-%d"' % (ek, n)) not in body_html:
                 raise BuildError(
                     "%s/source-quotes.toml: @%s has a claim labeled Sec. %d, but "
                     "paper.md does not cite %s in Section %d -- fix the section "
-                    "label or add the citation (no #cite-%s-s%d anchor)"
+                    "label or add the citation (no #citesec-%s-%d anchor)"
                     % (m["_dir"], k, n, k, n, k, n))
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
@@ -1738,7 +1754,7 @@ def _sources_card(key, entry, att):
         # multi-section label like "Sec. 8, 12"); fall back to the document-wide
         # #cite-<key> only when the section has no parseable number.
         nums = _claim_section_nums(c["section"])
-        target = ("cite-%s-s%d" % (key, nums[0])) if nums else ("cite-%s" % key)
+        target = ("citesec-%s-%d" % (key, nums[0])) if nums else ("cite-%s" % key)
         # aria-label carries the citekey so pills sharing a section label across
         # different cards do not collide under axe identical-links-same-purpose
         # (same visible "Sec. N ->" text, different target).
