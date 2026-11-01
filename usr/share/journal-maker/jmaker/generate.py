@@ -1393,9 +1393,14 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
 # number->anchor map is read from the heading's inner text, not its id.
 _SECTION_H2_RE = re.compile(r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*(\d+)\.', re.I)
 # A "Section N" / "Sections N, M and K" / "Sections N through M" run. Capitalized per
-# house style; `&amp;` because the body is HTML-entity-encoded.
+# house style; `&amp;` because the body is HTML-entity-encoded. Each number is atomic
+# (?>\d+) with a (?!\.\d) guard: a trailing sub-number ("Section 3.5") is a reference
+# into a CITED EXTERNAL work, not this paper's section 3, so it must stay plain -- and
+# the atomic group stops "35.5" from degrading to a bare "3" via backtracking. A
+# sentence-ending period ("see Section 3.") is NOT a sub-number, so it still links.
 _SECTION_REF_RE = re.compile(
-    r'\bSections?\s+\d+(?:\s*(?:,|and|through|to|&amp;|&)\s*\d+)*')
+    r'\bSections?\s+(?>\d+)(?!\.\d)'
+    r'(?:\s*(?:,|and|through|to|&amp;|&)\s*(?>\d+)(?!\.\d))*')
 # Whole tags and whole <a>...</a> spans, so the linkifier never rewrites inside an
 # attribute or double-wraps an existing anchor.
 _HTML_TAG_OR_ANCHOR_RE = re.compile(r'(<a\b[^>]*>.*?</a>|<[^>]+>)', re.S | re.I)
@@ -1424,7 +1429,9 @@ def _linkify_section_refs(body_html):
     matching <h2> (HTML ONLY -- md_to_pdf never calls this; hyperref already makes the
     PDF ToC/links clickable). Only the digit is linked; the words Section(s)/and/
     through and the commas stay plain text. A number with no matching heading stays
-    plain (keeps the broken-link gate honest). Each target gets a distinct accessible
+    plain (keeps the broken-link gate honest), as does a sub-section reference
+    ("Section N.M", a pointer into a cited external work, not this paper's section N).
+    Each target gets a distinct accessible
     name (aria-label="Section N") so the axe identical-links-same-purpose rule is
     satisfied, and the visible digit is a substring of that label (label-in-name).
     The citeproc reference container (<div id="refs">) is left untouched."""

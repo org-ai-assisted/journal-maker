@@ -2117,6 +2117,27 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertEqual(self._link_collisions(out), [])
         self.assertEqual(self._label_in_name_bad(out), [])
 
+    def test_linkify_section_refs_subsection_stays_plain(self):
+        # Regression: "Section 3.5" is a pointer into a CITED EXTERNAL work, not this
+        # paper's section 3 -- the linker must NOT match "Section 3" inside it (the
+        # deployed android-insecurity bug: "(Section 3.5)" linked "3" to #threat-model,
+        # leaving ".5" bare). A trailing ".<digit>" disqualifies the number; a
+        # sentence-ending period does not. RED on the pre-guard regex.
+        body = (
+            '<h2 id="tm">3. Threat Model</h2>'
+            '<h2 id="big">35. Big Section</h2>'
+            '<p>Internal: see Section 3 alone. At the end Section 3. '
+            'External: (Section 3.5) and Section 35.5 are sub-section refs.</p>')
+        out = g._linkify_section_refs(body)
+        # bare top-level ref links; sentence-ending period still links
+        self.assertIn('see Section <a href="#tm" aria-label="Section 3">3</a> alone', out)
+        self.assertIn('the end Section <a href="#tm" aria-label="Section 3">3</a>. ', out)
+        # sub-section refs into external works stay verbatim plain text
+        self.assertIn('(Section 3.5) and Section 35.5 are', out)
+        # the exact reported defect: no partial wrap of the top-level digit
+        self.assertNotIn('aria-label="Section 3">3</a>.5', out)
+        self.assertNotIn('aria-label="Section 35"', out)
+
     def test_section_refs_linked_in_full_build(self):
         # Wiring guard: render_article must call _linkify_section_refs, so a numbered
         # section referenced in prose is clickable in the built page. RED if the
