@@ -65,6 +65,7 @@ STYLE_CSS = """\
   --on-accent: #ffffff;
   --visited: #6b3fa0;
   --rule: #d9d9d4;
+  --introbg: #eeeeec;
   --measure: 38rem;
   --warn-bg: #fdf2d0; --warn-fg: #6b4e00; --warn-rule: #e0b84d;
   --ok-bg: #e4f3e6; --ok-fg: #1d5a2a; --ok-rule: #88c096;
@@ -79,6 +80,7 @@ STYLE_CSS = """\
     --on-accent: #15171b;
     --visited: #b79be0;
     --rule: #32363e;
+    --introbg: #22262e;
     --warn-bg: #3a300f; --warn-fg: #f0d78a; --warn-rule: #7a6420;
     --ok-bg: #16301c; --ok-fg: #9fd9ab; --ok-rule: #2f5d39;
   }
@@ -92,6 +94,7 @@ STYLE_CSS = """\
   --on-accent: #15171b;
   --visited: #b79be0;
   --rule: #32363e;
+  --introbg: #22262e;
   --warn-bg: #3a300f; --warn-fg: #f0d78a; --warn-rule: #7a6420;
   --ok-bg: #16301c; --ok-fg: #9fd9ab; --ok-rule: #2f5d39;
 }
@@ -244,13 +247,27 @@ article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 
 .hovercard .csl-left-margin, .hovercard .csl-right-inline { display: inline; }
 /* Hidden per-citation quote store; its quote blocks are cloned into a hovercard. */
 .cite-quotes, .cite-quote { display: none; }
-/* A source-quote block shown in a hovercard: compact (no card shadow/fill). */
-.hovercard blockquote.quotation { margin: 0; padding: 0.1rem 0 0.1rem 1.7rem; background: transparent; box-shadow: none; border-left: 3px solid var(--accent); border-radius: 0; }
-.hovercard blockquote.quotation::before { font-size: 2rem; left: 0.1rem; top: -0.1rem; }
-.hovercard blockquote.quotation p { margin: 0 0 0.4rem; font-size: 0.85rem; line-height: 1.5; }
-.hovercard blockquote.quotation p:last-child { margin-bottom: 0; }
-.hovercard .blockquote-context { margin-top: 0.45rem; font-size: 0.8rem; }
-.hovercard-nav { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin-bottom: 0.4rem; }
+/* A source-quote block shown in a hovercard: the quote LEADS as an italic intro
+   panel (IntroLike), the attribution/link sit quietly below a short rule. The big
+   drop-quote mark and left accent bar are dropped here so the quote text is the
+   focus (the sources-page CARD keeps the base quotation styling). */
+.hovercard blockquote.quotation { margin: 0; padding: 0; background: transparent; box-shadow: none; border-left: none; border-radius: 0; }
+.hovercard blockquote.quotation::before { content: none; }
+.hovercard blockquote.quotation p { margin: 0 0 0.4rem; font-size: 1.02rem; line-height: 1.6; font-style: italic; color: var(--fg); background: var(--introbg); border-radius: 9px; padding: 0.6rem 0.85rem 0.7rem 1rem; box-shadow: inset 10px 0 8px -8px rgba(0, 0, 0, 0.12); }
+.hovercard blockquote.quotation p:last-of-type { margin-bottom: 0; }
+.hovercard blockquote.quotation .qlabel-tag { display: block; font-style: normal; margin-bottom: 0.3rem; }
+.hovercard .blockquote-context { display: block; position: relative; margin-top: 0.7rem; padding-left: 2.4rem; font-size: 0.75rem; line-height: 1.5; }
+.hovercard .blockquote-context::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 1.8rem; border-top: 2px solid var(--fg); }
+.hovercard .blockquote-context .nm { display: inline; font-weight: 600; font-size: 0.78rem; color: var(--fg); }
+.hovercard .blockquote-context .rl { display: inline; font-size: 0.75rem; color: var(--muted); }
+.hovercard .blockquote-context .rl::before { content: " \00B7 "; }
+.hovercard .blockquote-context .src { display: block; margin-top: 0.15rem; font-size: 0.75rem; color: var(--muted); }
+/* Nav bar doubles as the drag handle (reposition the pinned card by mouse); the
+   dotted grip is pushed left, the buttons stay right. */
+.hovercard-nav { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin-bottom: 0.4rem; cursor: grab; touch-action: none; }
+.hovercard-nav::before { content: ""; margin-right: auto; width: 1.3rem; height: 0.7rem; background: radial-gradient(var(--muted) 1px, transparent 1.4px); background-size: 0.34rem 0.34rem; opacity: 0.55; }
+.hovercard.dragging { box-shadow: 0 12px 34px rgba(0, 0, 0, 0.33); user-select: none; }
+.hovercard.dragging .hovercard-nav { cursor: grabbing; }
 .hovercard-nav[hidden] { display: none; }
 .hovercard-navbtn { font-family: var(--sans); font-size: 0.8rem; line-height: 1; padding: 0.15rem 0.45rem; border: 1px solid var(--rule); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer; }
 .hovercard-navbtn:disabled { opacity: 0.4; cursor: default; }
@@ -391,7 +408,7 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     card.appendChild(cnav); card.appendChild(cbody);
     document.body.appendChild(card);
 
-    var hideTimer = null, curIdx = -1, curAnchor = null, pinned = false;
+    var hideTimer = null, curIdx = -1, curAnchor = null, pinned = false, moved = false;
     function refFragment(id) {
       var frag = document.createDocumentFragment();
       // Prefer the verbatim source-quote block when one is embedded for this key
@@ -427,6 +444,7 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     function show(anchor, idx) {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
       pinned = false;            // a fresh hover/focus is transient again
+      moved = false;             // re-anchor to the citation (drag offset cleared)
       curAnchor = anchor;
       card.hidden = false;
       populate(idx);
@@ -443,7 +461,8 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       cancelHide();
       pinned = true;
       populate(ni);
-      if (curAnchor) { place(curAnchor); }
+      // Keep a dragged card where the user put it; otherwise re-anchor on resize.
+      if (curAnchor && !moved) { place(curAnchor); }
     }
     for (var c = 0; c < cites.length; c++) {
       (function (a) {
@@ -461,6 +480,32 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     card.addEventListener("mouseleave", hideSoon);
     cprev.addEventListener("click", function () { step(-1); });
     cnext.addEventListener("click", function () { step(1); });
+    // Drag the card by its nav bar to reposition it (pointer); dragging pins it so
+    // it does not auto-hide, and sets `moved` so stepping refs keeps the new spot.
+    (function () {
+      var dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
+      cnav.addEventListener("pointerdown", function (e) {
+        if (e.target.closest && e.target.closest("button")) { return; }
+        dragging = true; pinned = true; moved = true; cancelHide();
+        sx = e.clientX; sy = e.clientY;
+        sl = parseFloat(card.style.left) || 0; st = parseFloat(card.style.top) || 0;
+        card.classList.add("dragging");
+        try { cnav.setPointerCapture(e.pointerId); } catch (ignore) {}
+        e.preventDefault();
+      });
+      cnav.addEventListener("pointermove", function (e) {
+        if (!dragging) { return; }
+        var nl = sl + (e.clientX - sx), nt = st + (e.clientY - sy);
+        var maxL = window.pageXOffset + document.documentElement.clientWidth - card.offsetWidth - 8;
+        if (nl > maxL) { nl = maxL; }
+        if (nl < window.pageXOffset + 8) { nl = window.pageXOffset + 8; }
+        if (nt < window.pageYOffset + 8) { nt = window.pageYOffset + 8; }
+        card.style.left = nl + "px"; card.style.top = nt + "px";
+      });
+      function endDrag() { if (dragging) { dragging = false; card.classList.remove("dragging"); } }
+      cnav.addEventListener("pointerup", endDrag);
+      cnav.addEventListener("pointercancel", endDrag);
+    })();
     // Keyboard: Escape dismisses; Left/Right step prev/next while the card is
     // open and either pinned or the focus is on a cite anchor / inside the card
     // (so arrow keys are not hijacked from ordinary page scrolling).

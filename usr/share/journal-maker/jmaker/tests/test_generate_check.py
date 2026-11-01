@@ -2224,6 +2224,14 @@ class TestSidecar(unittest.TestCase):
         with self.assertRaises(g.BuildError):
             g._load_sidecar(d)
 
+    def test_empty_sidecar_rejected(self):
+        # An empty source-quotes.toml ({}) with no refs.bib must fail as a clean
+        # BuildError, not reach pandoc and surface a raw subprocess error.
+        d = self._dir(bib=None, toml="")
+        with self.assertRaises(g.BuildError) as cm:
+            g._load_sidecar(d)
+        self.assertIn("no entries", str(cm.exception))
+
     def test_key_not_in_bib_rejected(self):
         d = self._dir(toml='[ghost]\nquotes = [{ text = "x" }]\n')
         with self.assertRaises(g.BuildError) as cm:

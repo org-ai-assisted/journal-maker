@@ -275,6 +275,12 @@ def _load_sidecar(adir):
             data = tomllib.load(fh)
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise BuildError("%s/source-quotes.toml: %s" % (adir, exc))
+    # An empty sidecar ({}) has no keys, so the per-entry checks below never run;
+    # fail it here as a BuildError rather than let render_sources reach pandoc with
+    # a possibly-absent refs.bib and surface a raw subprocess error.
+    if not data:
+        raise BuildError("%s/source-quotes.toml: no entries (remove the file, or add "
+                         "at least one [@citekey] table)" % adir)
     bib = os.path.join(adir, "refs.bib")
     bib_keys = _bib_keys(bib) if os.path.exists(bib) else set()
     for key, entry in data.items():
