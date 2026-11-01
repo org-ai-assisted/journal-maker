@@ -579,7 +579,7 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
 """
 
 
-def site_footer(journal, root_rel):
+def site_footer(journal, site_root):
     t = html.escape(journal["title"])
     issn = journal.get("issn", "")
     issn_bit = (" ISSN " + html.escape(issn)) if issn else ""
@@ -590,7 +590,10 @@ def site_footer(journal, root_rel):
         for link in links:
             href = link["href"]
             if not href.startswith(("http://", "https://")):
-                href = root_rel + href   # root-relative, same targets every page
+                # Absolute from site_root -- the SAME convention as the header nav,
+                # so a shared target (e.g. "Home") yields a byte-identical href in
+                # both navs and does not trip axe identical-links-same-purpose.
+                href = site_root + (href[2:] if href.startswith("./") else href)
             items.append('<a href="%s">%s</a>'
                          % (html.escape(href, quote=True),
                             html.escape(link["title"])))

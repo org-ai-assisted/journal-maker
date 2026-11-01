@@ -1020,7 +1020,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         html.escape(journal["title"], quote=True), root_rel,
         extra_head, _icon_links(root_rel), root_rel, root_rel,
         site_header(journal["title"], _site_root(journal)), body,
-        site_footer(journal, root_rel),
+        site_footer(journal, _site_root(journal)),
     )
 
 
@@ -1352,13 +1352,23 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
         # are keyed by the RAW citekey, so decode for those lookups (a non-ASCII
         # key would otherwise miss and silently drop its quote).
         rawkey = html.unescape(key)
-        num_html = ('<a class="csl-backref" href="#cite-%s">%s</a>' % (key, num)
+        # Distinct aria-labels keep the reference-number backref and the "full card"
+        # link from colliding under axe identical-links-same-purpose: the visible text
+        # ("[n]", "full card") repeats across references, so the accessible name must
+        # carry the unique reference number. HTML only; the PDF path never runs this.
+        refnum = num.strip().strip("[]").strip()
+        num_html = ('<a class="csl-backref" href="#cite-%s" '
+                    'aria-label="Reference %s, back to text">%s</a>'
+                    % (key, html.escape(refnum, quote=True), num)
                     if key in seen else num)
         meta = ('<a class="csl-citekey" href="#cite-%s">[@%s]</a>' % (key, key)
                 if key in seen else "")
         if rawkey in sidecar_keys:
-            meta += (' <a class="csl-source" href="sources/#%s">full card</a>'
-                     % key)
+            # aria-label must CONTAIN the visible text "full card" (WCAG 2.5.3
+            # label-in-name) while staying unique per reference (2.4.9).
+            meta += (' <a class="csl-source" href="sources/#%s" '
+                     'aria-label="full card for reference %s">full card</a>'
+                     % (key, html.escape(refnum, quote=True)))
         refmeta = '<div class="csl-refmeta">%s</div>' % meta if meta else ""
         qb = quote_blocks.get(rawkey, "")
         quote = '<div class="csl-quote">%s</div>' % qb if qb else ""
@@ -1530,8 +1540,17 @@ def _attribution_html(att):
     if att["venue"]:
         parts.append('<span class="rl">%s</span>' % html.escape(att["venue"]))
     if att["link"]:
-        src = '<a href="%s">%s</a>' % (html.escape(att["link"], quote=True),
-                                       html.escape(att["title"] or att["link"]))
+        # Two references can share a title (e.g. "microG" on CalyxOS vs /e/OS); the
+        # title-text link would then collide under axe identical-links-same-purpose
+        # (same accessible name, different href). Disambiguate with an aria-label
+        # that appends the publisher/venue when one is present.
+        disambig = att["name"] or att["venue"]
+        label = (' aria-label="%s, %s"'
+                 % (html.escape(att["title"] or att["link"], quote=True),
+                    html.escape(disambig, quote=True))) if disambig else ""
+        src = ('<a href="%s"%s>%s</a>'
+               % (html.escape(att["link"], quote=True), label,
+                  html.escape(att["title"] or att["link"])))
     else:
         src = html.escape(att["title"])
     if src and att["retrieved"]:
@@ -1576,8 +1595,14 @@ def _sources_card(key, entry, att):
     # Section pill links to the citation in the paper; emitted ONLY when the claim
     # names a section (no section -> no empty pill).
     def _pill(c):
-        return ('<a class="qclaim-sec" href="../#cite-%s">%s &rarr;</a>'
-                % (key, html.escape(c["section"]))) if c.get("section") else ""
+        # aria-label carries the citekey so pills sharing a section label across
+        # different cards do not collide under axe identical-links-same-purpose
+        # (same visible "Sec. N ->" text, different #cite-<key> target).
+        return ('<a class="qclaim-sec" href="../#cite-%s" '
+                'aria-label="%s in the paper, reference %s">%s &rarr;</a>'
+                % (key, html.escape(c["section"], quote=True),
+                   html.escape(key, quote=True), html.escape(c["section"]))
+                ) if c.get("section") else ""
     claims = entry.get("claims", [])
     claim_html = ""
     if len(claims) == 1:

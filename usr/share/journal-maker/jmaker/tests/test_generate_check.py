@@ -1065,10 +1065,13 @@ class TestFooterNav(unittest.TestCase):
     def test_footer_nav_relative_and_absolute(self):
         from jmaker import templates
         j = {"title": "J", "issn": "",
-             "footer_links": [{"title": "About", "href": "about/"},
+             "footer_links": [{"title": "Home", "href": "./"},
+                              {"title": "About", "href": "about/"},
                               {"title": "Src", "href": "https://e.example/x"}]}
-        out = templates.site_footer(j, "../../../")
-        self.assertIn('href="../../../about/">About', out)   # relative prefixed
+        out = templates.site_footer(j, "/")
+        # resolved against site_root (absolute), same convention as the header nav
+        self.assertIn('href="/">Home', out)                   # "./" -> site root
+        self.assertIn('href="/about/">About', out)            # relative prefixed
         self.assertIn('href="https://e.example/x">Src', out)  # absolute as-is
         self.assertIn("footer-nav", out)
 
@@ -1855,10 +1858,12 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertIn('<article class="qcard" id="alpha">', sources)
             self.assertIn("the alpha verbatim text", sources)
             self.assertIn('<a class="qkey" href="#alpha">[@alpha]</a>', sources)
-            self.assertIn('href="../#cite-alpha">Sec. 3', sources)   # claim pill
+            self.assertIn('href="../#cite-alpha" aria-label="Sec. 3 in the paper, '
+                          'reference alpha">Sec. 3', sources)   # claim pill
             # attribution from refs.bib (CSL-JSON): author "Org A", linked title
             self.assertIn('<span class="nm">Org A</span>', sources)
-            self.assertIn('href="https://a.example/x">Alpha page</a>', sources)
+            self.assertIn('href="https://a.example/x" aria-label="Alpha page, '
+                          'Org A">Alpha page</a>', sources)
             self.assertIn("retrieved 2026-01-01", sources)
             # gamma has no quote -> Remaining references, not a card
             self.assertIn("Remaining references", sources)
@@ -1928,8 +1933,14 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 page = fh.read()
             self.assertIn('<a id="cite-beta" href="#ref-beta"', page)   # #6 target
             self.assertEqual(page.count('id="cite-beta"'), 1)           # first only
-            self.assertIn('<a class="csl-backref" href="#cite-beta">', page)
-            self.assertIn('<a class="csl-source" href="sources/#beta">', page)  # #5
+            self.assertIn('<a class="csl-backref" href="#cite-beta"', page)
+            self.assertIn('<a class="csl-source" href="sources/#beta"', page)  # #5
+            # axe identical-links-same-purpose: the repeated "[n]" backref and
+            # "full card" text get a unique per-reference aria-label.
+            self.assertRegex(page, r'<a class="csl-backref" href="#cite-beta" '
+                                   r'aria-label="Reference \d+, back to text">')
+            self.assertRegex(page, r'<a class="csl-source" href="sources/#beta" '
+                                   r'aria-label="full card for reference \d+">')
             self.assertNotIn('href="sources/#alpha"', page)   # alpha has no card
             # stable [@key] backlink (#21) on every cited key + the quote inlined
             # in beta's reference entry (#22); alpha (no card) has neither quote nor link
@@ -1940,6 +1951,103 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             f = c.Findings()
             c.check_citation_parity(page, "p", f)
             self.assertEqual([m for _l, _p, m in f.errors], [])
+
+    @staticmethod
+    def _link_collisions(page):
+        """Links sharing an accessible name but pointing at different hrefs --
+        exactly what axe-core identical-links-same-purpose (WCAG 2.4.9 AAA) flags.
+        Accessible name = aria-label if present, else the whitespace-normalized
+        visible text (entities decoded); the generator emits no nested <a>."""
+        import re as _re
+        import html as _h
+        seen, bad = {}, []
+        for mo in _re.finditer(r'<a\b([^>]*)>(.*?)</a>', page, _re.S):
+            attrs, inner = mo.group(1), mo.group(2)
+            hm = _re.search(r'href="([^"]*)"', attrs)
+            if not hm:
+                continue
+            href = _h.unescape(hm.group(1))
+            am = _re.search(r'aria-label="([^"]*)"', attrs)
+            name = (am.group(1) if am
+                    else _re.sub(r'<[^>]+>', '', inner))
+            name = " ".join(_h.unescape(name).split())
+            if not name:
+                continue
+            if name in seen and seen[name] != href:
+                bad.append((name, seen[name], href))
+            else:
+                seen.setdefault(name, href)
+        return bad
+
+    @staticmethod
+    def _label_in_name_bad(page):
+        """Links whose aria-label does NOT contain their visible text -- axe-core
+        label-content-name-mismatch (WCAG 2.5.3, level A, on by default). Normalize
+        like axe: lowercase, non-alphanumeric runs -> single space, collapse; then
+        the visible text must be a CONTIGUOUS substring of the accessible name."""
+        import re as _re
+        import html as _h
+
+        def norm(s):
+            return " ".join(_re.sub(r'[^0-9a-z]+', ' ', _h.unescape(s).lower()).split())
+
+        bad = []
+        for mo in _re.finditer(r'<a\b([^>]*)>(.*?)</a>', page, _re.S):
+            attrs, inner = mo.group(1), mo.group(2)
+            am = _re.search(r'aria-label="([^"]*)"', attrs)
+            if not am:
+                continue
+            vis = norm(_re.sub(r'<[^>]+>', '', inner))
+            if vis and vis not in norm(am.group(1)):
+                bad.append((vis, am.group(1)))
+        return bad
+
+    def test_no_identical_links_same_purpose(self):
+        # Regression for axe identical-links-same-purpose: the repeated-text nav
+        # links the generator emits (reference "[n]" backref vs body marker, the
+        # "full card" source links, the sources-page "Sec. N ->" pills, and the
+        # attribution title link for two refs sharing a title) must each carry a
+        # distinct accessible name. RED on pre-aria-label code.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(
+                    "@misc{alpha, title={{Alpha page}}, author={{Org A}}, "
+                    "url={https://a.example/x}, urldate={2026-01-01}}\n"
+                    "@misc{beta, title={{Beta page}}, author={{Org B}}, "
+                    "url={https://b.example/y}, urldate={2026-01-01}}\n"
+                    # two entries deliberately sharing the title "microG"
+                    "@misc{calyx-mg, title={{microG}}, author={{CalyxOS}}, "
+                    "url={https://calyxos.example/microg}, urldate={2026-01-01}}\n"
+                    "@misc{eos-mg, title={{microG}}, author={{e Foundation}}, "
+                    "url={https://e.example/microg}, urldate={2026-01-01}}\n")
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBody [@beta], "
+                         "[@calyx-mg], [@eos-mg], and [@alpha].\n\n"
+                         "## 2. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                # beta and calyx-mg both claim the SAME section -> same "Sec. 3 ->"
+                # pill text, different #cite targets.
+                fh.write('[beta]\nclaims = [{ section = "Sec. 3", text = "b" }]\n'
+                         'quotes = [{ text = "bq" }]\n'
+                         '[calyx-mg]\nclaims = [{ section = "Sec. 3", text = "c" }]\n'
+                         'quotes = [{ text = "cq" }]\n'
+                         '[eos-mg]\nquotes = [{ text = "eq" }]\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            for rel in ("art/index.html", "art/sources/index.html"):
+                with open(os.path.join(out, rel), encoding="utf-8") as fh:
+                    page = fh.read()
+                bad = self._link_collisions(page)
+                self.assertEqual(bad, [], "%s: identical-links-same-purpose %r"
+                                 % (rel, bad))
+                # the aria-labels added for 2.4.9 must still satisfy 2.5.3
+                lin = self._label_in_name_bad(page)
+                self.assertEqual(lin, [], "%s: label-content-name-mismatch %r"
+                                 % (rel, lin))
 
     def test_enhance_references_decodes_nonascii_key(self):
         # A non-ASCII citekey is ASCII-entity-encoded in body_html, but the sidecar
@@ -1956,7 +2064,8 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                                    {k: "<blockquote>Q</blockquote>"})
         self.assertIn('id="cite-m&#252;ller"', out)                 # pretty anchor
         self.assertIn('<div class="csl-quote"><blockquote>Q</blockquote></div>', out)
-        self.assertIn('href="sources/#m&#252;ller">full card</a>', out)
+        self.assertIn('href="sources/#m&#252;ller"', out)
+        self.assertIn('>full card</a>', out)
 
     def test_citation_quote_store_for_hovercards(self):
         # The verbatim quote for a cited key is INLINED in that key's reference
@@ -1989,7 +2098,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertIn('blockquote class="quotation"', page)
             # stable [@key] backlink + visible [n] backref in the reference entry
             self.assertIn('<a class="csl-citekey" href="#cite-beta">[@beta]</a>', page)
-            self.assertIn('<a class="csl-backref" href="#cite-beta">', page)
+            self.assertIn('<a class="csl-backref" href="#cite-beta"', page)
             # gamma has a card but is not cited -> not in the reference list at all
             self.assertNotIn("uncited quote", page)
 
@@ -2399,11 +2508,12 @@ class TestSidecar(unittest.TestCase):
         self.assertIn('<article class="qcard" id="alpha">', card)
         self.assertIn('<a class="qkey" href="#alpha">[@alpha]</a>', card)
         self.assertIn("Lbl", card)
-        self.assertIn('href="../#cite-alpha">Sec. 3', card)   # claim -> paper citation
+        self.assertIn('href="../#cite-alpha" aria-label="Sec. 3 in the paper, '
+                      'reference alpha">Sec. 3', card)   # claim -> paper citation
         self.assertIn('<span class="qlabel-tag">abstract</span>', card)
         self.assertIn("qt", card)
         self.assertIn('<span class="nm">N</span>', card)
-        self.assertIn('href="https://e.example/p">Ti</a>', card)
+        self.assertIn('href="https://e.example/p" aria-label="Ti, N">Ti</a>', card)
         self.assertIn("retrieved 2026-10-31", card)
 
     def test_card_multi_claim_list(self):
@@ -2414,7 +2524,7 @@ class TestSidecar(unittest.TestCase):
                                {"name": "", "venue": "", "title": "",
                                 "link": "", "retrieved": ""})
         self.assertIn("qclaim-list", card)
-        self.assertEqual(card.count('href="../#cite-k">'), 2)
+        self.assertEqual(card.count('href="../#cite-k"'), 2)
 
     def test_card_claim_without_section_no_empty_pill(self):
         # A claim with no section emits NO pill (not an empty <a> pill).
