@@ -189,7 +189,7 @@ blockquote.quotation { position: relative; margin: 0; background: var(--surface)
 blockquote.quotation::before { content: "\\201C"; position: absolute; left: 0.7rem; top: 0.1rem; font-family: Georgia, "Times New Roman", serif; font-size: 3.2rem; line-height: 1; color: var(--accent); opacity: 0.3; pointer-events: none; }
 blockquote.quotation p { margin: 0 0 0.7rem; }
 blockquote.quotation p:last-child { margin-bottom: 0; }
-.qlabel-tag { font-family: var(--sans); font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.qlabel-tag { display: block; margin-bottom: 0.3rem; font-family: var(--sans); font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 /* Per-quote retrieval/provenance note -- separate from the verbatim quote text. */
 .qnote { font-family: var(--sans); font-style: normal; font-size: 0.72rem; color: var(--muted); margin-top: 0.3rem; }
 .blockquote-context { display: block; margin: 0.9rem 0 0; font-family: var(--sans); }
@@ -276,7 +276,8 @@ article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 
 :is(.hovercard, .csl-quote) blockquote.quotation::before { content: none; }
 :is(.hovercard, .csl-quote) blockquote.quotation p { margin: 0 0 0.4rem; font-size: 1.02rem; line-height: 1.6; font-style: italic; color: var(--fg); background: var(--introbg); border-radius: 9px; padding: 0.6rem 0.85rem 0.7rem 1rem; box-shadow: inset 10px 0 8px -8px rgba(0, 0, 0, 0.12); }
 :is(.hovercard, .csl-quote) blockquote.quotation p:last-of-type { margin-bottom: 0; }
-:is(.hovercard, .csl-quote) blockquote.quotation .qlabel-tag { display: block; font-style: normal; margin-bottom: 0.3rem; }
+/* label is block-level + spaced by the base rule; only the italic needs resetting here (the .csl-quote quote text is italic). */
+:is(.hovercard, .csl-quote) blockquote.quotation .qlabel-tag { font-style: normal; }
 :is(.hovercard, .csl-quote) .blockquote-context { display: block; position: relative; margin-top: 0.7rem; padding-left: 2.4rem; font-size: 0.75rem; line-height: 1.5; }
 :is(.hovercard, .csl-quote) .blockquote-context::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 1.8rem; border-top: 2px solid var(--fg); }
 :is(.hovercard, .csl-quote) .blockquote-context .nm { display: inline; font-weight: 600; font-size: 0.78rem; color: var(--fg); }
