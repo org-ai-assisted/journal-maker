@@ -1417,20 +1417,25 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
 
 # Auto-link in-text "Section N" cross-references to the matching <h2>. Pandoc strips
 # the leading number from an h2 id but keeps "N." in the visible text, so the
-# number->anchor map is read from the heading's inner text, not its id.
-_SECTION_H2_RE = re.compile(r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*(\d+)\.', re.I)
+# number->anchor map is read from the heading's inner text, not its id. The (?!\d)
+# keeps a subsection heading ("3.2. ...") out of the section-N map (it is not section 3).
+_SECTION_H2_RE = re.compile(r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*(\d+)\.(?!\d)', re.I)
 # A "Section N" / "Sections N, M and K" / "Sections N through M" run. Capitalized per
 # house style; `&amp;` because the body is HTML-entity-encoded. Each number is atomic
 # (?>\d+) with a (?!\.\d) guard: a trailing sub-number ("Section 3.5") is a reference
 # into a CITED EXTERNAL work, not this paper's section 3, so it must stay plain -- and
 # the atomic group stops "35.5" from degrading to a bare "3" via backtracking. A
 # sentence-ending period ("see Section 3.") is NOT a sub-number, so it still links.
+# The connective run (?>(...)+) absorbs a ", and" so an Oxford-comma list
+# ("Sections 8, 10, and 13") links every number, not just the first two.
 _SECTION_REF_RE = re.compile(
     r'\bSections?\s+(?>\d+)(?!\.\d)'
-    r'(?:\s*(?:,|and|through|to|&amp;|&)\s*(?>\d+)(?!\.\d))*')
-# Whole tags and whole <a>...</a> spans, so the linkifier never rewrites inside an
-# attribute or double-wraps an existing anchor.
-_HTML_TAG_OR_ANCHOR_RE = re.compile(r'(<a\b[^>]*>.*?</a>|<[^>]+>)', re.S | re.I)
+    r'(?:(?>(?:\s*(?:,|and|through|to|&amp;|&)\s*)+)(?>\d+)(?!\.\d))*')
+# Whole <pre>/<code> spans, whole <a>...</a> spans, and whole tags, so the linkifier
+# never rewrites inside code, double-wraps an existing anchor, or touches an attribute.
+_HTML_TAG_OR_ANCHOR_RE = re.compile(
+    r'(<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>|<a\b[^>]*>.*?</a>|<[^>]+>)',
+    re.S | re.I)
 _DIGITS_RE = re.compile(r'\d+')
 # A claim's `section` field names the paper section(s) a citation backs, e.g.
 # "Sec. 3", "Sec. 8, 12", "Secs. 5, 7", "Sec. 13, Table 4" (-> [13], "Table 4" is

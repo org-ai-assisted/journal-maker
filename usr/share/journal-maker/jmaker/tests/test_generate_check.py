@@ -2195,6 +2195,37 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertNotIn('aria-label="Section 3">3</a>.5', out)
         self.assertNotIn('aria-label="Section 35"', out)
 
+    def test_linkify_section_refs_oxford_and_code(self):
+        # Oxford-comma list must link EVERY section (regression: ", and" dropped the
+        # trailing number -- live in android-insecurity "Sections 8, 10, and 13"); and
+        # "Section N" inside <pre>/<code> is never rewritten. RED on the pre-fix code.
+        body = (
+            '<h2 id="s3">3. Model</h2><h2 id="s8">8. A</h2>'
+            '<h2 id="s10">10. B</h2><h2 id="s13">13. C</h2>'
+            '<p>As in Sections 8, 10, and 13 we note things. '
+            'Run <code>grep Section 3 file</code> next.</p>'
+            '<pre><code>see Section 3 for setup</code></pre>')
+        out = g._linkify_section_refs(body)
+        # every number in the Oxford-comma run links; connectives stay intact
+        self.assertIn('Sections <a href="#s8" aria-label="Section 8">8</a>, '
+                      '<a href="#s10" aria-label="Section 10">10</a>, and '
+                      '<a href="#s13" aria-label="Section 13">13</a> we note', out)
+        # code spans untouched even though section 3 is in the map
+        self.assertIn('<code>grep Section 3 file</code>', out)
+        self.assertIn('<pre><code>see Section 3 for setup</code></pre>', out)
+        self.assertNotIn('aria-label="Section 3"', out)
+
+    def test_linkify_section_refs_subsection_heading_not_mapped(self):
+        # A subsection H2 ("3.2. ...") must NOT register as this paper's section 3, so a
+        # prose "Section 3" with no top-level section-3 heading stays plain rather than
+        # jumping to the 3.2 heading. RED on the pre-(?!\d)-guard _SECTION_H2_RE.
+        body = ('<h2 id="sub">3.2. Methods detail</h2>'
+                '<p>As discussed in Section 3 above.</p>')
+        out = g._linkify_section_refs(body)
+        self.assertIn('in Section 3 above', out)
+        self.assertNotIn('<a href="#sub"', out)
+        self.assertNotIn('aria-label="Section 3"', out)
+
     def test_section_refs_linked_in_full_build(self):
         # Wiring guard: render_article must call _linkify_section_refs, so a numbered
         # section referenced in prose is clickable in the built page. RED if the
