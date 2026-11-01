@@ -1388,6 +1388,71 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
     return _REF_ENTRY_RE.sub(entry, body_html)
 
 
+# Auto-link in-text "Section N" cross-references to the matching <h2>. Pandoc strips
+# the leading number from an h2 id but keeps "N." in the visible text, so the
+# number->anchor map is read from the heading's inner text, not its id.
+_SECTION_H2_RE = re.compile(r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*(\d+)\.', re.I)
+# A "Section N" / "Sections N, M and K" / "Sections N through M" run. Capitalized per
+# house style; `&amp;` because the body is HTML-entity-encoded.
+_SECTION_REF_RE = re.compile(
+    r'\bSections?\s+\d+(?:\s*(?:,|and|through|to|&amp;|&)\s*\d+)*')
+# Whole tags and whole <a>...</a> spans, so the linkifier never rewrites inside an
+# attribute or double-wraps an existing anchor.
+_HTML_TAG_OR_ANCHOR_RE = re.compile(r'(<a\b[^>]*>.*?</a>|<[^>]+>)', re.S | re.I)
+_DIGITS_RE = re.compile(r'\d+')
+# A claim's `section` field names the paper section(s) a citation backs, e.g.
+# "Sec. 3", "Sec. 8, 12", "Secs. 5, 7", "Sec. 13, Table 4" (-> [13], "Table 4" is
+# not a section run), "Sec. 2/Sec. 3,13" (two runs -> [2, 3, 13]).
+_SEC_NUM_RUN_RE = re.compile(
+    r'Secs?\.\s*(\d+(?:(?:\s*,\s*|\s+and\s+|\s*&amp;\s*|\s*&\s*)\d+)*)', re.I)
+
+
+def _claim_section_nums(section_str):
+    """Ordered, de-duplicated section numbers named by a claim's `section` string
+    (only genuine "Sec. N"/"Secs. N, M" runs; a trailing "Table 4" is ignored)."""
+    nums = []
+    for mo in _SEC_NUM_RUN_RE.finditer(section_str or ""):
+        for d in _DIGITS_RE.findall(mo.group(1)):
+            n = int(d)
+            if n not in nums:
+                nums.append(n)
+    return nums
+
+
+def _linkify_section_refs(body_html):
+    """Wrap the bare number in an in-text "Section N" reference with an anchor to the
+    matching <h2> (HTML ONLY -- md_to_pdf never calls this; hyperref already makes the
+    PDF ToC/links clickable). Only the digit is linked; the words Section(s)/and/
+    through and the commas stay plain text. A number with no matching heading stays
+    plain (keeps the broken-link gate honest). Each target gets a distinct accessible
+    name (aria-label="Section N") so the axe identical-links-same-purpose rule is
+    satisfied, and the visible digit is a substring of that label (label-in-name).
+    The citeproc reference container (<div id="refs">) is left untouched."""
+    anchors = {}
+    for mo in _SECTION_H2_RE.finditer(body_html):
+        anchors.setdefault(int(mo.group(2)), mo.group(1))
+    if not anchors:
+        return body_html
+    idx = body_html.find('<div id="refs"')
+    prefix = body_html if idx == -1 else body_html[:idx]
+    suffix = "" if idx == -1 else body_html[idx:]
+
+    def link_number(mo):
+        anchor = anchors.get(int(mo.group(0)))
+        if anchor is None:
+            return mo.group(0)
+        return ('<a href="#%s" aria-label="Section %s">%s</a>'
+                % (anchor, mo.group(0), mo.group(0)))
+
+    def link_span(mo):
+        return _DIGITS_RE.sub(link_number, mo.group(0))
+
+    parts = _HTML_TAG_OR_ANCHOR_RE.split(prefix)
+    for i in range(0, len(parts), 2):
+        parts[i] = _SECTION_REF_RE.sub(link_span, parts[i])
+    return "".join(parts) + suffix
+
+
 def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None,
                    quote_blocks=None, cite_keys=None):
     rel_dir = _rel_dir(m)
@@ -1432,6 +1497,7 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
     body_html = _enhance_references(body_html, sidecar_keys or set(),
                                     quote_blocks or {})
+    body_html = _linkify_section_refs(body_html)
     # A sidecar entry that presents <key> as cited -- a claim section pill linking
     # ../#cite-<key>, or a no_quote "Remaining references" line whose note says
     # "cited but no verbatim text" -- requires the paper to actually cite <key>.

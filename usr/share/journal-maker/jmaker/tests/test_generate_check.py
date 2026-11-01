@@ -2086,6 +2086,57 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 self.assertEqual(lin, [], "%s: label-content-name-mismatch %r"
                                  % (rel, lin))
 
+    def test_linkify_section_refs(self):
+        # In-text "Section N" references get the bare number linked to the matching
+        # <h2> (pandoc keeps "N." in the heading text but strips it from the id).
+        # RED before _linkify_section_refs existed. Covers: per-target-unique
+        # aria-label, connective words/commas left intact, an unmapped number left
+        # plain, an existing anchor not double-wrapped, the #refs container untouched.
+        body = (
+            '<h2 id="bg">8. Background</h2>'
+            '<h2 id="detect">9. Detection</h2>'
+            '<h2 id="eval">12. Evaluation</h2>'
+            '<p>See Section 9 and Sections 8 and 12. Section 99 is out of range. '
+            'An <a href="#detect">existing Section 9 link</a> stays.</p>'
+            '<div id="refs"><div class="csl-entry">Cites Section 9 here.</div></div>')
+        out = g._linkify_section_refs(body)
+        # mapped numbers: only the digit linked, unique aria per target
+        self.assertIn('See Section <a href="#detect" aria-label="Section 9">9</a> and',
+                      out)
+        self.assertIn('Sections <a href="#bg" aria-label="Section 8">8</a> and '
+                      '<a href="#eval" aria-label="Section 12">12</a>', out)
+        # unmapped number stays plain text (protects the broken-link gate)
+        self.assertNotIn('aria-label="Section 99"', out)
+        self.assertIn('Section 99 is out of range', out)
+        # existing anchor untouched -- no nested/double link
+        self.assertIn('<a href="#detect">existing Section 9 link</a>', out)
+        # citeproc reference container left verbatim
+        self.assertIn('<div id="refs"><div class="csl-entry">Cites Section 9 here.'
+                      '</div></div>', out)
+        # the added links are collision-safe (2.4.9) and label-in-name clean (2.5.3)
+        self.assertEqual(self._link_collisions(out), [])
+        self.assertEqual(self._label_in_name_bad(out), [])
+
+    def test_section_refs_linked_in_full_build(self):
+        # Wiring guard: render_article must call _linkify_section_refs, so a numbered
+        # section referenced in prose is clickable in the built page. RED if the
+        # call-site is removed (the helper-only test would still pass).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with open(os.path.join(d, "articles", "art", "paper.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation purposes here.\n\n## 1. Intro\n\n"
+                         "See Section 2 for details.\n\n## 2. More\n\nMore.\n\n"
+                         "## 3. End\n\nEnd.\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                page = fh.read()
+        self.assertIn('aria-label="Section 2">2</a>', page)
+        self.assertIn('Section <a href="#', page)
+
     def test_enhance_references_decodes_nonascii_key(self):
         # A non-ASCII citekey is ASCII-entity-encoded in body_html, but the sidecar
         # dict/set are keyed by the RAW key; _enhance_references must decode for the
