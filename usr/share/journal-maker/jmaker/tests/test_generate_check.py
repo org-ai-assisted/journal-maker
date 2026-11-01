@@ -2002,6 +2002,59 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with self.assertRaises(g.BuildError):
                 g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
 
+    def test_per_section_anchor_namespace_no_collision(self):
+        # The per-section anchor lives in its own citesec- namespace, so key `beta`'s
+        # Sec. 1 anchor (citesec-beta-1) never collides with a DIFFERENT key literally
+        # named `beta-s1` whose document anchor is cite-beta-s1. (Old cite-<key>-s<N>
+        # scheme produced a duplicate id + a false-pass.)
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write('@misc{beta, title={{B}}, author={{O}}, '
+                         'url={https://b.example/y}, urldate={2026-01-01}}\n'
+                         '@misc{beta-s1, title={{B1}}, author={{O}}, '
+                         'url={https://b.example/z}, urldate={2026-01-01}}\n')
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBoth [@beta] and "
+                         "[@beta-s1].\n\n## 2. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[beta]\nclaims = [{ section = "Sec. 1", text = "x" }]\n'
+                         'quotes = [{ text = "q" }]\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn('id="cite-beta-s1"', page)        # beta-s1's doc anchor
+            self.assertEqual(page.count('id="cite-beta-s1"'), 1)   # no duplicate
+            self.assertIn('id="citesec-beta-1"', page)      # beta's per-section anchor
+
+    def test_citation_under_unnumbered_heading_not_section_attributed(self):
+        # A citation under an UNnumbered heading maps to no section, so a claim that
+        # labels it with a numbered section fails the build (old code leaked it into
+        # the preceding numbered section and the mislabel passed).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nNo citation here.\n\n"
+                         "## Notes\n\nOnly here [@beta].\n\n"
+                         "## 2. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                # beta is cited only under the unnumbered "Notes" heading
+                fh.write('[beta]\nclaims = [{ section = "Sec. 1", text = "x" }]\n'
+                         'quotes = [{ text = "q" }]\n')
+            out = os.path.join(d, "s")
+            with self.assertRaises(g.BuildError):
+                g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+
     def test_sidecar_neutralizes_dangerous_url(self):
         # A dangerous scheme in a refs.bib url must be neutralized on the sources
         # page (the hand-assembled card HTML runs through _sanitize_html).
