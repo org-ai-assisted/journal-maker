@@ -1418,7 +1418,10 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     # citation grammar produced -- not a markdown pre-scan, which a narrative
     # "@key showed" (cited) or an indented-code "[@key]" (not cited) would fool.
     for k in sorted(cite_keys or set()):
-        if ('id="cite-%s"' % k) not in body_html:
+        # body_html is ASCII-entity-encoded, so the stamped anchor id carries the
+        # entity form of a non-ASCII key (e.g. cite-m&#xfc;ller); encode k the same
+        # way before matching, or a non-ASCII cited key would spuriously fail here.
+        if ('id="cite-%s"' % _ascii_entities_html(k)) not in body_html:
             raise BuildError(
                 "%s/source-quotes.toml: @%s is presented as a cited source (a claim "
                 "section pill or a Remaining-references entry), but paper.md does "

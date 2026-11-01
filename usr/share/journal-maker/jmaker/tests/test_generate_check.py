@@ -2099,6 +2099,30 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
                 self.assertIn('id="cite-beta"', fh.read())
 
+    def test_nonascii_cited_key_builds(self):
+        # A non-ASCII cited key: body_html entity-encodes it, so the stamped anchor
+        # is cite-m&#xfc;ller; the cited-key validation must encode the key too, or
+        # the build spuriously fails "does not cite". Section pill -> key must cite.
+        key = "m" + chr(0xfc) + "ller"
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@misc{%s, author={{X}}, title={{T}}, "
+                         "url={https://e.example/x}}\n" % key)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBody [@%s].\n\n"
+                         "## 2. References\n\n::: {#refs}\n:::\n" % key)
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('["%s"]\nclaims = [{ section = "S", text = "c" }]\n'
+                         'quotes = [{ text = "q" }]\n' % key)
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)  # no raise
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                self.assertIn('id="cite-m&#xfc;ller"', fh.read())
+
     def test_indented_code_citation_does_not_satisfy_pill(self):
         # F2 regression: a [@beta] ONLY inside a 4-space indented code block is not
         # a citation to pandoc (no #cite-beta), so a section pill for beta must fail
