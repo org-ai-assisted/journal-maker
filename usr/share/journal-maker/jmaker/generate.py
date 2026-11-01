@@ -327,7 +327,7 @@ def _load_sidecar(adir):
                     or not item["text"].strip()):
                 raise BuildError("%s/source-quotes.toml: [%s] each claim/quote "
                                  "needs a non-empty text" % (adir, key))
-            for opt in ("section", "label"):
+            for opt in ("section", "label", "note"):
                 if opt in item and not isinstance(item[opt], str):
                     raise BuildError("%s/source-quotes.toml: [%s] %s must be a "
                                      "string" % (adir, key, opt))
@@ -337,7 +337,7 @@ def _load_sidecar(adir):
                 raise BuildError("%s/source-quotes.toml: [%s] claim has unknown "
                                  "field(s): %s" % (adir, key, ", ".join(sorted(extra))))
         for q in quotes:
-            extra = set(q) - {"label", "text"}
+            extra = set(q) - {"label", "text", "note"}
             if extra:
                 raise BuildError("%s/source-quotes.toml: [%s] quote has unknown "
                                  "field(s): %s" % (adir, key, ", ".join(sorted(extra))))
@@ -1469,10 +1469,11 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     if journal.get("source_base_url"):
         tex_src = "%s/_site/%s/%s.tex" % (
             journal["source_base_url"], _rel_dir(m), m["slug"])
-        action_links.append('<a href="%s">LaTeX source</a>'
+        action_links.append('<a class="sources-aid" href="%s">LaTeX source</a>'
                             % html.escape(tex_src, quote=True))
     else:
-        action_links.append('<a href="%s.tex">LaTeX source</a>' % m["slug"])
+        action_links.append('<a class="sources-aid" href="%s.tex">LaTeX source</a>'
+                            % m["slug"])
     if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")
@@ -1556,6 +1557,11 @@ def _quote_block(quotes, att):
             tag = (('<span class="qlabel-tag">%s</span> ' % html.escape(q["label"]))
                    if i == 0 and q.get("label") else "")
             paras.append("<p>%s%s</p>" % (tag, html.escape(para)))
+        if q.get("note"):
+            # Retrieval/provenance metadata -- kept OUT of the verbatim quote text
+            # and rendered as a small separate annotation (a <div>, so it escapes
+            # the quote <p> styling).
+            paras.append('<div class="qnote">%s</div>' % html.escape(q["note"]))
     return ('<blockquote class="quotation">%s%s</blockquote>'
             % ("".join(paras), _attribution_html(att)))
 

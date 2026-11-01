@@ -1509,7 +1509,8 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
                 page = fh.read()
             self.assertIn(
-                '<a href="https://example.com/r/blob/master/_site/art/art.tex">'
+                '<a class="sources-aid" '
+                'href="https://example.com/r/blob/master/_site/art/art.tex">'
                 "LaTeX source</a>", page)
 
     def test_inline_styles_stripped_and_favicon_linked(self):
@@ -2352,6 +2353,7 @@ class TestSidecar(unittest.TestCase):
         # an AttributeError the CLI does not catch. Validate at load as BuildError.
         for toml in ('[alpha]\nlabel = 1\nquotes = [{ text = "x" }]\n',
                      '[alpha]\nquotes = [{ text = "x", label = 2 }]\n',
+                     '[alpha]\nquotes = [{ text = "x", note = 1 }]\n',
                      '[alpha]\nclaims = [{ section = 3, text = "c" }]\n'
                      'quotes = [{ text = "x" }]\n',
                      '[alpha]\nno_quote = true\n',
@@ -2458,7 +2460,7 @@ class TestSidecar(unittest.TestCase):
     def test_unknown_claim_and_quote_field_rejected(self):
         for toml in ('[alpha]\nclaims = [{ section = "S", text = "c", oops = "z" }]\n'
                      'quotes = [{ text = "x" }]\n',
-                     '[alpha]\nquotes = [{ text = "x", note = "z" }]\n'):
+                     '[alpha]\nquotes = [{ text = "x", bogus = "z" }]\n'):
             d = self._dir(toml=toml)
             with self.assertRaises(g.BuildError) as cm:
                 g._load_sidecar(d)
@@ -2500,6 +2502,21 @@ class TestSidecar(unittest.TestCase):
         self.assertEqual(blk.count('<span class="qlabel-tag">L</span>'), 1)
         self.assertIn('<span class="qlabel-tag">L</span> para one</p>', blk)
         self.assertIn("<p>para two</p>", blk)
+
+    def test_quote_note_rendered_separately(self):
+        # A per-quote note is retrieval provenance -- rendered as a separate
+        # <div class="qnote">, NEVER mixed into the verbatim quote <p>.
+        blk = g._quote_block(
+            [{"text": "the quote", "note": "retrieved via headless chromium render"}],
+            {"name": "", "venue": "", "title": "", "link": "", "retrieved": ""})
+        self.assertIn("<p>the quote</p>", blk)
+        self.assertIn('<div class="qnote">retrieved via headless chromium render'
+                      '</div>', blk)
+        self.assertNotIn("render</p>", blk)   # note is not inside the quote paragraph
+
+    def test_quote_note_field_accepted(self):
+        d = self._dir(toml='[alpha]\nquotes = [{ text = "x", note = "n" }]\n')
+        self.assertIn("alpha", g._load_sidecar(d))
 
     def test_sanitize_url_allowlist_blocks_obfuscated_scheme(self):
         # The href/src guard allow-lists schemes (http/https/mailto + relative),

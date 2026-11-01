@@ -189,6 +189,8 @@ blockquote.quotation::before { content: "\\201C"; position: absolute; left: 0.7r
 blockquote.quotation p { margin: 0 0 0.7rem; }
 blockquote.quotation p:last-child { margin-bottom: 0; }
 .qlabel-tag { font-family: var(--sans); font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+/* Per-quote retrieval/provenance note -- separate from the verbatim quote text. */
+.qnote { font-family: var(--sans); font-style: normal; font-size: 0.72rem; color: var(--muted); margin-top: 0.3rem; }
 .blockquote-context { display: block; margin: 0.9rem 0 0; font-family: var(--sans); }
 .blockquote-context .nm { display: block; font-weight: 600; font-size: 0.9rem; color: var(--fg); }
 .blockquote-context .rl { display: block; font-size: 0.84rem; color: var(--muted); }
