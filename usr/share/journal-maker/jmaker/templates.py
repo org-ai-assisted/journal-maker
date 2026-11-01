@@ -260,7 +260,7 @@ article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 
 .hovercard .blockquote-context::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 1.8rem; border-top: 2px solid var(--fg); }
 .hovercard .blockquote-context .nm { display: inline; font-weight: 600; font-size: 0.78rem; color: var(--fg); }
 .hovercard .blockquote-context .rl { display: inline; font-size: 0.75rem; color: var(--muted); }
-.hovercard .blockquote-context .rl::before { content: " \00B7 "; }
+.hovercard .blockquote-context .rl:not(:first-child)::before { content: " \\00B7\\20"; }
 .hovercard .blockquote-context .src { display: block; margin-top: 0.15rem; font-size: 0.75rem; color: var(--muted); }
 /* Nav bar doubles as the drag handle (reposition the pinned card by mouse); the
    dotted grip is pushed left, the buttons stay right. */
@@ -483,10 +483,11 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     // Drag the card by its nav bar to reposition it (pointer); dragging pins it so
     // it does not auto-hide, and sets `moved` so stepping refs keeps the new spot.
     (function () {
-      var dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
+      var dragging = false, activeId = -1, sx = 0, sy = 0, sl = 0, st = 0;
       cnav.addEventListener("pointerdown", function (e) {
+        if (dragging) { return; }   // ignore a second pointer (multi-touch)
         if (e.target.closest && e.target.closest("button")) { return; }
-        dragging = true; pinned = true; moved = true; cancelHide();
+        dragging = true; activeId = e.pointerId; pinned = true; moved = true; cancelHide();
         sx = e.clientX; sy = e.clientY;
         sl = parseFloat(card.style.left) || 0; st = parseFloat(card.style.top) || 0;
         card.classList.add("dragging");
@@ -494,7 +495,7 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
         e.preventDefault();
       });
       cnav.addEventListener("pointermove", function (e) {
-        if (!dragging) { return; }
+        if (!dragging || e.pointerId !== activeId) { return; }
         var nl = sl + (e.clientX - sx), nt = st + (e.clientY - sy);
         var maxL = window.pageXOffset + document.documentElement.clientWidth - card.offsetWidth - 8;
         if (nl > maxL) { nl = maxL; }
@@ -502,7 +503,7 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
         if (nt < window.pageYOffset + 8) { nt = window.pageYOffset + 8; }
         card.style.left = nl + "px"; card.style.top = nt + "px";
       });
-      function endDrag() { if (dragging) { dragging = false; card.classList.remove("dragging"); } }
+      function endDrag(e) { if (dragging && (!e || e.pointerId === activeId)) { dragging = false; activeId = -1; card.classList.remove("dragging"); } }
       cnav.addEventListener("pointerup", endDrag);
       cnav.addEventListener("pointercancel", endDrag);
     })();

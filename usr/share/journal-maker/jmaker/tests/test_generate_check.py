@@ -858,6 +858,20 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn("ArrowLeft", js)
         self.assertIn("ArrowRight", js)
         self.assertIn('getElementById("cq-"', js)   # prefer the quote block
+        # hovercard is draggable by its nav bar, single-pointer (no multi-touch hijack)
+        self.assertIn("setPointerCapture", js)
+        self.assertIn("activeId", js)
+        self.assertIn("e.pointerId !== activeId", js)
+
+    def test_hovercard_separator_css_escape(self):
+        from jmaker import templates
+        css = templates.STYLE_CSS
+        # The venue separator must emit the CSS escape \00B7\20 (middot + space); a
+        # single backslash in the non-raw STYLE_CSS would be a NUL/control char.
+        self.assertIn(r"\00B7\20", css)
+        self.assertNotIn("\x00", css)
+        # separator renders only when a name precedes the venue span
+        self.assertIn(".rl:not(:first-child)::before", css)
 
     def test_opengraph_tags(self):
         og = g._opengraph("T", "An abstract.", "https://e.example/x/",
