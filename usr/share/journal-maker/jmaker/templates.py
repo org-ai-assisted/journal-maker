@@ -174,12 +174,16 @@ main.sources > h1 { margin-bottom: 1.5rem; }
 .qkey:hover { text-decoration: underline; }
 .qlabel { font-family: var(--sans); font-weight: 650; font-size: 1.02rem; min-width: 0; }
 /* Paper claim: a structured block above the quote; the section pill links into
-   the paper at the exact citation (#cite-key, highlighted on :target). */
+   the paper at that section's citation (#cite-<key>-s<N>). */
 .qclaim { margin: 0 0 0.7rem; padding-left: 0.75rem; border-left: 2px solid var(--rule); }
 .qclaim-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; margin-bottom: 0.25rem; }
 .qclaim-label { font-family: var(--sans); font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .qclaim-sec { font-family: var(--sans); font-size: 0.72rem; font-weight: 650; color: var(--accent); text-decoration: none; border: 1px solid var(--rule); border-radius: 999px; padding: 0.03rem 0.52rem; white-space: nowrap; }
 .qclaim-sec:hover, .qclaim-sec:focus-visible { background: var(--surface); text-decoration: underline; }
+/* Per-section jump target a "Sec. N" pill links to (#cite-<key>-s<N>): an empty
+   inline span before the key's citation in that section. scroll-margin keeps the
+   deep-linked citation clear of the viewport top. */
+.cite-sec-anchor { scroll-margin-top: 2rem; }
 .qclaim-text { font-family: var(--sans); font-size: 0.92rem; color: var(--fg); margin: 0; line-height: 1.5; }
 ul.qclaim-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
 ul.qclaim-list li { font-family: var(--sans); font-size: 0.92rem; color: var(--fg); line-height: 1.5; display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: baseline; }
