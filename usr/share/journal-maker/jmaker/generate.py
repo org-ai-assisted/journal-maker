@@ -1344,17 +1344,44 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
       across edits; the @key is);
     - inline the verbatim source quote + attribution (the SAME block the citation
       hovercard shows), plus a link to its full sources-page card, so the preview
-      and the reference area carry the same information."""
+      and the reference area carry the same information;
+    - drop a per-section anchor (cite-<key>-s<N>) before the first citation of each
+      key in each section, so a sources-card "Sec. N" pill can jump to THAT
+      section's citation -- pandoc puts the single #cite-<key> on the first citation
+      document-wide, which may sit in a different section than the claim names."""
     seen = set()
+    seen_sec = set()        # (key, section_number) already anchored within-section
     quote_blocks = quote_blocks or {}
+    # Section boundaries (char offset -> number) from the numbered <h2>s, so each
+    # in-text citation can be tagged with the section it falls in.
+    headings = sorted((mo.start(), int(mo.group(2)))
+                      for mo in _SECTION_H2_RE.finditer(body_html))
+
+    def _section_at(pos):
+        sec = None
+        for hpos, num in headings:
+            if hpos <= pos:
+                sec = num
+            else:
+                break
+        return sec
 
     def id_first(mo):
         key = mo.group(1)
+        # Per-section anchor before the key's FIRST citation in this section (an empty
+        # span, so the <a>'s own #cite-<key> id -- load-bearing for the backref/
+        # :target -- is left untouched).
+        prefix = ""
+        sec = _section_at(mo.start())
+        if sec is not None and (key, sec) not in seen_sec:
+            seen_sec.add((key, sec))
+            prefix = ('<span class="cite-sec-anchor" id="cite-%s-s%d"></span>'
+                      % (key, sec))
         if key in seen:
-            return mo.group(0)
+            return prefix + mo.group(0)
         seen.add(key)
-        return ('<a id="cite-%s" href="#ref-%s" role="doc-biblioref">'
-                % (key, key))
+        return prefix + ('<a id="cite-%s" href="#ref-%s" role="doc-biblioref">'
+                         % (key, key))
     body_html = _CITE_ANCHOR_RE.sub(id_first, body_html)
 
     def entry(mo):
@@ -1461,7 +1488,7 @@ def _linkify_section_refs(body_html):
 
 
 def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None,
-                   quote_blocks=None, cite_keys=None):
+                   quote_blocks=None, cite_keys=None, claim_sections=None):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
@@ -1521,6 +1548,19 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
                 "%s/source-quotes.toml: @%s is presented as a cited source (a claim "
                 "section pill or a Remaining-references entry), but paper.md does "
                 "not cite %s -- no #cite-%s anchor" % (m["_dir"], k, k, k))
+    # A claim's "Sec. N" pill links to the key's citation IN section N
+    # (#cite-<key>-s<N>, stamped by _enhance_references only where the key is cited
+    # in that section). Fail the build if a declared section has no such citation --
+    # the label is wrong (or the citation is missing) and the pill would mislead.
+    for k in sorted(claim_sections or {}):
+        ek = _ascii_entities_html(k)
+        for n in claim_sections[k]:
+            if ('id="cite-%s-s%d"' % (ek, n)) not in body_html:
+                raise BuildError(
+                    "%s/source-quotes.toml: @%s has a claim labeled Sec. %d, but "
+                    "paper.md does not cite %s in Section %d -- fix the section "
+                    "label or add the citation (no #cite-%s-s%d anchor)"
+                    % (m["_dir"], k, n, k, n, k, n))
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
 
@@ -1684,14 +1724,20 @@ def _sources_card(key, entry, att):
     # Section pill links to the citation in the paper; emitted ONLY when the claim
     # names a section (no section -> no empty pill).
     def _pill(c):
+        if not c.get("section"):
+            return ""
+        # Link to the key's citation IN the named section (the first, for a
+        # multi-section label like "Sec. 8, 12"); fall back to the document-wide
+        # #cite-<key> only when the section has no parseable number.
+        nums = _claim_section_nums(c["section"])
+        target = ("cite-%s-s%d" % (key, nums[0])) if nums else ("cite-%s" % key)
         # aria-label carries the citekey so pills sharing a section label across
         # different cards do not collide under axe identical-links-same-purpose
-        # (same visible "Sec. N ->" text, different #cite-<key> target).
-        return ('<a class="qclaim-sec" href="../#cite-%s" '
+        # (same visible "Sec. N ->" text, different target).
+        return ('<a class="qclaim-sec" href="../#%s" '
                 'aria-label="%s in the paper, reference %s">%s &rarr;</a>'
-                % (key, html.escape(c["section"], quote=True),
-                   html.escape(key, quote=True), html.escape(c["section"]))
-                ) if c.get("section") else ""
+                % (target, html.escape(c["section"], quote=True),
+                   html.escape(key, quote=True), html.escape(c["section"])))
     claims = entry.get("claims", [])
     claim_html = ""
     if len(claims) == 1:
@@ -1724,10 +1770,11 @@ def render_sources(m, journal):
     """Render the structured source-quotes.toml reviewer aid as quotation cards at
     <slug>/sources/, linked from the article. Each verbatim quote becomes a card;
     attribution (name, venue, title, link, retrieved) is pulled from refs.bib via
-    the @key (CSL-JSON). Returns (rel_dir, page, card_keys, quote_blocks, cite_keys)
-    -- card_keys have a quote (a sources/#key anchor the paper links to); cite_keys
-    must be cited in the paper (a section pill links ../#cite-<key>, or a no_quote
-    entry is listed as a cited reference), which render_article validates."""
+    the @key (CSL-JSON). Returns (rel_dir, page, card_keys, quote_blocks, cite_keys,
+    claim_sections) -- card_keys have a quote (a sources/#key anchor the paper links
+    to); cite_keys must be cited in the paper (a section pill links ../#cite-<key>, or
+    a no_quote entry is listed as a cited reference); claim_sections maps a key to the
+    section numbers its pills link into -- render_article validates both."""
     data = _load_sidecar(m["_dir"])
     csl = _csl_entries(os.path.join(m["_dir"], "refs.bib"))
     rel_dir = _rel_dir(m) + "/sources"
@@ -1738,6 +1785,8 @@ def render_sources(m, journal):
     quote_blocks = {}   # key -> processed quote block, for the paper's hovercards
     cite_keys = set()   # keys the paper MUST cite: a section pill links ../#cite-key,
     #                     or a no_quote "Remaining references" entry claims to be cited
+    claim_sections = {}  # key -> section numbers its claim pills link into; render_article
+    #                      validates each has a citation of the key in that section
     for key, entry in data.items():
         if key not in csl:
             raise BuildError("%s/source-quotes.toml: @%s has no refs.bib CSL-JSON "
@@ -1746,6 +1795,13 @@ def render_sources(m, journal):
         if any(cl.get("section") for cl in entry.get("claims", [])) \
                 or not entry.get("quotes"):
             cite_keys.add(key)
+        nums = []
+        for cl in entry.get("claims", []):
+            for n in _claim_section_nums(cl.get("section", "")):
+                if n not in nums:
+                    nums.append(n)
+        if nums:
+            claim_sections[key] = nums
         att = _csl_attribution(csl[key])
         if entry.get("quotes"):
             card_keys.add(key)
@@ -1800,7 +1856,7 @@ def render_sources(m, journal):
     page = _page(m.get("language", journal["language"]),
                  "%s -- %s" % (title, journal["title"]), description, canonical,
                  extra, main, journal, root_rel)
-    return rel_dir, page, card_keys, quote_blocks, cite_keys
+    return rel_dir, page, card_keys, quote_blocks, cite_keys, claim_sections
 
 
 def render_page(slug, md_text, journal):
@@ -2157,9 +2213,10 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
         card_keys = set()
         quote_blocks = {}
         cite_keys = set()
+        claim_sections = {}
         if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
-            s_rel, s_page, card_keys, quote_blocks, cite_keys = render_sources(
-                m, journal)
+            (s_rel, s_page, card_keys, quote_blocks, cite_keys,
+             claim_sections) = render_sources(m, journal)
             s_dest = os.path.join(out_dir, s_rel)
             os.makedirs(s_dest, exist_ok=True)
             with open(os.path.join(s_dest, "index.html"), "w",
@@ -2168,7 +2225,8 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
             urls.append("%s/%s/" % (journal["base_url"], s_rel))
         rel_dir, pdf_name, page = render_article(
             m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf,
-            sidecar_keys=card_keys, quote_blocks=quote_blocks, cite_keys=cite_keys)
+            sidecar_keys=card_keys, quote_blocks=quote_blocks, cite_keys=cite_keys,
+            claim_sections=claim_sections)
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:

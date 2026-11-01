@@ -1864,7 +1864,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
 
     _TOML = ('[alpha]\nlabel = "Alpha source"\n'
-             'claims = [{ section = "Sec. 3", text = "the alpha claim" }]\n'
+             'claims = [{ section = "Sec. 1", text = "the alpha claim" }]\n'
              'quotes = [{ text = "the alpha verbatim text" }]\n'
              '[gamma]\nno_quote = "paywalled; no free full text."\n')
 
@@ -1894,8 +1894,8 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertIn('<article class="qcard" id="alpha">', sources)
             self.assertIn("the alpha verbatim text", sources)
             self.assertIn('<a class="qkey" href="#alpha">[@alpha]</a>', sources)
-            self.assertIn('href="../#cite-alpha" aria-label="Sec. 3 in the paper, '
-                          'reference alpha">Sec. 3', sources)   # claim pill
+            self.assertIn('href="../#cite-alpha-s1" aria-label="Sec. 1 in the paper, '
+                          'reference alpha">Sec. 1', sources)   # per-section claim pill
             # attribution from refs.bib (CSL-JSON): author "Org A", linked title
             self.assertIn('<span class="nm">Org A</span>', sources)
             self.assertIn('href="https://a.example/x" aria-label="Alpha page, '
@@ -1922,6 +1922,63 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertEqual(found, 1)
             self.assertFalse(any("sources" in p for _l, p, _m in f.errors),
                              [i for i in f.errors])
+
+    def test_per_section_cite_anchor_and_pill(self):
+        # A key cited in several sections gets a per-section anchor (cite-<key>-s<N>)
+        # before its first citation in each, and a claim's "Sec. N" pill links there
+        # -- so it jumps to THAT section's citation, not pandoc's document-wide first
+        # (#cite-<key>). The document-wide anchor stays for the reference backref.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nFirst [@beta].\n\n"
+                         "## 2. Background\n\nNothing here.\n\n## 3. Threat\n\n"
+                         "Again [@beta].\n\n## 4. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[beta]\nclaims = [{ section = "Sec. 1", text = "a" },'
+                         '{ section = "Sec. 3", text = "b" }]\n'
+                         'quotes = [{ text = "q" }]\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"),
+                      encoding="utf-8") as fh:
+                page = fh.read()
+            self.assertIn('id="cite-beta-s1"', page)        # per-section anchors
+            self.assertIn('id="cite-beta-s3"', page)
+            self.assertIn('id="cite-beta"', page)           # document-wide kept
+            with open(os.path.join(out, "art", "sources", "index.html"),
+                      encoding="utf-8") as fh:
+                sources = fh.read()
+            self.assertIn('href="../#cite-beta-s1"', sources)   # pills -> per-section
+            self.assertIn('href="../#cite-beta-s3"', sources)
+
+    def test_mislabeled_claim_section_fails_build(self):
+        # Canary: a claim labeled with a section where its key is NOT cited must fail
+        # the build (the pill would dead-link / mislead). RED on pre-check code,
+        # which emits no such anchor check and builds without raising.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nOnly here [@beta].\n\n"
+                         "## 2. Background\n\nNo citation.\n\n"
+                         "## 3. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                # beta is cited only in Section 1, but the claim labels Section 2
+                fh.write('[beta]\nclaims = [{ section = "Sec. 2", text = "x" }]\n'
+                         'quotes = [{ text = "q" }]\n')
+            out = os.path.join(d, "s")
+            with self.assertRaises(g.BuildError):
+                g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
 
     def test_sidecar_neutralizes_dangerous_url(self):
         # A dangerous scheme in a refs.bib url must be neutralized on the sources
@@ -2066,11 +2123,11 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                          "## 2. References\n\n::: {#refs}\n:::\n")
             with open(os.path.join(ad, "source-quotes.toml"), "w",
                       encoding="utf-8") as fh:
-                # beta and calyx-mg both claim the SAME section -> same "Sec. 3 ->"
-                # pill text, different #cite targets.
-                fh.write('[beta]\nclaims = [{ section = "Sec. 3", text = "b" }]\n'
+                # beta and calyx-mg both claim the SAME section (where they are cited)
+                # -> same "Sec. 1 ->" pill text, different per-section #cite targets.
+                fh.write('[beta]\nclaims = [{ section = "Sec. 1", text = "b" }]\n'
                          'quotes = [{ text = "bq" }]\n'
-                         '[calyx-mg]\nclaims = [{ section = "Sec. 3", text = "c" }]\n'
+                         '[calyx-mg]\nclaims = [{ section = "Sec. 1", text = "c" }]\n'
                          'quotes = [{ text = "cq" }]\n'
                          '[eos-mg]\nquotes = [{ text = "eq" }]\n')
             out = os.path.join(d, "s")
@@ -2617,8 +2674,8 @@ class TestSidecar(unittest.TestCase):
         self.assertIn('<article class="qcard" id="alpha">', card)
         self.assertIn('<a class="qkey" href="#alpha">[@alpha]</a>', card)
         self.assertIn("Lbl", card)
-        self.assertIn('href="../#cite-alpha" aria-label="Sec. 3 in the paper, '
-                      'reference alpha">Sec. 3', card)   # claim -> paper citation
+        self.assertIn('href="../#cite-alpha-s3" aria-label="Sec. 3 in the paper, '
+                      'reference alpha">Sec. 3', card)   # per-section claim pill
         self.assertIn('<span class="qlabel-tag">abstract</span>', card)
         self.assertIn("qt", card)
         self.assertIn('<span class="nm">N</span>', card)
@@ -2633,7 +2690,10 @@ class TestSidecar(unittest.TestCase):
                                {"name": "", "venue": "", "title": "",
                                 "link": "", "retrieved": ""})
         self.assertIn("qclaim-list", card)
-        self.assertEqual(card.count('href="../#cite-k"'), 2)
+        # each pill links to its own section's per-section anchor
+        self.assertIn('href="../#cite-k-s7"', card)
+        self.assertIn('href="../#cite-k-s13"', card)
+        self.assertEqual(card.count('href="../#cite-k-s'), 2)
 
     def test_card_claim_without_section_no_empty_pill(self):
         # A claim with no section emits NO pill (not an empty <a> pill).
