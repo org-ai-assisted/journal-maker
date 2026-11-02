@@ -805,13 +805,13 @@ _TEX_REFS_STRIP_RE = re.compile(
 
 
 def md_to_tex(m, journal, out_tex):
-    r"""Emit an editable LaTeX submission source (natbib + refs.bib) from paper.md.
+    r"""Emit the venue-NEUTRAL editable LaTeX source (natbib + refs.bib) from paper.md.
 
-    Venue-neutral `article` class with real \cite commands and \bibliography{refs},
-    numeric style (unsrtnat) matching the site's IEEE numbering. An author
-    retargets it to a venue class (IEEEtran / elsarticle / sn-jnl / acmart) by
-    swapping \documentclass + \bibliographystyle. This is a DIFFERENT artifact from
-    the citeproc PDF, so the build compiles it (bibtex pass) to prove valid LaTeX.
+    `article` class with real \cite commands and \bibliography{refs}, numeric style
+    (unsrtnat) matching the site's IEEE numbering -- a generic fallback for venues
+    outside the set md_to_venue_tex targets (elsarticle / IEEEtran / acmart / sn-jnl),
+    which are emitted alongside. Emitted on every build (pandoc only, no TeX engine);
+    not auto-compiled -- the .tex compile-verify is a sandbox step, not the build.
     """
     authors_yaml = "\n".join("  - " + _yaml_dq(a["name"]) for a in m["authors"])
     abstract = " ".join(m["abstract"].split())
@@ -859,6 +859,201 @@ def md_to_tex(m, journal, out_tex):
         fh.write(tex)
 
 
+# ---------------------------------------------------------------- venue LaTeX
+
+_TEX_SPECIAL = {
+    "\\": "\\textbackslash{}", "&": "\\&", "%": "\\%", "$": "\\$",
+    "#": "\\#", "_": "\\_", "{": "\\{", "}": "\\}",
+    "~": "\\textasciitilde{}", "^": "\\textasciicircum{}",
+}
+
+
+def _tex_escape(s):
+    r"""LaTeX-escape plain text for venue frontmatter (title, abstract, names,
+    institutions, keywords, email). Neutralizes every TeX special so author
+    metadata cannot inject commands (e.g. \input) into the submission source."""
+    return "".join(_TEX_SPECIAL.get(ch, ch) for ch in str(s))
+
+
+def _abstract_text(m):
+    return " ".join(m["abstract"].split())
+
+
+def _split_name(name):
+    r"""(given, family) for sn-jnl's \fnm/\sur: the last whitespace token is the
+    family name, the rest given; a single token has an empty given part."""
+    parts = name.rsplit(None, 1)
+    return (parts[0], parts[1]) if len(parts) == 2 else ("", name)
+
+
+def _affil_opt(indices):
+    return "[%s]" % ",".join(str(i) for i in indices) if indices else ""
+
+
+def _fm_elsarticle(m, authors, institutions):
+    L = ["\\begin{frontmatter}", "\\title{%s}" % _tex_escape(m["title"])]
+    for a in authors:
+        L.append("\\author%s{%s}" % (_affil_opt(a["affil_indices"]),
+                                     _tex_escape(a["name"])))
+        if a["email"]:
+            L.append("\\ead{%s}" % _tex_escape(a["email"]))
+    for i, inst in enumerate(institutions, 1):
+        L.append("\\affiliation[%d]{organization={%s}}" % (i, _tex_escape(inst)))
+    L += ["\\begin{abstract}", _tex_escape(_abstract_text(m)), "\\end{abstract}"]
+    kw = m.get("keywords") or []
+    if kw:
+        L += ["\\begin{keyword}", " \\sep ".join(_tex_escape(k) for k in kw),
+              "\\end{keyword}"]
+    L.append("\\end{frontmatter}")
+    return "", "\n".join(L) + "\n"
+
+
+def _fm_ieeetran(m, authors, institutions):
+    names = ", ".join(_tex_escape(a["name"]) for a in authors)
+    bits = list(institutions) + [a["email"] for a in authors if a["email"]]
+    thanks = "\\thanks{%s}" % _tex_escape("; ".join(bits)) if bits else ""
+    pre = "\\title{%s}\n\\author{%s%s}\n" % (_tex_escape(m["title"]), names, thanks)
+    doc = ["\\maketitle", "\\begin{abstract}", _tex_escape(_abstract_text(m)),
+           "\\end{abstract}"]
+    kw = m.get("keywords") or []
+    if kw:
+        doc += ["\\begin{IEEEkeywords}", ", ".join(_tex_escape(k) for k in kw),
+                "\\end{IEEEkeywords}"]
+    return pre, "\n".join(doc) + "\n"
+
+
+def _fm_acmart(m, authors, institutions):
+    # acmart hard-requires a non-empty \country in any \affiliation; our schema has
+    # no structured country, so omit \affiliation (author + email alone compiles).
+    # Emit the affiliation once a country field is added to the author model.
+    pre = ["\\title{%s}" % _tex_escape(m["title"])]
+    for a in authors:
+        pre.append("\\author{%s}" % _tex_escape(a["name"]))
+        if a["email"]:
+            pre.append("\\email{%s}" % _tex_escape(a["email"]))
+    kw = m.get("keywords") or []
+    if kw:
+        pre.append("\\keywords{%s}" % ", ".join(_tex_escape(k) for k in kw))
+    doc = "\\begin{abstract}\n%s\n\\end{abstract}\n\\maketitle\n" % _tex_escape(
+        _abstract_text(m))
+    return "\n".join(pre) + "\n", doc
+
+
+def _fm_snjnl(m, authors, institutions):
+    doc = ["\\title{%s}" % _tex_escape(m["title"])]
+    for a in authors:
+        given, family = _split_name(a["name"])
+        doc.append("\\author%s{\\fnm{%s} \\sur{%s}}" % (
+            _affil_opt(a["affil_indices"]), _tex_escape(given), _tex_escape(family)))
+        if a["email"]:
+            doc.append("\\email{%s}" % _tex_escape(a["email"]))
+    for i, inst in enumerate(institutions, 1):
+        doc.append("\\affil[%d]{\\orgname{%s}}" % (i, _tex_escape(inst)))
+    doc.append("\\abstract{%s}" % _tex_escape(_abstract_text(m)))
+    kw = m.get("keywords") or []
+    if kw:
+        doc.append("\\keywords{%s}" % ", ".join(_tex_escape(k) for k in kw))
+    doc.append("\\maketitle")
+    return "", "\n".join(doc) + "\n"
+
+
+class Venue:
+    r"""A target-journal LaTeX class the submission .tex can be generated for.
+
+    pandoc renders the body under `documentclass`; `frontmatter(m, authors,
+    institutions)` returns (preamble_block, docstart_block) injected around
+    \begin{document}. Quirk flags fix pandoc<->class clashes proven by compile:
+    strip_bibstyle (the class sets \bibliographystyle from a class option, so
+    pandoc's duplicate must go -- sn-jnl); drop_amssymb (the class's math font
+    already defines amssymb's symbols, e.g. acmart+newtxmath -> \Bbbk clash);
+    vendored (class + .bst ship in jmaker/vendor, not texlive -- sn-jnl)."""
+
+    def __init__(self, documentclass, classoptions, bibstyle, frontmatter,
+                 strip_bibstyle=False, drop_amssymb=False, vendored=False):
+        self.documentclass = documentclass
+        self.classoptions = classoptions
+        self.bibstyle = bibstyle
+        self.frontmatter = frontmatter
+        self.strip_bibstyle = strip_bibstyle
+        self.drop_amssymb = drop_amssymb
+        self.vendored = vendored
+
+
+VENUES = {
+    "elsarticle": Venue("elsarticle", ["preprint", "review"], "elsarticle-num",
+                        _fm_elsarticle),
+    "ieeetran": Venue("IEEEtran", ["journal"], "IEEEtranN", _fm_ieeetran),
+    "acmart": Venue("acmart", ["manuscript", "review", "nonacm"],
+                    "ACM-Reference-Format", _fm_acmart, drop_amssymb=True),
+    "snjnl": Venue("sn-jnl", ["pdflatex", "sn-mathphys-num"], None, _fm_snjnl,
+                   strip_bibstyle=True, vendored=True),
+}
+
+# Vendored sn-jnl class + .bst (not in texlive); put on TEXINPUTS/BSTINPUTS to compile.
+VENDOR_SNJNL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "vendor", "sn-jnl")
+
+_BIBSTYLE_LINE_RE = re.compile(r"(?m)^\\bibliographystyle\{[^}]*\}\n")
+
+
+def md_to_venue_tex(m, journal, out_tex, venue_id):
+    r"""Emit a venue-class submission .tex (elsarticle / IEEEtran / acmart / sn-jnl)
+    from paper.md. pandoc renders the body under the venue \documentclass (natbib +
+    \bibliography{refs}); the venue frontmatter, built from normalized_authors, is
+    injected at \begin{document}. Same raw-TeX-disabled reader as md_to_tex, so
+    author markup cannot inject engine-level commands, and every frontmatter field
+    is _tex_escape'd."""
+    venue = VENUES[venue_id]
+    body = _TEX_REFS_STRIP_RE.sub("", m["_body_md"])
+    cmd = [
+        "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute",
+        "-t", "latex", "--standalone", "-o", os.path.abspath(out_tex),
+        "-V", "documentclass=%s" % venue.documentclass,
+        "--natbib", "--resource-path", m["_dir"],
+    ]
+    for opt in venue.classoptions:
+        cmd += ["-V", "classoption=%s" % opt]
+    if venue.bibstyle:
+        cmd += ["-V", "biblio-style=%s" % venue.bibstyle]
+    if os.path.exists(os.path.join(m["_dir"], "refs.bib")):
+        cmd += ["--bibliography", "refs.bib"]
+    # cwd = article dir so pandoc writes \bibliography{refs.bib} (bare basename) and
+    # resolves refs.bib; no title/author/abstract metadata -> no pandoc title block.
+    _run(cmd, input=body, cwd=m["_dir"])
+    with open(out_tex, "r", encoding="utf-8") as fh:
+        tex = fh.read()
+    tex = tex.replace("\\bibliography{refs.bib}", "\\bibliography{refs}")
+    if venue.strip_bibstyle:
+        tex = _BIBSTYLE_LINE_RE.sub("", tex)
+    if venue.drop_amssymb:
+        tex = tex.replace("\\usepackage{amsmath,amssymb}", "\\usepackage{amsmath}")
+    pre, doc = venue.frontmatter(m, *normalized_authors(m))
+    anchor = "\\begin{document}\n"
+    if anchor not in tex:
+        raise BuildError("venue %s: pandoc output has no \\begin{document}"
+                         % venue_id)
+    tex = tex.replace(anchor, pre + anchor + doc, 1)
+    with open(out_tex, "w", encoding="utf-8") as fh:
+        fh.write(tex)
+
+
+# Thin per-venue emitters so FORMATS can resolve each by name (uniform signature).
+def md_to_tex_elsarticle(m, journal, out):
+    md_to_venue_tex(m, journal, out, "elsarticle")
+
+
+def md_to_tex_ieeetran(m, journal, out):
+    md_to_venue_tex(m, journal, out, "ieeetran")
+
+
+def md_to_tex_acmart(m, journal, out):
+    md_to_venue_tex(m, journal, out, "acmart")
+
+
+def md_to_tex_snjnl(m, journal, out):
+    md_to_venue_tex(m, journal, out, "snjnl")
+
+
 # ---------------------------------------------------------------- formats
 
 class Fmt:
@@ -903,6 +1098,14 @@ class Fmt:
 FORMATS = [
     Fmt("pdf", "pdf", "PDF", "md_to_pdf", binary=True),
     Fmt("tex", "tex", "LaTeX source", "md_to_tex", binary=False),
+    Fmt("elsarticle", "tex", "LaTeX (Elsevier)", "md_to_tex_elsarticle",
+        binary=False, suffix="-elsarticle"),
+    Fmt("ieeetran", "tex", "LaTeX (IEEE)", "md_to_tex_ieeetran",
+        binary=False, suffix="-ieeetran"),
+    Fmt("acmart", "tex", "LaTeX (ACM)", "md_to_tex_acmart",
+        binary=False, suffix="-acmart"),
+    Fmt("snjnl", "tex", "LaTeX (Springer)", "md_to_tex_snjnl",
+        binary=False, suffix="-snjnl"),
 ]
 
 
@@ -2202,24 +2405,32 @@ def write_icons(out_dir, journal):
 
 
 def write_robots(journal, out_dir):
-    # Byte-identical to dist_ai.webcheck.site.render_robots. Always allows
-    # crawling HTML so each page's <meta noindex> is read (a crawler must fetch a
-    # page to honor its meta), and advertises the sitemap. A no-index build ALSO
-    # Disallows the non-HTML served artifacts -- the PDF, the LaTeX submission
-    # source, and its .bib -- which carry no noindex meta and get no X-Robots-Tag
-    # from GitHub Pages, so a crawl block is the only Pages-compatible lever. It
-    # keeps their CONTENT out of search (uncrawled -> no snippet/indexed text); it
-    # does NOT guarantee the bare URL never appears if externally linked (a known
-    # robots limitation), but the interim host is unlinked. Users still download
-    # them (robots binds crawlers, not browsers).
+    # Always allows crawling HTML so each page's <meta noindex> is read (a crawler
+    # must fetch a page to honor its meta), and advertises the sitemap. A no-index
+    # build ALSO Disallows the non-HTML served artifacts -- the PDF, the Word
+    # manuscript, the LaTeX submission source(s), and the .bib -- which carry no
+    # noindex meta and get no X-Robots-Tag from GitHub Pages, so a crawl block is
+    # the only Pages-compatible lever. It keeps their CONTENT out of search
+    # (uncrawled -> no snippet/indexed text); it does NOT guarantee the bare URL
+    # never appears if externally linked (a known robots limitation), but the
+    # interim host is unlinked. Users still download them (robots binds crawlers,
+    # not browsers).
+    #
+    # Mirrors dist_ai.webcheck.site.render_robots EXCEPT for the .docx line: that
+    # renderer is generic across family/wiki/csr sites, so it must NOT hardcode a
+    # docx Disallow (it would restyle every unrelated site's robots.txt). When the
+    # csr webcheck lane is wired, render_robots gains a per-policy artifact-ext
+    # list and the two converge again; until then the journal's own robots.txt
+    # (this function) is authoritative and carries the docx block.
     lines = ["User-agent: *", "Allow: /"]
     if journal.get("_no_index"):
         # Non-HTML served artifacts carry no noindex meta and Pages serves no
         # X-Robots-Tag, so a crawl block is the only Pages-compatible lever: the
-        # PDF, the LaTeX submission source, and its .bib bibliography.
+        # PDF, the LaTeX source(s), the .bib bibliography, and the Word manuscript.
         lines.append("Disallow: /*.pdf$")
         lines.append("Disallow: /*.tex$")
         lines.append("Disallow: /*.bib$")
+        lines.append("Disallow: /*.docx$")
     txt = "\n".join(lines) + "\n\nSitemap: %s/sitemap.xml\n" % journal["base_url"]
     with open(os.path.join(out_dir, "robots.txt"), "w", encoding="utf-8") as fh:
         fh.write(txt)
