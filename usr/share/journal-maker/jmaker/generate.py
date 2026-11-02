@@ -1205,46 +1205,71 @@ def md_to_tex_snjnl(m, journal, out):
     md_to_venue_tex(m, journal, out, "snjnl")
 
 
+_UNDEFINED_REF_RE = re.compile(
+    r"(?i)(citation|reference)[^\n]*undefined|undefined (citation|reference)")
+
+
 def compile_tex(tex_path):
     r"""Compile a generated submission .tex (pdflatex + bibtex + 2x pdflatex) in a
-    throwaway temp dir, to PROVE it builds; raise BuildError with the log tail on
-    failure. The vendored sn-jnl class + .bst are put on TEXINPUTS/BSTINPUTS
-    (harmless for the texlive-shipped classes). Needs the pandoc texlive set plus
-    texlive-publishers (elsarticle/IEEEtran/acmart) + texlive-plain-generic
-    (binhex.tex, for acmart's hyperxmp); refs.bib beside the .tex is carried in so
-    \bibliography{refs} resolves. Discards the PDF -- this is a validity gate."""
+    throwaway temp dir, to PROVE it builds AND its references resolve; raise
+    BuildError with the log tail on failure. The vendored sn-jnl class + .bst are
+    put on TEXINPUTS/BSTINPUTS (harmless for the texlive-shipped classes). Needs the
+    pandoc texlive set plus texlive-publishers (elsarticle/IEEEtran/acmart) +
+    texlive-plain-generic (binhex.tex, for acmart's hyperxmp). refs.bib + any
+    figures/ beside the .tex are carried in so \bibliography{refs} and
+    \includegraphics resolve. Discards the PDF -- this is a validity gate."""
     base = os.path.splitext(os.path.basename(tex_path))[0]
     src_dir = os.path.dirname(os.path.abspath(tex_path))
     with tempfile.TemporaryDirectory() as td:
         shutil.copy(tex_path, os.path.join(td, base + ".tex"))
-        bib = os.path.join(src_dir, "refs.bib")
-        if os.path.exists(bib):
-            shutil.copy(bib, os.path.join(td, "refs.bib"))
+        for sib in ("refs.bib", "figures"):
+            s = os.path.join(src_dir, sib)
+            if os.path.isdir(s):
+                shutil.copytree(s, os.path.join(td, sib))
+            elif os.path.exists(s):
+                shutil.copy(s, os.path.join(td, sib))
         env = dict(os.environ)
         for var in ("TEXINPUTS", "BSTINPUTS"):
             env[var] = ".:%s:%s" % (VENDOR_SNJNL, env.get(var, ""))
-        pdflatex = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", base]
+        # "./" so a filename is never parsed as an option; stdin closed + a timeout
+        # so a prompt/hang can never block the gate.
+        pdflatex = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
+                    "./" + base + ".tex"]
 
         def run(cmd):
             # errors="replace": pdflatex/bibtex logs are not always valid UTF-8
             # (Latin-1 font names etc.), which would crash a strict decode.
             try:
                 return subprocess.run(cmd, cwd=td, env=env, capture_output=True,
-                                      text=True, errors="replace")
+                                      text=True, errors="replace",
+                                      stdin=subprocess.DEVNULL, timeout=180)
             except FileNotFoundError:
                 raise BuildError("required tool not found: %s" % cmd[0])
+            except subprocess.TimeoutExpired:
+                raise BuildError("%s: %s timed out"
+                                 % (os.path.basename(tex_path), cmd[0]))
 
-        for label, cmd in (("first pdflatex", pdflatex),
-                           ("bibtex", ["bibtex", base]),
-                           ("second pdflatex", pdflatex),
-                           ("final pdflatex", pdflatex)):
+        def fail(label, r):
+            tail = "\n".join((r.stdout or "").splitlines()[-25:])
+            raise BuildError("%s: %s failed (exit %s):\n%s"
+                             % (os.path.basename(tex_path), label, r.returncode, tail))
+
+        # pdflatex: any nonzero is fatal. bibtex: exit >= 2 is a REAL error (missing
+        # or broken .bst, unreadable .bib) -- 0/1 (ok / "no \citation" warning) are
+        # fine. Masking a bibtex error would let the final pdflatex exit 0 with
+        # unresolved refs, defeating the gate (e.g. a broken sn-mathphys-num.bst).
+        for label, cmd, bad in (
+                ("first pdflatex", pdflatex, lambda rc: rc != 0),
+                ("bibtex", ["bibtex", base], lambda rc: rc >= 2),
+                ("second pdflatex", pdflatex, lambda rc: rc != 0),
+                ("final pdflatex", pdflatex, lambda rc: rc != 0)):
             r = run(cmd)
-            # bibtex is allowed to warn (nonzero) on a reference-less doc; the final
-            # pdflatex pass is the authoritative verdict.
-            if r.returncode != 0 and cmd is pdflatex:
-                tail = "\n".join((r.stdout or "").splitlines()[-25:])
-                raise BuildError("%s failed to compile (%s):\n%s"
-                                 % (os.path.basename(tex_path), label, tail))
+            if bad(r.returncode):
+                fail(label, r)
+        # pdflatex still exits 0 with unresolved citations; a submission source whose
+        # references did not resolve is a compile-verify FAILURE.
+        if _UNDEFINED_REF_RE.search(r.stdout or ""):
+            fail("final pdflatex (unresolved references)", r)
 
 
 # ---------------------------------------------------------------- formats

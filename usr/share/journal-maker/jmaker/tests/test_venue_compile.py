@@ -61,6 +61,21 @@ class TestVenueCompile(unittest.TestCase):
                     getattr(g, emitter)(m, JOURNAL, out)
                     g.compile_tex(out)  # raises BuildError on failure
 
+    def test_compile_catches_bibtex_error(self):
+        # a broken \bibliographystyle makes bibtex exit >=2; compile_tex must FAIL,
+        # not mask it (and then let the final pdflatex exit 0 with unresolved refs).
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "paper.tex"), "w", encoding="utf-8") as fh:
+                fh.write("\\documentclass{article}\n\\begin{document}\n"
+                         "Hello \\cite{k1}.\n"
+                         "\\bibliographystyle{no-such-style-xyzzy}\n"
+                         "\\bibliography{refs}\n\\end{document}\n")
+            with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@article{k1, title={{T}}, author={A, B}, journal={J}, "
+                         "year={2024}, pages={1--2}}\n")
+            self.assertRaises(g.BuildError, g.compile_tex,
+                              os.path.join(d, "paper.tex"))
+
 
 if __name__ == "__main__":
     unittest.main()
