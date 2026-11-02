@@ -429,6 +429,12 @@ def _csl_attribution(entry):
             "retrieved": _csl_date(entry.get("accessed", {}).get("date-parts"))}
 
 
+# A markdown remote image: pandoc would fetch it at build time (SSRF) and leak the
+# reader's IP at view time. Rejected in paper.md AND in author-controlled meta fields
+# (which are spliced into the docx markdown source), so no field bypasses the policy.
+_REMOTE_IMG_RE = re.compile(r'!\[[^\]]*\]\(\s*https?://')
+
+
 def load_article(adir):
     slug_default = os.path.basename(adir.rstrip("/"))
     meta_path = os.path.join(adir, "meta.toml")
@@ -450,7 +456,7 @@ def load_article(adir):
     title, abstract, body = _parse_paper(paper, adir)
     # Remote images would be fetched by pandoc at PDF build time (SSRF) and leak
     # the reader's IP at view time; require images to be vendored locally.
-    if re.search(r'!\[[^\]]*\]\(\s*https?://', paper):
+    if _REMOTE_IMG_RE.search(paper):
         raise BuildError("%s/paper.md: remote image URLs are not allowed; vendor "
                          "the image under figures/" % adir)
     m.setdefault("slug", slug_default)
@@ -484,9 +490,21 @@ def load_article(adir):
             if val is not None and (not isinstance(val, str) or not val.strip()):
                 raise BuildError("%s/meta.toml: author %s must be a non-empty "
                                  "string when present" % (adir, fld))
+        # Same build-time-fetch policy as paper.md: no author field may smuggle a
+        # remote image past it (these are spliced into the docx markdown source).
+        for fld in ("name", "institution", "email"):
+            val = author.get(fld)
+            if isinstance(val, str) and _REMOTE_IMG_RE.search(val):
+                raise BuildError("%s/meta.toml: author %s must not embed a remote "
+                                 "image URL (build-time fetch / SSRF); vendor it "
+                                 "under figures/" % (adir, fld))
     if "keywords" in m and (not isinstance(m["keywords"], list)
                             or not all(isinstance(k, str) for k in m["keywords"])):
         raise BuildError("%s/meta.toml: keywords must be a list of strings" % adir)
+    if any(_REMOTE_IMG_RE.search(k) for k in m.get("keywords", [])
+           if isinstance(k, str)):
+        raise BuildError("%s/meta.toml: a keyword must not embed a remote image URL "
+                         "(build-time fetch / SSRF)" % adir)
     if "subjects" in m and not isinstance(m["subjects"], list):
         raise BuildError("%s/meta.toml: subjects must be a list" % adir)
     if "ccs_concepts" in m and not isinstance(m["ccs_concepts"], list):
@@ -958,6 +976,27 @@ def _abstract_text(m):
     return " ".join(m["abstract"].split())
 
 
+def _tex_field(s):
+    r"""One-line (collapse whitespace) + escape, for a short frontmatter field
+    (name, email, institution, keyword). Collapsing kills an embedded blank line
+    that would otherwise become a \par -- which breaks a non-\long control sequence
+    like sn-jnl's \email / \keywords (\Paragraph ended before ... was complete)."""
+    return _tex_escape(" ".join(str(s).split()))
+
+
+def _md_to_latex_inline(s):
+    r"""Convert a short markdown string (title, abstract) to a LaTeX fragment via
+    pandoc, so emphasis / math / inline markup RENDER rather than showing as literal
+    escaped source (`*x*` -> \emph{x}, `$x^2$` -> math). Same raw-TeX-disabled reader
+    as the body, so author \input stays literal; result is already LaTeX (do NOT
+    _tex_escape it). Collapse whitespace first so a single paragraph comes back with
+    no \par (safe inside \title and a non-\long \abstract)."""
+    oneline = " ".join(str(s).split())
+    r = _run(["pandoc", "-f", "markdown-raw_tex-smart-raw_attribute", "-t", "latex"],
+             input=oneline)
+    return r.stdout.strip()
+
+
 def _split_name(name):
     r"""(given, family) for sn-jnl's \fnm/\sur: the last whitespace token is the
     family name, the rest given; a single token has an empty given part."""
@@ -970,68 +1009,74 @@ def _affil_opt(indices):
 
 
 def _fm_elsarticle(m, authors, institutions):
-    L = ["\\begin{frontmatter}", "\\title{%s}" % _tex_escape(m["title"])]
+    L = ["\\begin{frontmatter}", "\\title{%s}" % m["_title_tex"]]
     for a in authors:
         L.append("\\author%s{%s}" % (_affil_opt(a["affil_indices"]),
-                                     _tex_escape(a["name"])))
+                                     _tex_field(a["name"])))
         if a["email"]:
-            L.append("\\ead{%s}" % _tex_escape(a["email"]))
+            L.append("\\ead{%s}" % _tex_field(a["email"]))
     for i, inst in enumerate(institutions, 1):
-        L.append("\\affiliation[%d]{organization={%s}}" % (i, _tex_escape(inst)))
-    L += ["\\begin{abstract}", _tex_escape(_abstract_text(m)), "\\end{abstract}"]
+        L.append("\\affiliation[%d]{organization={%s}}" % (i, _tex_field(inst)))
+    L += ["\\begin{abstract}", m["_abstract_tex"], "\\end{abstract}"]
     kw = m.get("keywords") or []
     if kw:
-        L += ["\\begin{keyword}", " \\sep ".join(_tex_escape(k) for k in kw),
+        L += ["\\begin{keyword}", " \\sep ".join(_tex_field(k) for k in kw),
               "\\end{keyword}"]
     L.append("\\end{frontmatter}")
     return "", "\n".join(L) + "\n"
 
 
 def _fm_ieeetran(m, authors, institutions):
-    names = ", ".join(_tex_escape(a["name"]) for a in authors)
-    bits = list(institutions) + [a["email"] for a in authors if a["email"]]
-    thanks = "\\thanks{%s}" % _tex_escape("; ".join(bits)) if bits else ""
-    pre = "\\title{%s}\n\\author{%s%s}\n" % (_tex_escape(m["title"]), names, thanks)
-    doc = ["\\maketitle", "\\begin{abstract}", _tex_escape(_abstract_text(m)),
-           "\\end{abstract}"]
+    # Per-author \thanks keyed to each author's own affiliation + email, so the
+    # author<->affiliation<->email association is preserved for multi-author papers
+    # (a single combined \thanks would collapse them).
+    parts = []
+    for a in authors:
+        note = "; ".join([institutions[i - 1] for i in a["affil_indices"]]
+                         + ([a["email"]] if a["email"] else []))
+        parts.append("%s%s" % (_tex_field(a["name"]),
+                               "\\thanks{%s}" % _tex_field(note) if note else ""))
+    pre = "\\title{%s}\n\\author{%s}\n" % (m["_title_tex"], ", ".join(parts))
+    doc = ["\\maketitle", "\\begin{abstract}", m["_abstract_tex"], "\\end{abstract}"]
     kw = m.get("keywords") or []
     if kw:
-        doc += ["\\begin{IEEEkeywords}", ", ".join(_tex_escape(k) for k in kw),
+        doc += ["\\begin{IEEEkeywords}", ", ".join(_tex_field(k) for k in kw),
                 "\\end{IEEEkeywords}"]
     return pre, "\n".join(doc) + "\n"
 
 
 def _fm_acmart(m, authors, institutions):
-    # acmart hard-requires a non-empty \country in any \affiliation; our schema has
-    # no structured country, so omit \affiliation (author + email alone compiles).
-    # Emit the affiliation once a country field is added to the author model.
-    pre = ["\\title{%s}" % _tex_escape(m["title"])]
+    # LIMITATION: acmart hard-requires a non-empty \country in every \affiliation,
+    # and our author schema carries no country, so \affiliation is omitted entirely
+    # and the institution does NOT appear in the acmart source. Add a `country`
+    # author field to emit \affiliation{\institution{..}\country{..}} here (and
+    # richer affiliations in the other venues). Author + email alone compiles.
+    pre = ["\\title{%s}" % m["_title_tex"]]
     for a in authors:
-        pre.append("\\author{%s}" % _tex_escape(a["name"]))
+        pre.append("\\author{%s}" % _tex_field(a["name"]))
         if a["email"]:
-            pre.append("\\email{%s}" % _tex_escape(a["email"]))
+            pre.append("\\email{%s}" % _tex_field(a["email"]))
     kw = m.get("keywords") or []
     if kw:
-        pre.append("\\keywords{%s}" % ", ".join(_tex_escape(k) for k in kw))
-    doc = "\\begin{abstract}\n%s\n\\end{abstract}\n\\maketitle\n" % _tex_escape(
-        _abstract_text(m))
+        pre.append("\\keywords{%s}" % ", ".join(_tex_field(k) for k in kw))
+    doc = "\\begin{abstract}\n%s\n\\end{abstract}\n\\maketitle\n" % m["_abstract_tex"]
     return "\n".join(pre) + "\n", doc
 
 
 def _fm_snjnl(m, authors, institutions):
-    doc = ["\\title{%s}" % _tex_escape(m["title"])]
+    doc = ["\\title{%s}" % m["_title_tex"]]
     for a in authors:
-        given, family = _split_name(a["name"])
+        given, family = _split_name(" ".join(a["name"].split()))
         doc.append("\\author%s{\\fnm{%s} \\sur{%s}}" % (
             _affil_opt(a["affil_indices"]), _tex_escape(given), _tex_escape(family)))
         if a["email"]:
-            doc.append("\\email{%s}" % _tex_escape(a["email"]))
+            doc.append("\\email{%s}" % _tex_field(a["email"]))
     for i, inst in enumerate(institutions, 1):
-        doc.append("\\affil[%d]{\\orgname{%s}}" % (i, _tex_escape(inst)))
-    doc.append("\\abstract{%s}" % _tex_escape(_abstract_text(m)))
+        doc.append("\\affil[%d]{\\orgname{%s}}" % (i, _tex_field(inst)))
+    doc.append("\\abstract{%s}" % m["_abstract_tex"])
     kw = m.get("keywords") or []
     if kw:
-        doc.append("\\keywords{%s}" % ", ".join(_tex_escape(k) for k in kw))
+        doc.append("\\keywords{%s}" % ", ".join(_tex_field(k) for k in kw))
     doc.append("\\maketitle")
     return "", "\n".join(doc) + "\n"
 
@@ -1080,8 +1125,9 @@ def md_to_venue_tex(m, journal, out_tex, venue_id):
     from paper.md. pandoc renders the body under the venue \documentclass (natbib +
     \bibliography{refs}); the venue frontmatter, built from normalized_authors, is
     injected at \begin{document}. Same raw-TeX-disabled reader as md_to_tex, so
-    author markup cannot inject engine-level commands, and every frontmatter field
-    is _tex_escape'd."""
+    author markup cannot inject engine-level commands; plain fields (name, email,
+    institution, keyword) are one-lined + escaped, and title/abstract are converted
+    markdown -> LaTeX so their inline markup renders."""
     venue = VENUES[venue_id]
     body = _TEX_REFS_STRIP_RE.sub("", m["_body_md"])
     cmd = [
@@ -1106,6 +1152,11 @@ def md_to_venue_tex(m, journal, out_tex, venue_id):
         tex = _BIBSTYLE_LINE_RE.sub("", tex)
     if venue.drop_amssymb:
         tex = tex.replace("\\usepackage{amsmath,amssymb}", "\\usepackage{amsmath}")
+    # Convert title/abstract markdown -> LaTeX (not escape), cached on m so the four
+    # venue emitters convert each once per article.
+    if "_title_tex" not in m:
+        m["_title_tex"] = _md_to_latex_inline(m["title"])
+        m["_abstract_tex"] = _md_to_latex_inline(m["abstract"])
     pre, doc = venue.frontmatter(m, *normalized_authors(m))
     anchor = "\\begin{document}\n"
     if anchor not in tex:
@@ -2014,8 +2065,13 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
             if skip_pdf:
                 continue
             action_links.append('<a href="%s">Download %s</a>' % (name, fmt.label))
-            action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
-                                 % name)
+            # Distinct accessible name per format (PDF + Word both expose a "SHA-256"
+            # link): "SHA-256" stays the leading substring (WCAG 2.5.3 label-in-name)
+            # and the format is appended so the two are not identical-links-same-purpose.
+            action_links.append(
+                '<a class="checksum" href="%s.sha256" '
+                'aria-label="SHA-256 checksum for %s">SHA-256</a>'
+                % (name, html.escape(fmt.label, quote=True)))
         elif journal.get("source_base_url"):
             src = "%s/_site/%s/%s" % (journal["source_base_url"], _rel_dir(m), name)
             action_links.append('<a class="sources-aid" href="%s">%s</a>'
@@ -2615,6 +2671,10 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
                 if not fmt.binary:
                     continue
                 out = os.path.join(dest, fmt.fname(m))
+                # Deploy writes into the committed tree: a committed symlink at the
+                # output or its sidecar would be followed (arbitrary-file overwrite).
+                if os.path.islink(out) or os.path.islink(out + ".sha256"):
+                    raise BuildError("refusing to write through a symlink: %s" % out)
                 fmt.emit(m, journal, out)
                 _write_sha256(out)
         return len(articles), out_dir

@@ -14,13 +14,16 @@ from jmaker import generate as g
 STUB_JOURNAL = {"title": "CSR", "base_url": "https://x", "language": "en"}
 
 
-def _article(d, abstract="A concise abstract here now."):
+_DEFAULT_AUTHORS = ('authors = [{ name = "Patrick Schleizer", '
+                    'institution = "Example Security Research", '
+                    'email = "contact@example.org" }]\n')
+_DEFAULT_KEYWORDS = 'keywords = ["remote attestation", "device integrity"]\n'
+
+
+def _article(d, abstract="A concise abstract here now.", authors=_DEFAULT_AUTHORS,
+             keywords=_DEFAULT_KEYWORDS):
     with open(os.path.join(d, "meta.toml"), "w", encoding="utf-8") as fh:
-        fh.write('authors = [{ name = "Patrick Schleizer", '
-                 'institution = "Example Security Research", '
-                 'email = "contact@example.org" }]\n'
-                 'date = "2026-10-24"\n'
-                 'keywords = ["remote attestation", "device integrity"]\n')
+        fh.write(authors + 'date = "2026-10-24"\n' + keywords)
     with open(os.path.join(d, "paper.md"), "w", encoding="utf-8") as fh:
         fh.write("# A Venue Title\n\n## Abstract\n\n%s\n\n"
                  "## 1. Intro\n\nBody citing [@k1].\n\n"
@@ -31,12 +34,12 @@ def _article(d, abstract="A concise abstract here now."):
     return g.load_article(d)
 
 
-def _emit(venue_id, abstract="A concise abstract here now."):
+def _emit(venue_id, **kw):
     with tempfile.TemporaryDirectory() as d:
         # clean slug subdir: a mkdtemp name may carry '_', which slug validation rejects
         art = os.path.join(d, "art")
         os.makedirs(art)
-        m = _article(art, abstract)
+        m = _article(art, **kw)
         out = os.path.join(art, "o.tex")
         getattr(g, "md_to_tex_%s" % venue_id)(m, STUB_JOURNAL, out)
         with open(out, encoding="utf-8") as fh:
@@ -89,18 +92,60 @@ class TestVenueEmitters(unittest.TestCase):
         self.assertIn("\\affil[1]{\\orgname{Example Security Research}}", tex)
         self.assertIn("\\abstract{", tex)
 
-    def test_frontmatter_escapes_tex_specials(self):
-        # author-controlled abstract text must not inject TeX
+    def test_frontmatter_abstract_neutralizes_tex(self):
+        # author abstract text must not inject TeX: pandoc's raw-TeX-disabled reader
+        # escapes % and & and neutralizes a stray backslash (no raw \input command).
         tex = _emit("elsarticle", abstract=r"Cost 50% & up; try \input{x}.")
-        self.assertIn("50\\% \\& up", tex)      # % and & escaped
-        self.assertNotIn("\\input{x}", tex)     # backslash neutralized, no raw \input
-        self.assertIn("\\textbackslash{}input", tex)
+        self.assertIn("50\\% \\& up", tex)
+        self.assertNotIn("\\input{x}", tex)
+        self.assertIn("\\textbackslash", tex)  # backslash neutralized
+
+    def test_plain_field_escapes_tex_specials(self):
+        # name/email/institution/keywords are escaped (not converted); a TeX special
+        # in a name cannot inject.
+        tex = _emit("elsarticle",
+                    authors='authors = [{name="A & B", email="a@x"}]\n')
+        self.assertIn("A \\& B", tex)
+        self.assertNotIn("A & B", tex)
 
     def test_all_known_venues_emit(self):
         for vid in g.VENUES:
             tex = _emit(vid)
             self.assertIn("\\begin{document}", tex)
             self.assertIn("\\bibliography{refs}", tex)
+
+    def test_abstract_markdown_is_converted_not_escaped(self):
+        # title/abstract go through pandoc so inline markup RENDERS instead of
+        # showing as literal escaped source.
+        tex = _emit("elsarticle", abstract="We prove *strong* security here.")
+        self.assertIn("\\emph{strong}", tex)
+        self.assertNotIn("*strong*", tex)
+
+    def test_ieeetran_per_author_affiliation(self):
+        # each author's \thanks carries ONLY their own institution + email (a single
+        # combined \thanks would lose the author<->affiliation mapping).
+        authors = ('authors = [{name="Alice", institution="U1", email="a@x"}, '
+                   '{name="Bob", institution="U2", email="b@y"}]\n')
+        tex = _emit("ieeetran", authors=authors)
+        self.assertIn("Alice\\thanks{U1; a@x}", tex)
+        self.assertIn("Bob\\thanks{U2; b@y}", tex)
+
+    def test_snjnl_field_newline_collapsed(self):
+        # a blank line in a non-\long field (sn-jnl \email/\keywords) would be a
+        # \par and break the compile; fields are one-lined.
+        tex = _emit("snjnl", authors='authors = [{name="A", email="a@b.com\\n\\nx"}]\n')
+        self.assertIn("\\email{a@b.com x}", tex)
+        self.assertNotIn("a@b.com\n\nx", tex)
+
+    def test_remote_image_in_author_field_rejected(self):
+        # the paper.md build-time-fetch (SSRF) policy also covers author meta fields
+        # (they are spliced into the docx markdown source). No pandoc needed.
+        with tempfile.TemporaryDirectory() as d:
+            art = os.path.join(d, "art")
+            os.makedirs(art)
+            bad = ('authors = [{ name = "A", '
+                   'institution = "![p](https://127.0.0.1/secret.png)" }]\n')
+            self.assertRaises(g.BuildError, _article, art, authors=bad)
 
 
 if __name__ == "__main__":
