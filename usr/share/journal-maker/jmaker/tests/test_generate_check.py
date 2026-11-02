@@ -811,6 +811,18 @@ class TestDocxFrontmatter(unittest.TestCase):
         self.assertEqual(names, ["Jane Doe", "Rick Roe"])
         self.assertEqual(legend, ["Example U"])
 
+    def test_markdown_specials_escaped(self):
+        # Name/institution/email markdown specials become literal text; the
+        # affiliation superscript marker stays live (added after escaping).
+        m = {"authors": [{"name": "A*Lab", "institution": "Dept [X] <Y>",
+                          "email": "a_b@e.org"},
+                         {"name": "Plain"}]}
+        names, legend, corr = g._docx_frontmatter(m)
+        self.assertEqual(names[0], r"A\*Lab^1^")
+        self.assertEqual(names[1], "Plain")
+        self.assertEqual(legend[0], r"^1^Dept \[X\] \<Y\>")
+        self.assertIn(r"a\_b@e.org", corr)
+
 
 class TestStatus(unittest.TestCase):
     def _article(self, d, meta_toml):

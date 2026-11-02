@@ -877,6 +877,18 @@ def md_to_tex(m, journal, out_tex):
         fh.write(tex)
 
 
+_MD_SPECIAL = set("\\`*_[]{}<>^~|#")
+
+
+def _md_escape(s):
+    r"""Backslash-escape pandoc Markdown inline specials so author metadata
+    (name, institution, email) inserted into the .docx body is LITERAL text, not
+    markup -- the Markdown parallel to the venue emitters' _tex_escape. The
+    affiliation superscript markers (^1^) are added AFTER escaping, so they stay
+    live."""
+    return "".join("\\" + ch if ch in _MD_SPECIAL else ch for ch in str(s))
+
+
 def _docx_frontmatter(m):
     r"""Author display names + affiliation legend + correspondence for the .docx.
 
@@ -898,13 +910,14 @@ def _docx_frontmatter(m):
         mark = ""
         if numbered and a["affil_indices"]:
             mark = "^%s^" % ",".join(str(i) for i in a["affil_indices"])
-        names.append(a["name"] + mark)
+        names.append(_md_escape(a["name"]) + mark)
     legend = []
     if numbered:
-        legend = ["^%d^%s" % (i, inst) for i, inst in enumerate(institutions, 1)]
+        legend = ["^%d^%s" % (i, _md_escape(inst))
+                  for i, inst in enumerate(institutions, 1)]
     elif institutions:
-        legend = [institutions[0]]
-    emails = [a["email"] for a in authors if a.get("email")]
+        legend = [_md_escape(institutions[0])]
+    emails = [_md_escape(a["email"]) for a in authors if a.get("email")]
     corr = ("Correspondence: %s" % ", ".join(emails)) if emails else ""
     return names, legend, corr
 
