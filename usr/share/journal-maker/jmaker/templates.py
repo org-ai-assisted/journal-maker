@@ -227,7 +227,7 @@ nav.toc {
 nav.toc .toc-label { font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.78rem; color: var(--muted); }
 nav.toc ol { margin: 0.4rem 0 0; padding-left: 1.4rem; }
 nav.toc li { margin: 0.15rem 0; }
-article.body { margin-top: 1.5rem; }
+article.body { margin-top: 1.5rem; overflow-wrap: break-word; }
 /* Dotted underline distinguishes a citeproc citation ref from a content link
    (solid) AND gives it a non-color distinction, which WCAG 1.4.1 requires for an
    inline link in a text block (axe link-in-text-block). */
@@ -239,8 +239,8 @@ article.body tr.even { background: var(--surface); }
 article.body tr.odd { background: transparent; }
 article.body table { border-top: 2px solid var(--fg); border-bottom: 2px solid var(--fg); }
 article.body th, article.body td { padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
-article.body code { font-family: var(--mono); font-size: 0.875em; background: var(--surface); border: 1px solid var(--rule); padding: 0.1em 0.35em; border-radius: 3px; }
-article.body pre { font-family: var(--mono); font-size: 0.85rem; line-height: 1.5; overflow-x: auto; padding: 1rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; tab-size: 4; }
+article.body code { font-family: var(--mono); font-size: 0.875em; background: var(--surface); border: 1px solid var(--rule); padding: 0.1em 0.35em; border-radius: 3px; overflow-wrap: anywhere; }
+article.body pre { font-family: var(--mono); font-size: 0.85rem; line-height: 1.5; overflow-x: auto; max-width: 100%; padding: 1rem; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; tab-size: 4; }
 article.body pre code { background: none; border: 0; padding: 0; }
 article.body blockquote { margin: 1rem 0; padding-left: 1.25rem; border-left: 3px solid var(--rule); color: var(--muted); }
 /* pandoc --citeproc reference list: #refs.csl-bib-body wraps one .csl-entry per
