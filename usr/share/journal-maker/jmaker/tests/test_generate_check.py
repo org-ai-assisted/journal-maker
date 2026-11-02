@@ -943,6 +943,24 @@ class TestIdentityAndCite(unittest.TestCase):
         self.assertEqual(g._authors_html({"authors": [{"name": "Jane Doe"}]}),
                          "Jane Doe")
 
+    def test_normalized_authors_dedup_and_indices(self):
+        # Shared venue-frontmatter model: institutions de-duplicate in first-seen
+        # order; each author carries 1-based indices into that list (and [] when
+        # unaffiliated). The venue .tex + docx emitters all consume this.
+        m = {"authors": [
+            {"name": "A", "institution": "U1", "email": "a@x"},
+            {"name": "B", "institution": "U2"},
+            {"name": "C", "institution": "U1"},
+            {"name": "D"},
+        ]}
+        authors, institutions = g.normalized_authors(m)
+        self.assertEqual(institutions, ["U1", "U2"])
+        self.assertEqual([a["affil_indices"] for a in authors],
+                         [[1], [2], [1], []])
+        self.assertEqual(authors[0]["email"], "a@x")
+        self.assertIsNone(authors[1]["email"])
+        self.assertEqual(authors[3]["institution"], None)
+
     def test_history_line(self):
         self.assertIn("Received 2026-01-01",
                       g._history_line({"received": "2026-01-01",
@@ -1037,6 +1055,32 @@ class TestIdentityAndCite(unittest.TestCase):
             with open(os.path.join(ad, "meta.toml"), "w") as fh:
                 fh.write('volume=1\nissue=1\ndate="2026-10-24"\n'
                          'authors=[{name="A", orcid="bad"}]\n')
+            with open(os.path.join(ad, "paper.md"), "w") as fh:
+                fh.write("# T\n\n## Abstract\n\nLong enough abstract here now.\n\n"
+                         "## 1. X\n\nBody.\n")
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_bad_institution_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            os.makedirs(ad)
+            with open(os.path.join(ad, "meta.toml"), "w") as fh:
+                fh.write('date="2026-10-24"\n'
+                         'authors=[{name="A", institution=""}]\n')
+            with open(os.path.join(ad, "paper.md"), "w") as fh:
+                fh.write("# T\n\n## Abstract\n\nLong enough abstract here now.\n\n"
+                         "## 1. X\n\nBody.\n")
+            with self.assertRaises(g.BuildError):
+                g.load_article(ad)
+
+    def test_bad_email_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            ad = os.path.join(d, "art")
+            os.makedirs(ad)
+            with open(os.path.join(ad, "meta.toml"), "w") as fh:
+                fh.write('date="2026-10-24"\n'
+                         'authors=[{name="A", email=5}]\n')
             with open(os.path.join(ad, "paper.md"), "w") as fh:
                 fh.write("# T\n\n## Abstract\n\nLong enough abstract here now.\n\n"
                          "## 1. X\n\nBody.\n")

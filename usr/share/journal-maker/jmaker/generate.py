@@ -476,6 +476,14 @@ def load_article(adir):
                 or not author["name"].strip()):
             raise BuildError("%s/meta.toml: each author needs a non-empty string "
                              "name" % adir)
+        # Optional per-author fields consumed by venue frontmatter (institution =
+        # affiliation line; email = corresponding-author address). Non-empty
+        # strings when present; validated loudly so a typo cannot slip into a .tex.
+        for fld in ("institution", "email"):
+            val = author.get(fld)
+            if val is not None and (not isinstance(val, str) or not val.strip()):
+                raise BuildError("%s/meta.toml: author %s must be a non-empty "
+                                 "string when present" % (adir, fld))
     if "keywords" in m and (not isinstance(m["keywords"], list)
                             or not all(isinstance(k, str) for k in m["keywords"])):
         raise BuildError("%s/meta.toml: keywords must be a list of strings" % adir)
@@ -851,6 +859,53 @@ def md_to_tex(m, journal, out_tex):
         fh.write(tex)
 
 
+# ---------------------------------------------------------------- formats
+
+class Fmt:
+    r"""One downloadable output format for an article.
+
+    emit(m, journal, out_path) renders the file. The build loop and the landing-
+    page download-anchor renderer both iterate FORMATS, branching only on `binary`:
+
+    - binary=False -> TEXT source emitted on EVERY build (pandoc only, no TeX
+      engine), committed in _site and served for download (the repo's .gitignore
+      keeps _site text under git). The LaTeX sources are these.
+    - binary=True  -> rendered ONLY on a full build (skip_pdf gates it), kept OUT
+      of git with a .sha256 sidecar, served for download. The PDF (and Word) are
+      these.
+
+    `suffix` disambiguates formats that share an extension: the output filename is
+    <slug><suffix>.<ext>, so the neutral .tex stays <slug>.tex while a venue .tex
+    is <slug>-elsarticle.tex, etc.
+
+    `emit_name` is the module-level emitter's NAME, not the function object:
+    emit() resolves it via globals() at call time, so a test that monkeypatches
+    e.g. md_to_pdf takes effect, and an emitter defined after FORMATS still binds.
+    """
+
+    def __init__(self, fid, ext, label, emit_name, binary, suffix=""):
+        self.id = fid
+        self.ext = ext
+        self.label = label
+        self.emit_name = emit_name
+        self.binary = binary
+        self.suffix = suffix
+
+    def fname(self, m):
+        return "%s%s.%s" % (m["slug"], self.suffix, self.ext)
+
+    def emit(self, m, journal, out_path):
+        globals()[self.emit_name](m, journal, out_path)
+
+
+# Output formats, in download-link order. Venue LaTeX rows and dev1346's docx row
+# append here; the build loop and render_article's anchors need no other change.
+FORMATS = [
+    Fmt("pdf", "pdf", "PDF", "md_to_pdf", binary=True),
+    Fmt("tex", "tex", "LaTeX source", "md_to_tex", binary=False),
+]
+
+
 # ---------------------------------------------------------------- meta tags
 
 def citation_meta(m, journal, landing_url, pdf_url):
@@ -1189,6 +1244,37 @@ def _authors_html(m):
                        html.escape(a["name"], quote=True)))
         out.append(bit)
     return ", ".join(out)
+
+
+def normalized_authors(m):
+    r"""Author model shared by every venue emitter (LaTeX classes + docx).
+
+    Returns (authors, institutions):
+    - institutions: the ordered, de-duplicated affiliation list.
+    - authors: one dict per author with name, orcid, email, institution (its
+      single affiliation string or None), and affil_indices (1-based positions
+      into `institutions`, for class frontmatter like \author[1]{...}).
+
+    One source of truth so the HTML affiliation line and every .tex/.docx
+    frontmatter dedup institutions identically (no cross-format drift).
+    """
+    institutions = []
+    authors = []
+    for a in m["authors"]:
+        inst = a.get("institution")
+        idxs = []
+        if inst:
+            if inst not in institutions:
+                institutions.append(inst)
+            idxs.append(institutions.index(inst) + 1)
+        authors.append({
+            "name": a["name"],
+            "orcid": a.get("orcid"),
+            "email": a.get("email"),
+            "institution": inst,
+            "affil_indices": idxs,
+        })
+    return authors, institutions
 
 
 def _history_line(m):
@@ -1608,11 +1694,7 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     toc = _build_toc(body_html)
 
     authors_line = _authors_html(m)
-    affils = []
-    for a in m["authors"]:
-        inst = a.get("institution")
-        if inst and inst not in affils:
-            affils.append(inst)
+    _, affils = normalized_authors(m)
     affil_bit = ('<p class="affil">%s</p>\n'
                  % "; ".join(html.escape(x) for x in affils)) if affils else ""
     year = m["date"][:4]
@@ -1635,23 +1717,29 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     # generated on EVERY build (pandoc only, no TeX engine), so its link is
     # unconditional. The source-quotes reviewer-aid link appears whenever the
     # sidecar exists, independent of the PDF.
+    # Download anchors, driven by FORMATS (the same list the build loop emits):
+    #   binary -> served same-origin "Download X" + its SHA-256, only when the
+    #             full build produced it (skip_pdf omits both link and artifact).
+    #   text   -> the COMMITTED source: link the browsable _site file on the
+    #             source host when source_base_url is set (a citable committed
+    #             file), else the served same-origin copy. slugs are csr-rules
+    #             lowercase-hyphen, already URL-safe.
     action_links = []
-    if not skip_pdf:
-        action_links.append('<a href="%s">Download PDF</a>' % pdf_name)
-        action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
-                             % pdf_name)
-    # LaTeX source: link the COMMITTED .tex on the source host (the published
-    # _site tree in the repo) when a source_base_url is set -- a browsable,
-    # citable committed file -- else the served same-origin copy. The route
-    # segment + slug are csr-rules slugs (lowercase-hyphen), already URL-safe.
-    if journal.get("source_base_url"):
-        tex_src = "%s/_site/%s/%s.tex" % (
-            journal["source_base_url"], _rel_dir(m), m["slug"])
-        action_links.append('<a class="sources-aid" href="%s">LaTeX source</a>'
-                            % html.escape(tex_src, quote=True))
-    else:
-        action_links.append('<a class="sources-aid" href="%s.tex">LaTeX source</a>'
-                            % m["slug"])
+    for fmt in FORMATS:
+        name = fmt.fname(m)
+        if fmt.binary:
+            if skip_pdf:
+                continue
+            action_links.append('<a href="%s">Download %s</a>' % (name, fmt.label))
+            action_links.append('<a class="checksum" href="%s.sha256">SHA-256</a>'
+                                 % name)
+        elif journal.get("source_base_url"):
+            src = "%s/_site/%s/%s" % (journal["source_base_url"], _rel_dir(m), name)
+            action_links.append('<a class="sources-aid" href="%s">%s</a>'
+                                % (html.escape(src, quote=True), fmt.label))
+        else:
+            action_links.append('<a class="sources-aid" href="%s">%s</a>'
+                                % (name, fmt.label))
     if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")
@@ -2155,16 +2243,15 @@ def _reject_symlinked_bib(m):
         raise BuildError("refs.bib must not be a symlink: %s" % bib)
 
 
-def _pdf_with_checksum(m, journal, dest, pdf_name):
-    """Render the article PDF into dest and write its sha256sum sidecar."""
-    pdf_path = os.path.join(dest, pdf_name)
-    md_to_pdf(m, journal, pdf_path)
+def _write_sha256(path):
+    """Write the sha256sum sidecar for a rendered binary artifact (PDF, docx)."""
     h = hashlib.sha256()
-    with open(pdf_path, "rb") as pf:
+    with open(path, "rb") as pf:
         for chunk in iter(lambda: pf.read(65536), b""):
             h.update(chunk)
-    with open(pdf_path + ".sha256", "w", encoding="utf-8") as sf:
-        sf.write("%s  %s\n" % (h.hexdigest(), pdf_name))  # sha256sum format
+    with open(path + ".sha256", "w", encoding="utf-8") as sf:
+        # sha256sum format; the name column is the artifact's basename.
+        sf.write("%s  %s\n" % (h.hexdigest(), os.path.basename(path)))
 
 
 def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
@@ -2231,7 +2318,14 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
             _reject_symlinked_bib(m)
             dest = os.path.join(out_dir, _rel_dir(m))
             os.makedirs(dest, exist_ok=True)
-            _pdf_with_checksum(m, journal, dest, "%s.pdf" % m["slug"])
+            # Only the binary formats (PDF, docx) are rendered at deploy; the text
+            # sources already sit committed in the tree.
+            for fmt in FORMATS:
+                if not fmt.binary:
+                    continue
+                out = os.path.join(dest, fmt.fname(m))
+                fmt.emit(m, journal, out)
+                _write_sha256(out)
         return len(articles), out_dir
 
     if os.path.isdir(out_dir):
@@ -2266,7 +2360,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
                       encoding="utf-8") as fh:
                 fh.write(s_page)
             urls.append("%s/%s/" % (journal["base_url"], s_rel))
-        rel_dir, pdf_name, page = render_article(
+        rel_dir, _pdf_name, page = render_article(
             m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf,
             sidecar_keys=card_keys, quote_blocks=quote_blocks, cite_keys=cite_keys,
             claim_sections=claim_sections)
@@ -2285,27 +2379,33 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
                                          % os.path.join(froot, nm))
             shutil.copytree(figdir, os.path.join(dest, "figures"))
         urls.append("%s/%s/" % (journal["base_url"], rel_dir))
-        # LaTeX submission source (natbib + refs.bib), served from _site next to
-        # the PDF. Written DIRECTLY into the build-created output dir, NEVER into
+        # Outputs written DIRECTLY into the build-created output dir, NEVER into
         # the article SOURCE dir: pandoc's -o (and the post-process open) follow
         # symlinks, so a committed symlink named <slug>.tex in the article dir
         # would otherwise have its target truncated+overwritten (arbitrary-file
-        # overwrite on every build). Generated on EVERY build (pandoc only, no TeX
-        # engine) so it exists in the --skip-pdf tree too; refs.bib ships beside it
-        # so the served .tex's \bibliography{refs} resolves on download.
-        tex_name = "%s.tex" % m["slug"]
-        md_to_tex(m, journal, os.path.join(dest, tex_name))
+        # overwrite on every build). refs.bib ships beside the LaTeX sources so a
+        # served .tex's \bibliography{refs} resolves on download.
         bib_src = os.path.join(m["_dir"], "refs.bib")
         if os.path.exists(bib_src):
             shutil.copyfile(bib_src, os.path.join(dest, "refs.bib"))
-        if not skip_pdf:
-            _pdf_with_checksum(m, journal, dest, pdf_name)
-            # The PDF is NOT added to the sitemap: it lists HTML navigable pages
-            # only (byte-identical to dist_ai.webcheck.site.seo_page_urls, which
-            # the 'previews' policy re-derives and compares). The PDF stays
-            # discoverable via its landing page's download link, and a no-index
-            # build's robots Disallows /*.pdf$ -- advertising it in the sitemap
-            # would contradict that.
+        for fmt in FORMATS:
+            out = os.path.join(dest, fmt.fname(m))
+            if fmt.binary:
+                # Binary artifacts (PDF, docx) are kept out of git and rendered
+                # only on a full build; --skip-pdf omits them. Each gets a .sha256
+                # sidecar, and none is added to the sitemap (it lists navigable
+                # HTML only, byte-identical to dist_ai.webcheck.site.seo_page_urls
+                # under the 'previews' policy). A no-index build's robots Disallows
+                # them, so advertising them in the sitemap would contradict that;
+                # each stays discoverable via its landing page's download link.
+                if skip_pdf:
+                    continue
+                fmt.emit(m, journal, out)
+                _write_sha256(out)
+            else:
+                # Text sources (LaTeX) are committed and emitted on every build,
+                # so they exist in the --skip-pdf tree too (pandoc only, no engine).
+                fmt.emit(m, journal, out)
 
     # Standalone pages (about, policies, license) from <content>/pages/*.md.
     pages = []
