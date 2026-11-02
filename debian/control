@@ -22,6 +22,7 @@ Depends: ${misc:Depends},
  lmodern,
  poppler-utils,
  qpdf,
+ librsvg2-bin,
  citation-style-language-styles,
 Description: build a Google-Scholar-indexable static journal from Markdown
  Turns per-article Markdown plus TOML bibliographic metadata into a fully

@@ -38,7 +38,7 @@ jobs:
             pandoc python3-pytest \
             texlive-latex-recommended texlive-fonts-recommended texlive-xetex \
             texlive-publishers texlive-plain-generic lmodern \
-            poppler-utils qpdf citation-style-language-styles
+            poppler-utils qpdf librsvg2-bin citation-style-language-styles
 
       - name: Run selftest (incl. venue compile-verify)
         run: |
