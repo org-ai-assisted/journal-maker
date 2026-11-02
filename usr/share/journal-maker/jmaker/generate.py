@@ -887,15 +887,20 @@ def _docx_frontmatter(m):
     Returns (names, legend_lines, correspondence) as Markdown-ready strings.
     """
     authors, institutions = normalized_authors(m)
-    multi = len(institutions) > 1
+    # Number the affiliations when a marker is needed to disambiguate: more than
+    # one institution, OR a MIX where some authors have an institution and others
+    # do not -- an unnumbered lone institution would otherwise read as shared by
+    # every author. A single institution shared by ALL authors needs no number.
+    numbered = len(institutions) > 1 or (
+        bool(institutions) and any(not a["affil_indices"] for a in authors))
     names = []
     for a in authors:
         mark = ""
-        if multi and a["affil_indices"]:
+        if numbered and a["affil_indices"]:
             mark = "^%s^" % ",".join(str(i) for i in a["affil_indices"])
         names.append(a["name"] + mark)
     legend = []
-    if multi:
+    if numbered:
         legend = ["^%d^%s" % (i, inst) for i, inst in enumerate(institutions, 1)]
     elif institutions:
         legend = [institutions[0]]
@@ -2552,12 +2557,11 @@ def write_robots(journal, out_dir):
     # interim host is unlinked. Users still download them (robots binds crawlers,
     # not browsers).
     #
-    # Mirrors dist_ai.webcheck.site.render_robots EXCEPT for the .docx line: that
-    # renderer is generic across family/wiki/csr sites, so it must NOT hardcode a
-    # docx Disallow (it would restyle every unrelated site's robots.txt). When the
-    # csr webcheck lane is wired, render_robots gains a per-policy artifact-ext
-    # list and the two converge again; until then the journal's own robots.txt
-    # (this function) is authoritative and carries the docx block.
+    # Byte-identical to dist_ai.webcheck.site.render_robots under the CSR policy:
+    # that renderer takes a per-policy artifact-ext set (default pdf/tex/bib for
+    # family/wiki; csr adds docx LAST), so for the csr previews site it emits this
+    # exact block. The docx line stays OFF the family/wiki default there, so only
+    # the csr site carries it -- and check_seo compares against the csr expectation.
     lines = ["User-agent: *", "Allow: /"]
     if journal.get("_no_index"):
         # Non-HTML served artifacts carry no noindex meta and Pages serves no

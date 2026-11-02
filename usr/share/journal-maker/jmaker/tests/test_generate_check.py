@@ -753,6 +753,64 @@ class TestDocxCanary(unittest.TestCase):
         data = self._docx({"word/embeddings/oleObject1.bin": "x"})
         self.assertTrue(any("active content" in m for m in self._check(data)))
 
+    def test_encrypted_entry_is_clean_failure_not_crash(self):
+        # An encrypted entry makes zipfile raise RuntimeError on read/testzip; it
+        # must be caught as a gate failure, never propagate and crash check_site.
+        # writestr clobbers a manual flag_bits, so set the encrypted GP-flag bit
+        # (0x01) directly in every central-directory header (offset +8) of the
+        # built zip -- zipfile reads flag_bits from there, so open() then raises
+        # "File is encrypted".
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("word/document.xml", "<w:document/>")
+        raw = bytearray(buf.getvalue())
+        i = 0
+        while True:
+            j = raw.find(b"PK\x01\x02", i)
+            if j < 0:
+                break
+            raw[j + 8] |= 0x01
+            i = j + 4
+        errs = self._check(bytes(raw))  # must not raise
+        self.assertTrue(any("unencrypted zip" in m for m in errs), repr(errs))
+
+    def test_zip_bomb_rejected_before_decompress(self):
+        # A highly compressible payload: tiny compressed (under MAX_DOCX_BYTES) but
+        # a huge uncompressed total. The gate must refuse on the decompressed
+        # bound BEFORE testzip expands it.
+        import io
+        import zipfile
+        bomb = b"\0" * (c.MAX_DOCX_UNCOMPRESSED_BYTES + 1024)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("word/document.xml", "<w:document/>")
+            z.writestr("big.bin", bomb)
+        errs = self._check(buf.getvalue())
+        self.assertTrue(any("zip bomb" in m for m in errs), repr(errs))
+
+
+class TestDocxFrontmatter(unittest.TestCase):
+    def test_partial_affiliation_is_numbered(self):
+        # One author WITH an institution + one WITHOUT: the institution must be
+        # numbered and marked on ITS author only, never printed unnumbered (which
+        # reads as shared by both). Canary: the pre-fix multi=len(institutions)>1
+        # left this single institution unnumbered.
+        m = {"authors": [{"name": "Jane Doe", "institution": "Example U"},
+                         {"name": "Rick Roe"}]}
+        names, legend, _corr = g._docx_frontmatter(m)
+        self.assertEqual(names, ["Jane Doe^1^", "Rick Roe"])
+        self.assertEqual(legend, ["^1^Example U"])
+
+    def test_single_shared_institution_unnumbered(self):
+        # All authors share ONE institution -> no marker needed.
+        m = {"authors": [{"name": "Jane Doe", "institution": "Example U"},
+                         {"name": "Rick Roe", "institution": "Example U"}]}
+        names, legend, _corr = g._docx_frontmatter(m)
+        self.assertEqual(names, ["Jane Doe", "Rick Roe"])
+        self.assertEqual(legend, ["Example U"])
+
 
 class TestStatus(unittest.TestCase):
     def _article(self, d, meta_toml):
@@ -1523,10 +1581,9 @@ class TestNoIndexDefault(unittest.TestCase):
         # Both modes Allow (HTML de-indexes via the per-page meta); a no-index
         # build ALSO Disallows the non-HTML served artifacts -- PDF, LaTeX
         # source, .bib, and the Word .docx (no meta possible, no X-Robots-Tag on
-        # Pages). This matches dist_ai.webcheck.site.render_robots EXCEPT the
-        # trailing .docx: that renderer is generic across sites and must not
-        # hardcode docx; parity returns when the csr webcheck lane makes its
-        # artifact-ext list per-policy.
+        # Pages). Byte-identical to dist_ai.webcheck.site.render_robots under the
+        # CSR policy (its per-policy artifact-ext set adds docx last); the docx
+        # line stays off the family/wiki default there.
         base = "User-agent: *\nAllow: /\n"
         tail = "\nSitemap: https://e.example/sitemap.xml\n"
         disallows = ("Disallow: /*.pdf$\nDisallow: /*.tex$\n"

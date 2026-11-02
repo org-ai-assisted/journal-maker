@@ -32,6 +32,9 @@ import zipfile
 
 MAX_PDF_BYTES = 5 * 1024 * 1024
 MAX_DOCX_BYTES = 5 * 1024 * 1024
+# Decompressed-size cap: MAX_DOCX_BYTES is the compressed file size, so a zip bomb
+# can hide under it; bound the total uncompressed size before decompressing.
+MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 # A floor just high enough to prove text is extractable (not a scanned image),
 # without rejecting a legitimately short note.
 MIN_PDF_TEXT_CHARS = 20
@@ -364,10 +367,15 @@ def check_pdf(path, f):
 
 
 def check_docx(path, f):
-    """Validate a generated Word manuscript: real OOXML zip, bounded size, no
+    """Validate a GENERATED Word manuscript: real OOXML zip, bounded size, no
     active content. The docx parallel to check_pdf -- a GENERATED manuscript must
     be a readable Word document carrying no VBA macros or embedded OLE objects
-    (the docx analogue of a PDF's /JavaScript or /Launch)."""
+    (the docx analogue of a PDF's /JavaScript or /Launch).
+
+    SCOPE: this gates OUR OWN pandoc output, not a hostile document, so it stops
+    at zip validity + the document part + VBA/OLE payload. The deeper OOXML attack
+    surface (ActiveX, DDE field codes, external-template/OLE relationships) matters
+    only for an untrusted .docx and is deliberately out of scope here."""
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
         head = fh.read(4)
@@ -380,13 +388,26 @@ def check_docx(path, f):
         f.err(path, "docx too large: %d bytes (> %d)" % (size, MAX_DOCX_BYTES))
     try:
         with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            # Bound total UNCOMPRESSED size BEFORE testzip (which decompresses
+            # every member): the size cap above is the COMPRESSED file size, so a
+            # zip bomb slips under it -- cap the decompressed total so it fails the
+            # gate instead of exhausting memory.
+            total = sum(info.file_size for info in z.infolist())
+            if total > MAX_DOCX_UNCOMPRESSED_BYTES:
+                f.err(path, "docx decompresses to %d bytes (> %d); refusing to "
+                            "verify a suspected zip bomb"
+                            % (total, MAX_DOCX_UNCOMPRESSED_BYTES))
+                return
             bad = z.testzip()  # CRC-check every member; None == all intact
             if bad is not None:
                 f.err(path, "docx zip corrupt (bad CRC): %s" % bad)
                 return
-            names = z.namelist()
-    except zipfile.BadZipFile as exc:
-        f.err(path, "docx is not a readable zip: %s" % exc)
+    except (zipfile.BadZipFile, RuntimeError) as exc:
+        # BadZipFile: truncated / not a zip. RuntimeError: an ENCRYPTED entry
+        # (testzip needs a password) -- zipfile raises it, and an uncaught raise
+        # would crash check_site mid-run. Either is a clean gate failure.
+        f.err(path, "docx is not a readable unencrypted zip: %s" % exc)
         return
     if "word/document.xml" not in names:
         f.err(path, "docx missing word/document.xml (not a Word document)")
