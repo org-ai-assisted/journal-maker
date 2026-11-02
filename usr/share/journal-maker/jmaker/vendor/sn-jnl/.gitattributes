@@ -1,0 +1,3 @@
+# Vendored pinned upstream artifacts: byte-exact, never EOL-normalized or
+# diffed (the drift guard checks sha256). Treat as binary for git operations.
+* binary
