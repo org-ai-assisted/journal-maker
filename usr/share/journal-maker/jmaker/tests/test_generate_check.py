@@ -283,6 +283,38 @@ class TestZenodo(unittest.TestCase):
         fmt = argv[argv.index("-f") + 1]
         self.assertIn("-raw_attribute", fmt)
 
+    def test_docx_reader_disables_raw_attribute_and_cites(self):
+        # The Word writer shares the PDF's hardened reader (fenced ```{=latex} /
+        # author raw TeX stay literal, never engine passthrough) and runs citeproc
+        # when a refs.bib is present, so the .docx carries a resolved reference
+        # list like the HTML/PDF.
+        captured = {}
+
+        def fake_run(argv, **kw):
+            captured["argv"] = argv
+            class R:
+                stdout = ""
+                stderr = ""
+            return R()
+        orig = g._run
+        setattr(g, "_run", fake_run)
+        self.addCleanup(lambda: setattr(g, "_run", orig))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@misc{k, title={T}}\n")
+            out_docx = os.path.join(d, "x.docx")
+            m = dict(META)
+            m["doi"] = ""
+            m["_body_md"] = "body\n"
+            m["_dir"] = d
+            g.md_to_docx(m, JOURNAL, out_docx)
+            argv = captured["argv"]
+            fmt = argv[argv.index("-f") + 1]
+            self.assertIn("-raw_attribute", fmt)
+            self.assertEqual(argv[argv.index("-o") + 1], out_docx)
+            self.assertIn("--citeproc", argv)
+            self.assertIn("--csl", argv)
+
     def test_reserve_refuses_second_reservation(self):
         # A second reserve would orphan the first deposition; refuse it and never
         # hit the API.
@@ -670,6 +702,56 @@ class TestPdfCanary(unittest.TestCase):
         # non-whitespace before %PDF- is rejected (a leading newline is tolerated)
         self.assertTrue(any("valid PDF" in m
                             for m in self._check(b"<script>x</script>\n%PDF-1.5")))
+
+
+class TestDocxCanary(unittest.TestCase):
+    def _check(self, data):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "x.docx")
+            with open(path, "wb") as fh:
+                fh.write(data)
+            f = c.Findings()
+            c.check_docx(path, f)
+            return [m for _lvl, _p, m in f.errors]
+
+    def _docx(self, extra=None):
+        # Minimal valid OOXML zip: word/document.xml plus any extra members.
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("word/document.xml", "<w:document/>")
+            for name, body in (extra or {}).items():
+                z.writestr(name, body)
+        return buf.getvalue()
+
+    def test_not_a_zip_errors(self):
+        self.assertTrue(any("ZIP" in m for m in self._check(b"hello")))
+
+    def test_prepended_junk_rejected(self):
+        # Junk before the ZIP local-header magic is rejected (parallels the PDF).
+        self.assertTrue(any("ZIP" in m for m in self._check(b"<x>\nPK\x03\x04")))
+
+    def test_valid_minimal_docx_passes(self):
+        self.assertEqual(self._check(self._docx()), [])
+
+    def test_missing_document_xml_errors(self):
+        # A zip with no word/document.xml is not a Word document.
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("other.xml", "x")
+        self.assertTrue(any("word/document.xml" in m
+                            for m in self._check(buf.getvalue())))
+
+    def test_vba_macro_rejected(self):
+        data = self._docx({"word/vbaProject.bin": "MZ"})
+        self.assertTrue(any("active content" in m for m in self._check(data)))
+
+    def test_ole_embedding_rejected(self):
+        data = self._docx({"word/embeddings/oleObject1.bin": "x"})
+        self.assertTrue(any("active content" in m for m in self._check(data)))
 
 
 class TestStatus(unittest.TestCase):
@@ -1325,7 +1407,8 @@ class TestIndexPolicy(unittest.TestCase):
     DISALLOW = "User-agent: *\nDisallow: /\n"
     ALLOW = "User-agent: *\nAllow: /\n\nSitemap: https://e.example/sitemap.xml\n"
     NOINDEX_ROBOTS = ("User-agent: *\nAllow: /\nDisallow: /*.pdf$\n"
-                      "Disallow: /*.tex$\nDisallow: /*.bib$\n\n"
+                      "Disallow: /*.tex$\nDisallow: /*.bib$\n"
+                      "Disallow: /*.docx$\n\n"
                       "Sitemap: https://e.example/sitemap.xml\n")
 
     def _check(self, robots, home, extra=None):
@@ -1437,14 +1520,17 @@ class TestIndexPolicy(unittest.TestCase):
 
 class TestNoIndexDefault(unittest.TestCase):
     def test_write_robots_noindex_disallows_artifacts(self):
-        # Exact bytes must match dist_ai.webcheck.site.render_robots (the webcheck
-        # 'previews' policy re-derives and compares). Both modes Allow (HTML
-        # de-indexes via the per-page meta); a no-index build ALSO Disallows the
-        # non-HTML served artifacts -- PDF, LaTeX source, .bib (no meta possible,
-        # no X-Robots-Tag on Pages).
+        # Both modes Allow (HTML de-indexes via the per-page meta); a no-index
+        # build ALSO Disallows the non-HTML served artifacts -- PDF, LaTeX
+        # source, .bib, and the Word .docx (no meta possible, no X-Robots-Tag on
+        # Pages). This matches dist_ai.webcheck.site.render_robots EXCEPT the
+        # trailing .docx: that renderer is generic across sites and must not
+        # hardcode docx; parity returns when the csr webcheck lane makes its
+        # artifact-ext list per-policy.
         base = "User-agent: *\nAllow: /\n"
         tail = "\nSitemap: https://e.example/sitemap.xml\n"
-        disallows = "Disallow: /*.pdf$\nDisallow: /*.tex$\nDisallow: /*.bib$\n"
+        disallows = ("Disallow: /*.pdf$\nDisallow: /*.tex$\n"
+                     "Disallow: /*.bib$\nDisallow: /*.docx$\n")
         cases = {True: base + disallows + tail,
                  False: base + tail}
         with tempfile.TemporaryDirectory() as d:
@@ -1573,13 +1659,23 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             html = os.path.join(out, "art", "index.html")
             with open(html, encoding="utf-8") as fh:
                 before = fh.read()
+            # Both binary FORMATS (PDF + Word) are absent from the committed text
+            # tree and rendered only by the deploy pass.
             self.assertFalse(os.path.exists(os.path.join(out, "art", "art.pdf")))
-            orig = g.md_to_pdf
+            self.assertFalse(os.path.exists(os.path.join(out, "art", "art.docx")))
+            orig, orig_docx = g.md_to_pdf, g.md_to_docx
+            # Both emitters resolve via globals() in Fmt.emit, so a module-attr
+            # monkeypatch takes effect; stub them so no pandoc/pdflatex is needed.
             g.md_to_pdf = lambda m, j, p: open(p, "wb").write(b"%PDF-1.5 stub\n")
+            g.md_to_docx = lambda m, j, p: open(p, "wb").write(b"PK\x03\x04stub")
             self.addCleanup(lambda: setattr(g, "md_to_pdf", orig))
+            self.addCleanup(lambda: setattr(g, "md_to_docx", orig_docx))
             g.build(arts, jt, out, pdf_only=True)
-            self.assertTrue(os.path.exists(os.path.join(out, "art", "art.pdf")))
-            self.assertTrue(os.path.exists(os.path.join(out, "art", "art.pdf.sha256")))
+            for ext in ("pdf", "docx"):
+                self.assertTrue(os.path.exists(
+                    os.path.join(out, "art", "art.%s" % ext)))
+                self.assertTrue(os.path.exists(
+                    os.path.join(out, "art", "art.%s.sha256" % ext)))
             with open(html, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), before)   # HTML untouched (no rebuild)
 
@@ -1790,22 +1886,31 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with open(pdf_path, "wb") as fh:
                 fh.write(b"%PDF-1.4 stub\n")
 
+        def _stub_docx(_m, _journal, docx_path):
+            with open(docx_path, "wb") as fh:
+                fh.write(b"PK\x03\x04stub")
+
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
-            orig = g.md_to_pdf
+            orig, orig_docx = g.md_to_pdf, g.md_to_docx
             g.md_to_pdf = _stub_pdf
+            g.md_to_docx = _stub_docx
             try:
                 out = os.path.join(d, "s")
                 g.build(os.path.join(d, "articles"), jt, out, skip_pdf=False)
             finally:
                 g.md_to_pdf = orig
+                g.md_to_docx = orig_docx
             with open(os.path.join(out, "sitemap.xml"), encoding="utf-8") as fh:
                 sitemap = fh.read()
+            # Neither binary artifact is advertised in the sitemap.
             self.assertNotIn(".pdf", sitemap)
-            pdfs = [os.path.join(b, n) for b, _dirs, files in os.walk(out)
-                    for n in files if n.endswith(".pdf")]
-            self.assertTrue(pdfs, "a full build still generates the PDF")
-            self.assertTrue(os.path.isfile(pdfs[0] + ".sha256"))
+            self.assertNotIn(".docx", sitemap)
+            for ext in ("pdf", "docx"):
+                arts = [os.path.join(b, n) for b, _dirs, files in os.walk(out)
+                        for n in files if n.endswith("." + ext)]
+                self.assertTrue(arts, "a full build still generates the %s" % ext)
+                self.assertTrue(os.path.isfile(arts[0] + ".sha256"))
 
     def test_og_and_jsonld_on_all_page_types(self):
         # Every page type carries OpenGraph + Twitter + og:locale + a JSON-LD

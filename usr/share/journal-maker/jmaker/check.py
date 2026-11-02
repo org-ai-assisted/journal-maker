@@ -28,8 +28,10 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 
 MAX_PDF_BYTES = 5 * 1024 * 1024
+MAX_DOCX_BYTES = 5 * 1024 * 1024
 # A floor just high enough to prove text is extractable (not a scanned image),
 # without rejecting a legitimately short note.
 MIN_PDF_TEXT_CHARS = 20
@@ -204,6 +206,14 @@ def check_article(page_path, f, out_dir):
                 f.err(page_path, "citation_pdf_url file missing: %s" % pdf_local)
             else:
                 check_pdf(pdf_local, f)
+                # The Word manuscript shares the article slug + location with the
+                # PDF (<slug>.pdf / <slug>.docx), both deploy-rendered binaries.
+                # Validate it when present; a full build always emits it (pandoc
+                # failure aborts the build loud), so "absent" means a deliberately
+                # docx-less tree, not a silent gap.
+                docx_local = os.path.splitext(pdf_local)[0] + ".docx"
+                if os.path.isfile(docx_local):
+                    check_docx(docx_local, f)
 
     # no leftover wiki markup in the rendered body (ignoring code/pre spans)
     body_text = _text_only(_CODE_RE.sub(" ", page))
@@ -353,6 +363,42 @@ def check_pdf(path, f):
         f.err(path, "active content in PDF: %s" % ", ".join(hits))
 
 
+def check_docx(path, f):
+    """Validate a generated Word manuscript: real OOXML zip, bounded size, no
+    active content. The docx parallel to check_pdf -- a GENERATED manuscript must
+    be a readable Word document carrying no VBA macros or embedded OLE objects
+    (the docx analogue of a PDF's /JavaScript or /Launch)."""
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        head = fh.read(4)
+    # A docx is a ZIP; it must start with the local-file-header magic. Junk
+    # prepended before it -- e.g. an HTML/script prefix -- is rejected.
+    if head != b"PK\x03\x04":
+        f.err(path, "not a valid .docx (missing ZIP local-header magic)")
+        return
+    if size > MAX_DOCX_BYTES:
+        f.err(path, "docx too large: %d bytes (> %d)" % (size, MAX_DOCX_BYTES))
+    try:
+        with zipfile.ZipFile(path) as z:
+            bad = z.testzip()  # CRC-check every member; None == all intact
+            if bad is not None:
+                f.err(path, "docx zip corrupt (bad CRC): %s" % bad)
+                return
+            names = z.namelist()
+    except zipfile.BadZipFile as exc:
+        f.err(path, "docx is not a readable zip: %s" % exc)
+        return
+    if "word/document.xml" not in names:
+        f.err(path, "docx missing word/document.xml (not a Word document)")
+    # No executable/embedded payload: VBA macros (word/vbaProject.bin) or OLE
+    # objects (word/embeddings/*). A pandoc-generated manuscript has neither.
+    active = sorted(n for n in names
+                    if n.endswith("vbaProject.bin")
+                    or n.startswith("word/embeddings/"))
+    if active:
+        f.err(path, "active content in docx: %s" % ", ".join(active))
+
+
 _TEXT_EXT = {".html", ".css", ".xml", ".txt", ".svg", ".json", ".tex", ".bib"}
 # The ASCII-only gate is a PUBLISHED-HTML policy (no em-dash/curly quotes/nbsp in
 # served HTML). .tex/.bib are LaTeX/BibTeX SOURCE a reader compiles: UTF-8 is
@@ -450,9 +496,10 @@ def check_no_vendor_refs(out_dir, f):
 def check_index_policy(out_dir, f):
     """robots.txt must Allow crawling (so each page's noindex meta is read) and
     never blanket-Disallow. A no-index build MUST additionally Disallow the non-
-    HTML served artifacts (PDF, LaTeX source, .bib) -- they carry no noindex meta
-    and Pages serves no X-Robots-Tag, so blocking the crawl is the only way to keep
-    them unindexed; a PUBLISHED build must NOT (they become indexable). Separately,
+    HTML served artifacts (PDF, LaTeX source, .bib, Word .docx) -- they carry no
+    noindex meta and Pages serves no X-Robots-Tag, so blocking the crawl is the only
+    way to keep them unindexed; a PUBLISHED build must NOT (they become indexable).
+    Separately,
     a published (indexable) site must carry no leftover TODO edit-marker on a
     standalone page. A violation is a hard error."""
     robots_path = os.path.join(out_dir, "robots.txt")
@@ -465,11 +512,11 @@ def check_index_policy(out_dir, f):
         noindexed = 'name="robots" content="noindex"' in fh.read()
     allows = re.search(r"(?mi)^Allow: /\s*$", robots) is not None
     blanket_disallow = re.search(r"(?mi)^Disallow: /\s*$", robots) is not None
-    # Every non-HTML served artifact (PDF, LaTeX source, .bib) must be crawl-
-    # blocked in a no-index build -- none carries a noindex meta.
+    # Every non-HTML served artifact (PDF, LaTeX source, .bib, Word .docx) must be
+    # crawl-blocked in a no-index build -- none carries a noindex meta.
     artifact_disallows = {
         ext: re.search(r"(?mi)^Disallow: /\*\.%s\$\s*$" % ext, robots) is not None
-        for ext in ("pdf", "tex", "bib")}
+        for ext in ("pdf", "tex", "bib", "docx")}
     if not allows or blanket_disallow:
         f.err(robots_path, "robots.txt must Allow: / and never blanket Disallow: / "
                            "-- HTML de-indexing relies on the crawler reading the "

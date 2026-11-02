@@ -859,6 +859,85 @@ def md_to_tex(m, journal, out_tex):
         fh.write(tex)
 
 
+def _docx_frontmatter(m):
+    r"""Author display names + affiliation legend + correspondence for the .docx.
+
+    Consumes the shared normalized_authors() model so institutions dedup and
+    number identically to the LaTeX class frontmatter (one source of truth, no
+    cross-format drift). Affiliation markers are superscripts (Elsevier's guide
+    permits sub/superscript); a single shared institution needs no numbering.
+    Returns (names, legend_lines, correspondence) as Markdown-ready strings.
+    """
+    authors, institutions = normalized_authors(m)
+    multi = len(institutions) > 1
+    names = []
+    for a in authors:
+        mark = ""
+        if multi and a["affil_indices"]:
+            mark = "^%s^" % ",".join(str(i) for i in a["affil_indices"])
+        names.append(a["name"] + mark)
+    legend = []
+    if multi:
+        legend = ["^%d^%s" % (i, inst) for i, inst in enumerate(institutions, 1)]
+    elif institutions:
+        legend = [institutions[0]]
+    emails = [a["email"] for a in authors if a.get("email")]
+    corr = ("Correspondence: %s" % ", ".join(emails)) if emails else ""
+    return names, legend, corr
+
+
+def md_to_docx(m, journal, out_docx):
+    r"""Render a submission-ready Word manuscript (.docx) via pandoc.
+
+    For venues that accept a word-processor manuscript (Elsevier et al.): their
+    guide asks for single-column, unjustified, un-hyphenated text that keeps
+    bold/italic/sub/superscript -- which pandoc's DEFAULT docx writer already is,
+    so NO reference-doc is shipped (nothing to drift from a venue template).
+    References resolve via citeproc (IEEE-numbered, self-contained) like the
+    HTML/PDF, since Word has no \cite. Binary (zip): build() treats it like the
+    PDF -- rendered only on a full build, kept out of git, with a .sha256 sidecar.
+    """
+    names, legend, corr = _docx_frontmatter(m)
+    authors_yaml = "\n".join("  - " + _yaml_dq(n) for n in names)
+    abstract = " ".join(m["abstract"].split())
+    meta_block = (
+        "---\n"
+        "title: %s\n"
+        "author:\n%s\n"
+        "date: %s\n"
+        "abstract: %s\n"
+        "---\n\n"
+    ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(m["date"]),
+         _yaml_dq(abstract))
+    # Affiliation legend + correspondence have no default-docx-template slot, so
+    # they lead the body as a manuscript-standard affiliation footnote (two-space
+    # hard breaks keep each institution on its own line).
+    front = ""
+    if legend:
+        front += "  \n".join(legend) + "\n\n"
+    if corr:
+        front += corr + "\n\n"
+    doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
+    # Same hardened reader as md_to_pdf/md_to_tex: author raw TeX (\input{...}) and
+    # fenced ```{=...} blocks become literal text, never engine passthrough.
+    # en-dash substitution like md_to_pdf (docx is UTF-8, not ASCII-gated). Unlike
+    # md_to_tex, KEEP the citeproc ::: {#refs} div in the body so the resolved,
+    # numbered reference list lands in the manuscript.
+    doc = _endash_md(meta_block + front + doi_line + m["_body_md"])
+    cmd = [
+        "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute",
+        "-o", out_docx,
+        "--resource-path", m["_dir"],
+    ]
+    bib = os.path.join(m["_dir"], "refs.bib")
+    if os.path.exists(bib):
+        # citeproc resolves the reference list into the ::: {#refs} div; the IEEE
+        # CSL numbers by first appearance, matching the HTML/PDF.
+        cmd += ["--citeproc", "--bibliography", bib, "--csl", CSL_PATH]
+    r = _run(cmd, input=doc)
+    _check_citeproc(r.stderr)
+
+
 # ---------------------------------------------------------------- venue LaTeX
 
 _TEX_SPECIAL = {
@@ -1106,6 +1185,7 @@ FORMATS = [
         binary=False, suffix="-acmart"),
     Fmt("snjnl", "tex", "LaTeX (Springer)", "md_to_tex_snjnl",
         binary=False, suffix="-snjnl"),
+    Fmt("docx", "docx", "Word", "md_to_docx", binary=True),
 ]
 
 
