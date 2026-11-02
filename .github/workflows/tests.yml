@@ -1,0 +1,46 @@
+name: tests
+
+# journal-maker's own test lane: runs the full unit suite INCLUDING the venue
+# compile-verify (test_venue_compile.py), which emits every venue .tex and compiles
+# it with pdflatex+bibtex -- so a template/class regression that only shows at
+# compile is caught on every push/PR, not just at content-build time. Needs the full
+# texlive set (publishers + plain-generic) that the content CI does not install.
+
+"on":
+  push:
+    branches: [master, main, ai]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    if: vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            pandoc python3-pytest \
+            texlive-latex-recommended texlive-fonts-recommended texlive-xetex \
+            texlive-publishers texlive-plain-generic lmodern \
+            poppler-utils qpdf citation-style-language-styles
+
+      - name: Run selftest (incl. venue compile-verify)
+        run: |
+          cd usr/share/journal-maker
+          python3 -m pytest jmaker/tests/ -q

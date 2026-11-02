@@ -1205,6 +1205,48 @@ def md_to_tex_snjnl(m, journal, out):
     md_to_venue_tex(m, journal, out, "snjnl")
 
 
+def compile_tex(tex_path):
+    r"""Compile a generated submission .tex (pdflatex + bibtex + 2x pdflatex) in a
+    throwaway temp dir, to PROVE it builds; raise BuildError with the log tail on
+    failure. The vendored sn-jnl class + .bst are put on TEXINPUTS/BSTINPUTS
+    (harmless for the texlive-shipped classes). Needs the pandoc texlive set plus
+    texlive-publishers (elsarticle/IEEEtran/acmart) + texlive-plain-generic
+    (binhex.tex, for acmart's hyperxmp); refs.bib beside the .tex is carried in so
+    \bibliography{refs} resolves. Discards the PDF -- this is a validity gate."""
+    base = os.path.splitext(os.path.basename(tex_path))[0]
+    src_dir = os.path.dirname(os.path.abspath(tex_path))
+    with tempfile.TemporaryDirectory() as td:
+        shutil.copy(tex_path, os.path.join(td, base + ".tex"))
+        bib = os.path.join(src_dir, "refs.bib")
+        if os.path.exists(bib):
+            shutil.copy(bib, os.path.join(td, "refs.bib"))
+        env = dict(os.environ)
+        for var in ("TEXINPUTS", "BSTINPUTS"):
+            env[var] = ".:%s:%s" % (VENDOR_SNJNL, env.get(var, ""))
+        pdflatex = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", base]
+
+        def run(cmd):
+            # errors="replace": pdflatex/bibtex logs are not always valid UTF-8
+            # (Latin-1 font names etc.), which would crash a strict decode.
+            try:
+                return subprocess.run(cmd, cwd=td, env=env, capture_output=True,
+                                      text=True, errors="replace")
+            except FileNotFoundError:
+                raise BuildError("required tool not found: %s" % cmd[0])
+
+        for label, cmd in (("first pdflatex", pdflatex),
+                           ("bibtex", ["bibtex", base]),
+                           ("second pdflatex", pdflatex),
+                           ("final pdflatex", pdflatex)):
+            r = run(cmd)
+            # bibtex is allowed to warn (nonzero) on a reference-less doc; the final
+            # pdflatex pass is the authoritative verdict.
+            if r.returncode != 0 and cmd is pdflatex:
+                tail = "\n".join((r.stdout or "").splitlines()[-25:])
+                raise BuildError("%s failed to compile (%s):\n%s"
+                                 % (os.path.basename(tex_path), label, tail))
+
+
 # ---------------------------------------------------------------- formats
 
 class Fmt:
