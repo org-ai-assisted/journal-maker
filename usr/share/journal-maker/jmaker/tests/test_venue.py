@@ -121,6 +121,15 @@ class TestVenueEmitters(unittest.TestCase):
         self.assertIn("\\emph{strong}", tex)
         self.assertNotIn("*strong*", tex)
 
+    def test_refs_strip_accepts_numbered_heading(self):
+        # bodies that number every section may number References too; the .tex refs
+        # strip must still drop the heading + empty #refs div (natbib re-adds the list).
+        for heading in ("## References", "## 7. References", "## 11 References"):
+            body = "Body text.\n\n%s\n\n::: {#refs}\n:::\n" % heading
+            out = g._TEX_REFS_STRIP_RE.sub("", body)
+            self.assertNotIn("References", out)
+            self.assertNotIn("#refs", out)
+
     def test_ieeetran_per_author_affiliation(self):
         # each author's \thanks carries ONLY their own institution + email (a single
         # combined \thanks would lose the author<->affiliation mapping).

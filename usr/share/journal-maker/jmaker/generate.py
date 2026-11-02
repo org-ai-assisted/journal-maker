@@ -817,9 +817,12 @@ def md_to_pdf(m, journal, out_pdf):
 # generate the list from \bibliography{refs}, so leaving the div in emits a
 # spurious empty "References" heading before the bst's own list. Match ONLY the
 # heading + the empty refs div (not to EOF), so anything legitimately after
-# References (an appendix) is preserved in the .tex as it is in the HTML/PDF.
+# References (an appendix) is preserved in the .tex as it is in the HTML/PDF. The
+# heading may carry a leading section number (bodies that number every section),
+# so an optional "N." / "N" prefix is accepted.
 _TEX_REFS_STRIP_RE = re.compile(
-    r"\n+#{1,6}[ \t]+References[ \t]*\n+:::[ \t]*\{#refs\}[ \t]*\n+:::[ \t]*")
+    r"\n+#{1,6}[ \t]+(?:\d+\.?[ \t]+)?References[ \t]*"
+    r"\n+:::[ \t]*\{#refs\}[ \t]*\n+:::[ \t]*")
 
 
 def md_to_tex(m, journal, out_tex):
