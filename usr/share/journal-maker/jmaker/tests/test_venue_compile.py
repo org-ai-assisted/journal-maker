@@ -76,6 +76,15 @@ class TestVenueCompile(unittest.TestCase):
             self.assertRaises(g.BuildError, g.compile_tex,
                               os.path.join(d, "paper.tex"))
 
+    def test_compile_reference_free_doc(self):
+        # a reference-free article has no \bibliography; compile_tex must NOT run
+        # bibtex (which would exit 2 "no \bibdata") and spuriously reject a valid doc.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "paper.tex"), "w", encoding="utf-8") as fh:
+                fh.write("\\documentclass{article}\n\\begin{document}\n"
+                         "A reference-free note.\n\\end{document}\n")
+            g.compile_tex(os.path.join(d, "paper.tex"))  # must not raise
+
 
 if __name__ == "__main__":
     unittest.main()

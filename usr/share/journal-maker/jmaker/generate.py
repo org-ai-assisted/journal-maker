@@ -1220,6 +1220,8 @@ def compile_tex(tex_path):
     \includegraphics resolve. Discards the PDF -- this is a validity gate."""
     base = os.path.splitext(os.path.basename(tex_path))[0]
     src_dir = os.path.dirname(os.path.abspath(tex_path))
+    with open(tex_path, encoding="utf-8") as fh:
+        has_bib = "\\bibliography{" in fh.read()
     with tempfile.TemporaryDirectory() as td:
         shutil.copy(tex_path, os.path.join(td, base + ".tex"))
         for sib in ("refs.bib", "figures"):
@@ -1230,7 +1232,10 @@ def compile_tex(tex_path):
                 shutil.copy(s, os.path.join(td, sib))
         env = dict(os.environ)
         for var in ("TEXINPUTS", "BSTINPUTS"):
-            env[var] = ".:%s:%s" % (VENDOR_SNJNL, env.get(var, ""))
+            # trailing ":" so kpathsea always appends the system texmf trees, even
+            # when a caller presets the var WITHOUT a trailing separator (otherwise
+            # the class files would not be found).
+            env[var] = ".:%s:%s:" % (VENDOR_SNJNL, env.get(var, ""))
         # "./" so a filename is never parsed as an option; stdin closed + a timeout
         # so a prompt/hang can never block the gate.
         pdflatex = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
@@ -1258,11 +1263,15 @@ def compile_tex(tex_path):
         # or broken .bst, unreadable .bib) -- 0/1 (ok / "no \citation" warning) are
         # fine. Masking a bibtex error would let the final pdflatex exit 0 with
         # unresolved refs, defeating the gate (e.g. a broken sn-mathphys-num.bst).
-        for label, cmd, bad in (
-                ("first pdflatex", pdflatex, lambda rc: rc != 0),
-                ("bibtex", ["bibtex", base], lambda rc: rc >= 2),
-                ("second pdflatex", pdflatex, lambda rc: rc != 0),
-                ("final pdflatex", pdflatex, lambda rc: rc != 0)):
+        # bibtex only when the .tex HAS a \bibliography: a reference-free article
+        # has no \bibdata in its .aux, so bibtex would exit 2 ("I found no \bibdata
+        # command") and wrongly fail a valid doc.
+        passes = [("first pdflatex", pdflatex, lambda rc: rc != 0)]
+        if has_bib:
+            passes += [("bibtex", ["bibtex", base], lambda rc: rc >= 2),
+                       ("second pdflatex", pdflatex, lambda rc: rc != 0)]
+        passes.append(("final pdflatex", pdflatex, lambda rc: rc != 0))
+        for label, cmd, bad in passes:
             r = run(cmd)
             if bad(r.returncode):
                 fail(label, r)
