@@ -181,6 +181,15 @@ p.venue { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); marg
 }
 .actions .latex-menu a .ext { font-family: var(--mono); font-size: 0.74rem; color: var(--muted); }
 .actions .latex-menu a:hover, .actions .latex-menu a:focus-visible { background: var(--surface); color: var(--accent); }
+/* Narrow screens: a left/right-anchored pop-over can run off either edge (the
+   trigger sits mid-row, or first under skip_pdf). Drop the overlay and expand the
+   menu inline, full-width and in flow, so it never forces horizontal scroll. */
+@media (max-width: 30rem) {
+  .actions details.latex-dl[open] { width: 100%; }
+  .actions .latex-menu {
+    position: static; min-width: 0; margin-top: 0.4rem; box-shadow: none;
+  }
+}
 @media (prefers-reduced-motion: reduce) { .actions details.latex-dl > summary .caret { transition: none; } }
 .sources-back { font-family: var(--sans); font-size: 0.9rem; margin: 0 0 1.2rem; }
 .sources-back a { color: var(--accent); }
