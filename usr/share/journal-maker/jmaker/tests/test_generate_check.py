@@ -1744,7 +1744,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 self.assertTrue(os.path.exists(
                     os.path.join(out, "art", "art.%s" % ext)))
                 self.assertTrue(os.path.exists(
-                    os.path.join(out, "art", "art.%s.sha256" % ext)))
+                    os.path.join(out, "art", "art.%s.sha512" % ext)))
             with open(html, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), before)   # HTML untouched (no rebuild)
 
@@ -1776,9 +1776,9 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertFalse(os.path.islink(site_tex))
 
     def test_latex_link_points_to_committed_tex_on_source_host(self):
-        # With source_base_url set, the LaTeX-source link targets the committed
+        # With source_base_url set, each LaTeX menu item targets the committed
         # .tex in the published _site tree on the source host (not the relative
-        # served copy).
+        # served copy). The variants live inside the single <details> pop-over.
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
             with open(jt, "a", encoding="utf-8") as fh:
@@ -1788,9 +1788,54 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
                 page = fh.read()
             self.assertIn(
-                '<a class="sources-aid" '
-                'href="https://example.com/r/blob/master/_site/art/art.tex">'
-                "LaTeX source</a>", page)
+                '<a href="https://example.com/r/blob/master/_site/art/art.tex">'
+                'Neutral (natbib) <span class="ext">.tex</span></a>', page)
+            self.assertIn(
+                '<a href="https://example.com/r/blob/master/_site/'
+                'art/art-elsarticle.tex">'
+                'Elsevier <span class="ext">-elsarticle.tex</span></a>', page)
+
+    def test_latex_sources_fold_into_one_no_js_details_menu(self):
+        # The five LaTeX variants collapse into ONE <details> pop-over (no JS),
+        # not five flat links. The old flat top-level links must be gone, and the
+        # actions container must be a <div> (a <details> would implicitly close a
+        # <p>, splitting the row).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            journal = g.load_journal(jt)
+            m = g.load_article(os.path.join(d, "articles", "art"))
+            _rel, _name, full = g.render_article(m, journal, skip_pdf=False)
+            self.assertEqual(full.count('<details class="latex-dl">'), 1)
+            self.assertEqual(full.count('class="latex-menu"'), 1)
+            # One summary trigger labelled "LaTeX"; every variant inside the menu.
+            self.assertIn("<summary>LaTeX", full)
+            for label in ("Neutral (natbib)", "Elsevier", "IEEE", "ACM", "Springer"):
+                self.assertIn('<span class="ext">', full)
+                self.assertIn(label + " <span", full)
+            # The pre-menu flat links are gone.
+            self.assertNotIn(">LaTeX source</a>", full)
+            self.assertNotIn(">LaTeX (Elsevier)</a>", full)
+            self.assertNotIn('<p class="actions">', full)
+            self.assertIn('<div class="actions">', full)
+
+    def test_checksum_is_glyph_link_with_sha512_label(self):
+        # The integrity link is an icon-only lock glyph (ASCII HTML entity so the
+        # HTML stays ASCII-gated), carrying the SHA-512 sidecar and a distinct
+        # per-format accessible name. No visible "SHA-256"/"SHA-512" text, no
+        # legacy .sha256 href.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            journal = g.load_journal(jt)
+            m = g.load_article(os.path.join(d, "articles", "art"))
+            _rel, _name, full = g.render_article(m, journal, skip_pdf=False)
+            self.assertIn(
+                '<a class="checksum" href="art.pdf.sha512" '
+                'title="SHA-512 checksum" '
+                'aria-label="SHA-512 checksum for PDF">&#x1F510;</a>', full)
+            self.assertIn('aria-label="SHA-512 checksum for Word"', full)
+            self.assertNotIn(".sha256", full)
+            self.assertNotIn(">SHA-256<", full)
+            self.assertNotIn(">SHA-512<", full)
 
     def test_inline_styles_stripped_and_favicon_linked(self):
         # Strict CSP style-src 'self' blocks inline styles (pandoc emits them on
@@ -1949,7 +1994,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # The sitemap lists HTML navigable pages only -- byte-identical to
         # dist_ai.webcheck.site.seo_page_urls, which the 'previews' policy
         # re-derives and byte-compares. A full build still SERVES the PDF (+ its
-        # .sha256); it is simply not advertised in the sitemap, so a no-index
+        # .sha512); it is simply not advertised in the sitemap, so a no-index
         # build's robots Disallow: /*.pdf$ never contradicts the sitemap.
         def _stub_pdf(_m, _journal, pdf_path):
             with open(pdf_path, "wb") as fh:
@@ -1979,7 +2024,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 arts = [os.path.join(b, n) for b, _dirs, files in os.walk(out)
                         for n in files if n.endswith("." + ext)]
                 self.assertTrue(arts, "a full build still generates the %s" % ext)
-                self.assertTrue(os.path.isfile(arts[0] + ".sha256"))
+                self.assertTrue(os.path.isfile(arts[0] + ".sha512"))
 
     def test_og_and_jsonld_on_all_page_types(self):
         # Every page type carries OpenGraph + Twitter + og:locale + a JSON-LD
@@ -2049,11 +2094,11 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             self.assertEqual(found, 1)
 
     def test_skip_pdf_omits_pdf_download_anchors(self):
-        # build() gates PDF + sha256 generation on skip_pdf, so a --skip-pdf tree
+        # build() gates PDF + sha512 generation on skip_pdf, so a --skip-pdf tree
         # has neither file; the page must then carry NO <a> link to them, or a
         # link-checker scanning the skip-pdf tree reports two dangling internal
         # links (regression: the family-wide website-tests gate failed on exactly
-        # android-insecurity.pdf + .sha256). The citation_pdf_url meta (absolute,
+        # android-insecurity.pdf + .sha512). The citation_pdf_url meta (absolute,
         # canonical) is a separate concern and stays.
         with tempfile.TemporaryDirectory() as d:
             jt = self._site(d)
@@ -2062,14 +2107,14 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
                 page = fh.read()
             self.assertNotIn('href="art.pdf"', page)
-            self.assertNotIn('href="art.pdf.sha256"', page)
+            self.assertNotIn('href="art.pdf.sha512"', page)
             self.assertNotIn(">Download PDF</a>", page)
             # render_article is the single source: a FULL build still offers both.
             journal = g.load_journal(jt)
             m = g.load_article(os.path.join(d, "articles", "art"))
             _rel, _name, full = g.render_article(m, journal, skip_pdf=False)
             self.assertIn('href="art.pdf"', full)
-            self.assertIn('href="art.pdf.sha256"', full)
+            self.assertIn('href="art.pdf.sha512"', full)
             self.assertIn(">Download PDF</a>", full)
 
     def test_discovery_independent_of_status_marker(self):

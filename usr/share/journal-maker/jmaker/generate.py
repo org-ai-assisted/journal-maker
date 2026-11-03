@@ -934,7 +934,7 @@ def md_to_docx(m, journal, out_docx):
     so NO reference-doc is shipped (nothing to drift from a venue template).
     References resolve via citeproc (IEEE-numbered, self-contained) like the
     HTML/PDF, since Word has no \cite. Binary (zip): build() treats it like the
-    PDF -- rendered only on a full build, kept out of git, with a .sha256 sidecar.
+    PDF -- rendered only on a full build, kept out of git, with a .sha512 sidecar.
     """
     names, legend, corr = _docx_frontmatter(m)
     authors_yaml = "\n".join("  - " + _yaml_dq(n) for n in names)
@@ -1293,7 +1293,7 @@ class Fmt:
       engine), committed in _site and served for download (the repo's .gitignore
       keeps _site text under git). The LaTeX sources are these.
     - binary=True  -> rendered ONLY on a full build (skip_pdf gates it), kept OUT
-      of git with a .sha256 sidecar, served for download. The PDF (and Word) are
+      of git with a .sha512 sidecar, served for download. The PDF (and Word) are
       these.
 
     `suffix` disambiguates formats that share an extension: the output filename is
@@ -1305,10 +1305,14 @@ class Fmt:
     e.g. md_to_pdf takes effect, and an emitter defined after FORMATS still binds.
     """
 
-    def __init__(self, fid, ext, label, emit_name, binary, suffix=""):
+    def __init__(self, fid, ext, label, emit_name, binary, suffix="",
+                 menu_label=None):
         self.id = fid
         self.ext = ext
         self.label = label
+        # Short name for the LaTeX pop-over menu (the "LaTeX " prefix is redundant
+        # inside a menu already headed "LaTeX source"); defaults to label.
+        self.menu_label = menu_label or label
         self.emit_name = emit_name
         self.binary = binary
         self.suffix = suffix
@@ -1324,15 +1328,16 @@ class Fmt:
 # append here; the build loop and render_article's anchors need no other change.
 FORMATS = [
     Fmt("pdf", "pdf", "PDF", "md_to_pdf", binary=True),
-    Fmt("tex", "tex", "LaTeX source", "md_to_tex", binary=False),
+    Fmt("tex", "tex", "LaTeX source", "md_to_tex", binary=False,
+        menu_label="Neutral (natbib)"),
     Fmt("elsarticle", "tex", "LaTeX (Elsevier)", "md_to_tex_elsarticle",
-        binary=False, suffix="-elsarticle"),
+        binary=False, suffix="-elsarticle", menu_label="Elsevier"),
     Fmt("ieeetran", "tex", "LaTeX (IEEE)", "md_to_tex_ieeetran",
-        binary=False, suffix="-ieeetran"),
+        binary=False, suffix="-ieeetran", menu_label="IEEE"),
     Fmt("acmart", "tex", "LaTeX (ACM)", "md_to_tex_acmart",
-        binary=False, suffix="-acmart"),
+        binary=False, suffix="-acmart", menu_label="ACM"),
     Fmt("snjnl", "tex", "LaTeX (Springer)", "md_to_tex_snjnl",
-        binary=False, suffix="-snjnl"),
+        binary=False, suffix="-snjnl", menu_label="Springer"),
     Fmt("docx", "docx", "Word", "md_to_docx", binary=True),
 ]
 
@@ -2043,6 +2048,25 @@ def _linkify_section_refs(body_html):
     return "".join(parts) + suffix
 
 
+def _latex_menu(tex_formats, href_of):
+    r"""One no-JS <details> pop-over bundling every LaTeX source variant.
+
+    <summary> is the ghost-button trigger; the panel lists each variant by its
+    short menu label plus its file suffix. Pure HTML -- a native disclosure, so
+    no script and nothing for the strict CSP / Trusted-Types to allow. href_of(fmt)
+    returns the (already-escaped) download href for a text format.
+    """
+    items = ['<p class="latex-menu-head">LaTeX source</p>']
+    for fmt in tex_formats:
+        items.append(
+            '<a href="%s">%s <span class="ext">%s</span></a>'
+            % (href_of(fmt), html.escape(fmt.menu_label),
+               html.escape("%s.%s" % (fmt.suffix, fmt.ext))))
+    return ('<details class="latex-dl"><summary>LaTeX'
+            '<span class="caret" aria-hidden="true">&#9662;</span></summary>'
+            '<div class="latex-menu">%s</div></details>' % "".join(items))
+
+
 def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None,
                    quote_blocks=None, cite_keys=None, claim_sections=None):
     rel_dir = _rel_dir(m)
@@ -2142,40 +2166,47 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     cite_box = _cite_box(m, journal, landing_url, year)
     statements = _statements(m)
     license_bit = _license_footer(m, journal)
-    # PDF + sha256 are generated only on a full build (build() gates them on
+    # PDF + sha512 are generated only on a full build (build() gates them on
     # skip_pdf); omit the download anchors in a skip-pdf tree so it carries no
     # link to an artifact that was never produced. The LaTeX submission source is
     # generated on EVERY build (pandoc only, no TeX engine), so its link is
     # unconditional. The source-quotes reviewer-aid link appears whenever the
     # sidecar exists, independent of the PDF.
     # Download anchors, driven by FORMATS (the same list the build loop emits):
-    #   binary -> served same-origin "Download X" + its SHA-256, only when the
-    #             full build produced it (skip_pdf omits both link and artifact).
-    #   text   -> the COMMITTED source: link the browsable _site file on the
-    #             source host when source_base_url is set (a citable committed
-    #             file), else the served same-origin copy. slugs are csr-rules
-    #             lowercase-hyphen, already URL-safe.
+    #   binary -> served same-origin "Download X" + an icon-only SHA-512 integrity
+    #             link, only when the full build produced it (skip_pdf omits both
+    #             link and artifact).
+    #   text   -> every text source is a LaTeX variant; all fold into ONE no-JS
+    #             <details> pop-over placed at the first text format's position.
+    #             Each item links the browsable _site file on the source host when
+    #             source_base_url is set (a citable committed file), else the served
+    #             same-origin copy. slugs are csr-rules lowercase-hyphen, URL-safe.
+    def _text_href(fmt):
+        name = fmt.fname(m)
+        if journal.get("source_base_url"):
+            src = "%s/_site/%s/%s" % (journal["source_base_url"], _rel_dir(m), name)
+            return html.escape(src, quote=True)
+        return name
+
+    latex_menu = _latex_menu([f for f in FORMATS if not f.binary], _text_href)
     action_links = []
+    latex_placed = False
     for fmt in FORMATS:
         name = fmt.fname(m)
         if fmt.binary:
             if skip_pdf:
                 continue
             action_links.append('<a href="%s">Download %s</a>' % (name, fmt.label))
-            # Distinct accessible name per format (PDF + Word both expose a "SHA-256"
-            # link): "SHA-256" stays the leading substring (WCAG 2.5.3 label-in-name)
-            # and the format is appended so the two are not identical-links-same-purpose.
+            # Icon-only integrity link (a lock-with-key glyph): the SHA-512 sidecar.
+            # The glyph carries no text, so aria-label is the accessible name, made
+            # distinct per format (PDF + Word) to avoid identical-links-same-purpose.
             action_links.append(
-                '<a class="checksum" href="%s.sha256" '
-                'aria-label="SHA-256 checksum for %s">SHA-256</a>'
+                '<a class="checksum" href="%s.sha512" title="SHA-512 checksum" '
+                'aria-label="SHA-512 checksum for %s">&#x1F510;</a>'
                 % (name, html.escape(fmt.label, quote=True)))
-        elif journal.get("source_base_url"):
-            src = "%s/_site/%s/%s" % (journal["source_base_url"], _rel_dir(m), name)
-            action_links.append('<a class="sources-aid" href="%s">%s</a>'
-                                % (html.escape(src, quote=True), fmt.label))
-        else:
-            action_links.append('<a class="sources-aid" href="%s">%s</a>'
-                                % (name, fmt.label))
+        elif not latex_placed:
+            action_links.append(latex_menu)
+            latex_placed = True
     if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
         action_links.append('<a class="sources-aid" href="sources/">'
                             "Source quotes</a>")
@@ -2188,7 +2219,9 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
             quote(os.path.basename(m["_dir"].rstrip("/")), safe=""))
         action_links.append('<a class="sources-aid" href="%s">Markdown source</a>'
                             % html.escape(src, quote=True))
-    actions_bit = (('<p class="actions">%s</p>\n' % " ".join(action_links))
+    # A <div>, not <p>: the LaTeX <details> is flow (not phrasing) content, which
+    # would implicitly close a <p> and split the row.
+    actions_bit = (('<div class="actions">%s</div>\n' % " ".join(action_links))
                    if action_links else "")
 
     main = (
@@ -2686,14 +2719,14 @@ def _reject_symlinked_bib(m):
         raise BuildError("refs.bib must not be a symlink: %s" % bib)
 
 
-def _write_sha256(path):
-    """Write the sha256sum sidecar for a rendered binary artifact (PDF, docx)."""
-    h = hashlib.sha256()
+def _write_sha512(path):
+    """Write the sha512sum sidecar for a rendered binary artifact (PDF, docx)."""
+    h = hashlib.sha512()
     with open(path, "rb") as pf:
         for chunk in iter(lambda: pf.read(65536), b""):
             h.update(chunk)
-    with open(path + ".sha256", "w", encoding="utf-8") as sf:
-        # sha256sum format; the name column is the artifact's basename.
+    with open(path + ".sha512", "w", encoding="utf-8") as sf:
+        # sha512sum format; the name column is the artifact's basename.
         sf.write("%s  %s\n" % (h.hexdigest(), os.path.basename(path)))
 
 
@@ -2751,7 +2784,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
         # Deploy-time pass, AFTER the route-collision check (so two articles with
         # the same slug cannot silently overwrite one PDF): the committed _site
         # already holds the HTML/.tex/assets (built in the sandbox and committed);
-        # render ONLY the per-article PDFs + sha256 into it. No rmtree, no HTML/
+        # render ONLY the per-article PDFs + sha512 into it. No rmtree, no HTML/
         # sitemap/robots regeneration -- the final HTML is NOT generated in CI,
         # only the (gitignored) binary PDFs are.
         if not os.path.isdir(out_dir):
@@ -2769,10 +2802,10 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
                 out = os.path.join(dest, fmt.fname(m))
                 # Deploy writes into the committed tree: a committed symlink at the
                 # output or its sidecar would be followed (arbitrary-file overwrite).
-                if os.path.islink(out) or os.path.islink(out + ".sha256"):
+                if os.path.islink(out) or os.path.islink(out + ".sha512"):
                     raise BuildError("refusing to write through a symlink: %s" % out)
                 fmt.emit(m, journal, out)
-                _write_sha256(out)
+                _write_sha512(out)
         return len(articles), out_dir
 
     if os.path.isdir(out_dir):
@@ -2839,7 +2872,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
             out = os.path.join(dest, fmt.fname(m))
             if fmt.binary:
                 # Binary artifacts (PDF, docx) are kept out of git and rendered
-                # only on a full build; --skip-pdf omits them. Each gets a .sha256
+                # only on a full build; --skip-pdf omits them. Each gets a .sha512
                 # sidecar, and none is added to the sitemap (it lists navigable
                 # HTML only, byte-identical to dist_ai.webcheck.site.seo_page_urls
                 # under the 'previews' policy). A no-index build's robots Disallows
@@ -2848,7 +2881,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
                 if skip_pdf:
                     continue
                 fmt.emit(m, journal, out)
-                _write_sha256(out)
+                _write_sha512(out)
             else:
                 # Text sources (LaTeX) are committed and emitted on every build,
                 # so they exist in the --skip-pdf tree too (pandoc only, no engine).

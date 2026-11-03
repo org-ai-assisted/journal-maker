@@ -141,14 +141,47 @@ article.body h2 { font-size: 1.5rem; font-weight: 650; margin: 2rem 0 0.5rem; }
 article.body h3 { font-size: 1.2rem; font-weight: 650; margin: 1.4rem 0 0.4rem; }
 p.authors { font-family: var(--sans); font-size: 1.05rem; margin: 0.2rem 0; }
 p.affil { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); margin: 0.1rem 0; }
-p.venue, p.actions { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); margin: 0.2rem 0; }
-p.actions a {
-  display: inline-block; margin-top: 0.4rem; padding: 0.35rem 0.8rem;
+p.venue { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); margin: 0.2rem 0; }
+.actions { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); margin: 0.4rem 0 0.2rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.55rem; }
+.actions a {
+  display: inline-flex; align-items: center; padding: 0.35rem 0.8rem;
   background: var(--accent); color: var(--on-accent); border-radius: 4px;
   text-decoration: none; font-size: 0.9rem;
 }
-p.actions a.checksum { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.8rem; }
-p.actions a.sources-aid { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.85rem; }
+/* Icon-only integrity link (lock-with-key glyph); subtle until hover/focus. */
+.actions a.checksum { background: none; color: var(--muted); padding: 0.35rem 0.25rem; font-size: 0.85rem; line-height: 1; }
+.actions a.checksum:hover, .actions a.checksum:focus-visible { color: var(--accent); }
+.actions a.sources-aid { background: none; color: var(--accent); padding: 0.35rem 0.2rem; font-size: 0.85rem; }
+/* LaTeX sources: one no-JS <details> pop-over. <summary> = ghost-button trigger
+   (secondary to the filled PDF/Word buttons); the panel floats over the content. */
+.actions details.latex-dl { position: relative; }
+.actions details.latex-dl > summary {
+  list-style: none; cursor: pointer; display: inline-flex; align-items: center;
+  gap: 0.35rem; padding: 0.35rem 0.75rem; border: 1px solid var(--accent);
+  border-radius: 4px; color: var(--accent); font-size: 0.9rem;
+}
+.actions details.latex-dl > summary::-webkit-details-marker { display: none; }
+.actions details.latex-dl > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.actions details.latex-dl > summary .caret { font-size: 0.7em; transition: transform 0.15s ease; }
+.actions details.latex-dl[open] > summary .caret { transform: rotate(180deg); }
+.actions .latex-menu {
+  position: absolute; left: 0; top: calc(100% + 0.35rem); z-index: 5;
+  min-width: 13rem; background: var(--bg); border: 1px solid var(--rule);
+  border-radius: 7px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.18);
+  padding: 0.3rem; display: flex; flex-direction: column;
+}
+.actions .latex-menu .latex-menu-head {
+  margin: 0; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); padding: 0.35rem 0.6rem 0.2rem;
+}
+.actions .latex-menu a {
+  display: flex; justify-content: space-between; gap: 1rem; align-items: baseline;
+  padding: 0.4rem 0.6rem; border-radius: 4px; background: none; color: var(--fg);
+  font-size: 0.88rem;
+}
+.actions .latex-menu a .ext { font-family: var(--mono); font-size: 0.74rem; color: var(--muted); }
+.actions .latex-menu a:hover, .actions .latex-menu a:focus-visible { background: var(--surface); color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .actions details.latex-dl > summary .caret { transition: none; } }
 .sources-back { font-family: var(--sans); font-size: 0.9rem; margin: 0 0 1.2rem; }
 .sources-back a { color: var(--accent); }
 /* Wrap any long unbroken token (attribution URLs) so the page never overflows. */
@@ -347,7 +380,7 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
 @media print {
   :root { --bg: #ffffff; --fg: #000000; }
   a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.8em; word-break: break-all; }
-  nav.toc, p.actions, details.cite-this, .skip-link, .status-pill-row { display: none; }
+  nav.toc, .actions, details.cite-this, .skip-link, .status-pill-row { display: none; }
   h1, h2, h3, figure { break-inside: avoid; }
 }
 """
