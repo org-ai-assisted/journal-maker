@@ -315,8 +315,31 @@ class TestZenodo(unittest.TestCase):
             g.md_to_pdf(m, JOURNAL, "/dev/null")
         self.assertIn("link-citations=true", captured["argv"])
         self.assertIn("link-bibliography=true", captured["argv"])
-        self.assertIn("DOI: [10.1234/foo.bar](<https://doi.org/10.1234/foo.bar>)",
+        self.assertIn("DOI: [10.1234/foo.bar](https://doi.org/10.1234/foo.bar)",
                       captured["input"])
+
+    def test_doi_md_link_safe_against_injection_and_specials(self):
+        # An author-supplied DOI must not break out of the markdown link or inject a
+        # foreign href; a real SICI DOI (< >) must still make a single doi.org link.
+        # RED before _doi_md_link percent-encoded the href + escaped the visible text.
+        evil = g._doi_md_link("10.1000/x](https://evil.example/phish)")
+        self.assertIn(r"10.1000/x\]", evil)   # the ] is escaped -> cannot close early
+        # the ONLY link href is the percent-encoded doi.org URL (the evil url is folded
+        # into the doi.org path, never a standalone markdown href):
+        self.assertIn(
+            "](https://doi.org/10.1000/x%5D%28https%3A//evil.example/phish%29)", evil)
+        sici = g._doi_md_link("10.1002/(SICI)1097<737>")
+        self.assertIn("https://doi.org/10.1002/%28SICI%291097%3C737%3E", sici)
+        self.assertEqual(sici.count("https://doi.org/"), 1)
+
+    def test_source_date_epoch_year_only_and_invalid(self):
+        # load_article accepts a bare YYYY (and a regex-only YYYY-MM-DD), so the epoch
+        # helper must not crash: pad a year to Jan 1, fall back on a bad day. RED
+        # before the try/pad (strptime raised ValueError, crashing the full build).
+        self.assertEqual(g._source_date_epoch({"date": "2026"}),
+                         g._source_date_epoch({"date": "2026-01-01"}))
+        self.assertEqual(g._source_date_epoch({"date": "2024-02-31"}),
+                         g._source_date_epoch({"date": "2024-01-01"}))
 
     def test_pdf_reproducible_env(self):
         # Bit-for-bit reproducible PDF: pin pdfTeX's dates (SOURCE_DATE_EPOCH = the

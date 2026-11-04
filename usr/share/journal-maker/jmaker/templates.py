@@ -651,16 +651,21 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     var btn = document.querySelector(".back-to-top");
     if (!btn) { return; }
     btn.hidden = true;
+    // Never hide the control while it holds keyboard focus (a hide-timer or a
+    // scroll-to-top must not steal focus from a keyboard user mid-activation).
+    function hide() { if (document.activeElement !== btn) { btn.hidden = true; } }
     btn.addEventListener("click", function (e) {
       e.preventDefault();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      var reduce = window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
     });
     var idle = null;
     window.addEventListener("scroll", function () {
-      if (window.scrollY < 400) { btn.hidden = true; return; }
+      if (window.scrollY < 400) { hide(); return; }
       btn.hidden = false;
       clearTimeout(idle);
-      idle = setTimeout(function () { btn.hidden = true; }, 2000);
+      idle = setTimeout(hide, 2000);
     }, { passive: true });
   })();
 })();

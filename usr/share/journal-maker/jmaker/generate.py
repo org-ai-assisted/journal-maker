@@ -869,9 +869,29 @@ def _yaml_dq(s):
 def _source_date_epoch(m):
     """Deterministic SOURCE_DATE_EPOCH for a reproducible PDF/docx: the article's
     publication date in UTC (so the build machine's timezone cannot perturb it).
-    Two builds of the same source then produce a byte-identical artifact."""
-    return int(datetime.datetime.strptime(m["date"][:10], "%Y-%m-%d")
-               .replace(tzinfo=datetime.timezone.utc).timestamp())
+    Two builds of the same source then produce a byte-identical artifact.
+    load_article accepts a bare YYYY or a (regex-only) YYYY-MM-DD, so pad a bare year
+    to Jan 1 and fall back to Jan 1 on a calendar-invalid day -- a stable epoch is
+    always derivable and a full build never crashes on an accepted date."""
+    d = m["date"][:10]
+    if len(d) == 4:
+        d += "-01-01"
+    try:
+        dt = datetime.datetime.strptime(d, "%Y-%m-%d")
+    except ValueError:
+        dt = datetime.datetime.strptime(d[:4] + "-01-01", "%Y-%m-%d")
+    return int(dt.replace(tzinfo=datetime.timezone.utc).timestamp())
+
+
+def _doi_md_link(doi):
+    r"""A markdown link for a DOI: the href is percent-encoded (quote) and the visible
+    text backslash-escaped, so an author-supplied DOI carrying markdown-active or
+    link-terminating characters ([ ] < > ` * _ space, and the ( ) a real SICI DOI
+    has) cannot break out of the link or inject a foreign href. Mirrors the HTML DOI
+    anchor's escaping intent; `safe="/"` keeps the DOI path readable in the url."""
+    url = "https://doi.org/" + quote(doi, safe="/")
+    text = re.sub(r"([\\`*_\[\]<>])", r"\\\1", doi)
+    return "DOI: [%s](%s)\n\n" % (text, url)
 
 
 def md_to_pdf(m, journal, out_pdf):
@@ -889,11 +909,7 @@ def md_to_pdf(m, journal, out_pdf):
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
-    # Clickable DOI: a markdown link (-> \href under pdflatex for PDF/.tex, a
-    # hyperlink in docx), matching the HTML DOI anchor. Angle-bracket URL so a DOI
-    # with parens/special chars does not break the link.
-    doi_line = ("DOI: [%s](<https://doi.org/%s>)\n\n" % (m["doi"], m["doi"])
-                if m.get("doi") else "")
+    doi_line = _doi_md_link(m["doi"]) if m.get("doi") else ""
     doc = _endash_md(meta_block + doi_line + m["_body_md"])
     # -raw_tex: author raw TeX (e.g. \input{/etc/passwd}) is not passed to the
     # engine. -raw_attribute: a fenced ```{=latex} / ```{=html} block is literal
@@ -998,11 +1014,7 @@ def md_to_tex(m, journal, out_tex):
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(m["date"]),
          _yaml_dq(abstract))
-    # Clickable DOI: a markdown link (-> \href under pdflatex for PDF/.tex, a
-    # hyperlink in docx), matching the HTML DOI anchor. Angle-bracket URL so a DOI
-    # with parens/special chars does not break the link.
-    doi_line = ("DOI: [%s](<https://doi.org/%s>)\n\n" % (m["doi"], m["doi"])
-                if m.get("doi") else "")
+    doi_line = _doi_md_link(m["doi"]) if m.get("doi") else ""
     body = _TEX_REFS_STRIP_RE.sub("", m["_body_md"])
     # No en-dash substitution (unlike md_to_pdf): LaTeX source keeps ASCII "--"
     # and renders the en-dash ligature itself, so the served .tex stays ASCII for
@@ -1112,11 +1124,7 @@ def md_to_docx(m, journal, out_docx):
         front += "  \n".join(legend) + "\n\n"
     if corr:
         front += corr + "\n\n"
-    # Clickable DOI: a markdown link (-> \href under pdflatex for PDF/.tex, a
-    # hyperlink in docx), matching the HTML DOI anchor. Angle-bracket URL so a DOI
-    # with parens/special chars does not break the link.
-    doi_line = ("DOI: [%s](<https://doi.org/%s>)\n\n" % (m["doi"], m["doi"])
-                if m.get("doi") else "")
+    doi_line = _doi_md_link(m["doi"]) if m.get("doi") else ""
     # Same hardened reader as md_to_pdf/md_to_tex: author raw TeX (\input{...}) and
     # fenced ```{=...} blocks become literal text, never engine passthrough.
     # en-dash substitution like md_to_pdf (docx is UTF-8, not ASCII-gated). Unlike
@@ -2130,7 +2138,7 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None, archive_map=
     # INSIDE the endnotes span is a nested-footnote ref, not the primary in-body
     # reference, so skip it (else it pollutes the map with the unnumbered end position).
     fn_lo, fn_hi = _footnotes_span(body_html)
-    fn_marker_sec = {}
+    fn_marker_sec: dict = {}
     for mo in re.finditer(r'<a\b[^>]*\bclass="footnote-ref"[^>]*>', body_html):
         if fn_lo <= mo.start() < fn_hi:
             continue
