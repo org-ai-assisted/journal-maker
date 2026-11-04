@@ -288,6 +288,90 @@ class TestZenodo(unittest.TestCase):
         fmt = argv[argv.index("-f") + 1]
         self.assertIn("-raw_attribute", fmt)
 
+    def test_pdf_doi_and_citation_links(self):
+        # PDF link parity with HTML: the DOI renders as a clickable markdown link
+        # (-> hyperref \href) and in-text citations link to their reference entry
+        # (link-citations). RED before doi_line became a link / before link-citations.
+        captured = {}
+
+        def fake_run(argv, **kw):
+            captured["argv"] = argv
+            captured["input"] = kw.get("input", "")
+
+            class R:
+                stdout = ""
+                stderr = ""
+            return R()
+        orig = g._run
+        setattr(g, "_run", fake_run)
+        self.addCleanup(lambda: setattr(g, "_run", orig))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@misc{k, title={T}}\n")
+            m = dict(META)
+            m["doi"] = "10.1234/foo.bar"
+            m["_body_md"] = "Body [@k].\n"
+            m["_dir"] = d
+            g.md_to_pdf(m, JOURNAL, "/dev/null")
+        self.assertIn("link-citations=true", captured["argv"])
+        self.assertIn("link-bibliography=true", captured["argv"])
+        self.assertIn("DOI: [10.1234/foo.bar](<https://doi.org/10.1234/foo.bar>)",
+                      captured["input"])
+
+    def test_pdf_reproducible_env(self):
+        # Bit-for-bit reproducible PDF: pin pdfTeX's dates (SOURCE_DATE_EPOCH = the
+        # article date in UTC, FORCE_SOURCE_DATE=1) and the trailer /ID (\pdftrailerid,
+        # which SOURCE_DATE_EPOCH does NOT cover). RED before the env + \pdftrailerid.
+        captured = {}
+
+        def fake_run(argv, **kw):
+            captured["env"] = kw.get("env", {})
+            hdr = argv[argv.index("--include-in-header") + 1]
+            with open(hdr, encoding="utf-8") as fh:
+                captured["hdr"] = fh.read()
+
+            class R:
+                stdout = ""
+                stderr = ""
+            return R()
+        orig = g._run
+        setattr(g, "_run", fake_run)
+        self.addCleanup(lambda: setattr(g, "_run", orig))
+        m = dict(META)
+        m["doi"] = ""
+        m["_body_md"] = "body\n"
+        m["_dir"] = "/nonexistent/my-slug"
+        g.md_to_pdf(m, JOURNAL, "/dev/null")
+        expected = str(g._source_date_epoch(m))
+        self.assertEqual(captured["env"].get("SOURCE_DATE_EPOCH"), expected)
+        self.assertEqual(captured["env"].get("FORCE_SOURCE_DATE"), "1")
+        self.assertIn("\\pdftrailerid{journal-maker-my-slug}", captured["hdr"])
+
+    def test_docx_reproducible_env(self):
+        # Reproducible docx: pandoc stamps docProps created/modified + zip entry mtimes
+        # from SOURCE_DATE_EPOCH (the article date, UTC). RED before md_to_docx passed
+        # the env.
+        captured = {}
+
+        def fake_run(argv, **kw):
+            captured["env"] = kw.get("env", {})
+
+            class R:
+                stdout = ""
+                stderr = ""
+            return R()
+        orig = g._run
+        setattr(g, "_run", fake_run)
+        self.addCleanup(lambda: setattr(g, "_run", orig))
+        with tempfile.TemporaryDirectory() as d:
+            m = dict(META)
+            m["doi"] = ""
+            m["_body_md"] = "body\n"
+            m["_dir"] = d
+            g.md_to_docx(m, JOURNAL, os.path.join(d, "x.docx"))
+        expected = str(g._source_date_epoch(m))
+        self.assertEqual(captured["env"].get("SOURCE_DATE_EPOCH"), expected)
+
     def test_docx_reader_disables_raw_attribute_and_cites(self):
         # The Word writer shares the PDF's hardened reader (fenced ```{=latex} /
         # author raw TeX stay literal, never engine passthrough) and runs citeproc
@@ -2894,6 +2978,28 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         out = g._enhance_references(body, {"aosp"}, {})
         # attributed to the marker's section 14, not the unnumbered footnotes block
         self.assertIn('id="citesec-aosp-14"', out)
+
+    def test_footnote_cite_multi_section_refs_attributed_to_all(self):
+        # A footnote referenced from MORE THAN ONE section (pandoc reuses #fn1 for each
+        # marker) -- its cite must be attributed to EVERY referencing section, not just
+        # the last marker's. RED before fn_marker_sec became a per-section list (the
+        # overwrite dropped section 1, so a "Sec. 1" claim lost citesec-aosp-1).
+        body = (
+            '<h2 id="s1">1. Intro</h2>'
+            '<p>One<a href="#fn1" class="footnote-ref" id="fnref1" '
+            'role="doc-noteref"><sup>1</sup></a>.</p>'
+            '<h2 id="s2">2. Method</h2>'
+            '<p>Two<a href="#fn1" class="footnote-ref" id="fnref1-2" '
+            'role="doc-noteref"><sup>1</sup></a>.</p>'
+            '<h2 id="refs-h" class="unnumbered">References</h2>'
+            '<div id="refs"><div class="csl-entry">x</div></div>'
+            '<section id="footnotes" class="footnotes footnotes-end-of-document" '
+            'role="doc-endnotes"><ol><li id="fn1"><p>Caveat <span class="citation">'
+            '<a href="#ref-aosp" role="doc-biblioref">[1]</a></span>.</p></li>'
+            '</ol></section>')
+        out = g._enhance_references(body, {"aosp"}, {})
+        self.assertIn('id="citesec-aosp-1"', out)
+        self.assertIn('id="citesec-aosp-2"', out)
 
     def test_footnote_cite_counts_in_marker_section_full_build(self):
         # End-to-end (dev1355's scenario): a [@cite] moved INTO a footnote whose [^id]

@@ -866,6 +866,14 @@ def _yaml_dq(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _source_date_epoch(m):
+    """Deterministic SOURCE_DATE_EPOCH for a reproducible PDF/docx: the article's
+    publication date in UTC (so the build machine's timezone cannot perturb it).
+    Two builds of the same source then produce a byte-identical artifact."""
+    return int(datetime.datetime.strptime(m["date"][:10], "%Y-%m-%d")
+               .replace(tzinfo=datetime.timezone.utc).timestamp())
+
+
 def md_to_pdf(m, journal, out_pdf):
     """Render a camera-ready PDF via pandoc + pdflatex (content is ASCII)."""
     authors_yaml = "\n".join("  - " + _yaml_dq(a["name"]) for a in m["authors"])
@@ -881,7 +889,11 @@ def md_to_pdf(m, journal, out_pdf):
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(date_human),
          _yaml_dq(abstract))
-    doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
+    # Clickable DOI: a markdown link (-> \href under pdflatex for PDF/.tex, a
+    # hyperlink in docx), matching the HTML DOI anchor. Angle-bracket URL so a DOI
+    # with parens/special chars does not break the link.
+    doi_line = ("DOI: [%s](<https://doi.org/%s>)\n\n" % (m["doi"], m["doi"])
+                if m.get("doi") else "")
     doc = _endash_md(meta_block + doi_line + m["_body_md"])
     # -raw_tex: author raw TeX (e.g. \input{/etc/passwd}) is not passed to the
     # engine. -raw_attribute: a fenced ```{=latex} / ```{=html} block is literal
@@ -889,7 +901,12 @@ def md_to_pdf(m, journal, out_pdf):
     # cover the raw_attribute syntax). Mirrors md_to_html_fragment's reader.
     # openin_any/openout_any=p additionally bar the engine from reading or
     # writing files outside the tree, in case any TeX slips through.
-    env = dict(os.environ, openin_any="p", openout_any="p")
+    # Reproducible PDF: pin pdfTeX's /CreationDate, /ModDate and trailer /ID to the
+    # article's publication date (deterministic from source, in UTC so the build
+    # machine's timezone cannot perturb it) instead of the wall clock, so two builds
+    # of the same source are byte-identical. FORCE_SOURCE_DATE=1 makes pdfTeX honor it.
+    env = dict(os.environ, openin_any="p", openout_any="p",
+               SOURCE_DATE_EPOCH=str(_source_date_epoch(m)), FORCE_SOURCE_DATE="1")
     # Preamble additions MUST go through --include-in-header, which inserts them
     # into the LaTeX preamble VERBATIM: the reader runs with raw_tex disabled, so
     # the same \usepackage via a header-includes metadata value is escaped to
@@ -905,10 +922,18 @@ def md_to_pdf(m, journal, out_pdf):
     #     \AtBeginDocument, by when url is loaded and nothing overrides it again.
     hdr = tempfile.NamedTemporaryFile(mode="w", suffix=".tex", delete=False,
                                       encoding="utf-8")
+    # Reproducible trailer /ID: pdfTeX writes a random/time-seeded /ID that
+    # SOURCE_DATE_EPOCH does NOT cover, so two builds of the same source otherwise
+    # differ. Pin it to a value derived from the article slug (deterministic AND
+    # distinct per article). Guarded: only pdfTeX defines \pdftrailerid.
+    _slug = re.sub(r"[^A-Za-z0-9-]", "-",
+                   os.path.basename(m["_dir"].rstrip("/"))) or "doc"
     try:
         hdr.write(
             "\\usepackage{lmodern}\n"
             "\\usepackage{mathpazo}\n"
+            "\\makeatletter\\@ifundefined{pdftrailerid}{}"
+            "{\\pdftrailerid{journal-maker-" + _slug + "}}\\makeatother\n"
             "\\AtBeginDocument{%\n"
             "  \\Urlmuskip=0mu plus 1mu\\relax\n"
             "  \\def\\UrlBreaks{\\do\\/\\do\\-\\do\\.\\do\\_\\do\\?"
@@ -928,8 +953,11 @@ def md_to_pdf(m, journal, out_pdf):
         bib = os.path.join(m["_dir"], "refs.bib")
         if os.path.exists(bib):
             # citeproc resolves before LaTeX, so the engine is unaffected; the
-            # reference list lands at the ::: {#refs} div in the body.
-            cmd += ["--citeproc", "--bibliography", bib, "--csl", CSL_PATH]
+            # reference list lands at the ::: {#refs} div in the body. link-citations/
+            # link-bibliography make each in-text [n] a hyperref link to its reference
+            # entry in the PDF (parity with the HTML path), not just plain text.
+            cmd += ["--citeproc", "--bibliography", bib, "--csl", CSL_PATH,
+                    "-M", "link-citations=true", "-M", "link-bibliography=true"]
         r = _run(cmd, input=doc, env=env)
         _check_citeproc(r.stderr)
     finally:
@@ -970,7 +998,11 @@ def md_to_tex(m, journal, out_tex):
         "---\n\n"
     ) % (_yaml_dq(m["title"]), authors_yaml, _yaml_dq(m["date"]),
          _yaml_dq(abstract))
-    doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
+    # Clickable DOI: a markdown link (-> \href under pdflatex for PDF/.tex, a
+    # hyperlink in docx), matching the HTML DOI anchor. Angle-bracket URL so a DOI
+    # with parens/special chars does not break the link.
+    doi_line = ("DOI: [%s](<https://doi.org/%s>)\n\n" % (m["doi"], m["doi"])
+                if m.get("doi") else "")
     body = _TEX_REFS_STRIP_RE.sub("", m["_body_md"])
     # No en-dash substitution (unlike md_to_pdf): LaTeX source keeps ASCII "--"
     # and renders the en-dash ligature itself, so the served .tex stays ASCII for
@@ -1080,13 +1112,21 @@ def md_to_docx(m, journal, out_docx):
         front += "  \n".join(legend) + "\n\n"
     if corr:
         front += corr + "\n\n"
-    doi_line = ("DOI: %s\n\n" % m["doi"]) if m.get("doi") else ""
+    # Clickable DOI: a markdown link (-> \href under pdflatex for PDF/.tex, a
+    # hyperlink in docx), matching the HTML DOI anchor. Angle-bracket URL so a DOI
+    # with parens/special chars does not break the link.
+    doi_line = ("DOI: [%s](<https://doi.org/%s>)\n\n" % (m["doi"], m["doi"])
+                if m.get("doi") else "")
     # Same hardened reader as md_to_pdf/md_to_tex: author raw TeX (\input{...}) and
     # fenced ```{=...} blocks become literal text, never engine passthrough.
     # en-dash substitution like md_to_pdf (docx is UTF-8, not ASCII-gated). Unlike
     # md_to_tex, KEEP the citeproc ::: {#refs} div in the body so the resolved,
     # numbered reference list lands in the manuscript.
     doc = _endash_md(meta_block + front + doi_line + m["_body_md"])
+    # Reproducible docx: pandoc stamps docProps created/modified + the zip entry
+    # mtimes from SOURCE_DATE_EPOCH when set, so pin it to the article date (UTC) for
+    # a byte-identical .docx across builds (parity with the PDF).
+    env = dict(os.environ, SOURCE_DATE_EPOCH=str(_source_date_epoch(m)))
     cmd = [
         "pandoc", "-f", "markdown-raw_tex-smart-raw_attribute",
         "-o", out_docx,
@@ -1097,7 +1137,7 @@ def md_to_docx(m, journal, out_docx):
         # citeproc resolves the reference list into the ::: {#refs} div; the IEEE
         # CSL numbers by first appearance, matching the HTML/PDF.
         cmd += ["--citeproc", "--bibliography", bib, "--csl", CSL_PATH]
-    r = _run(cmd, input=doc)
+    r = _run(cmd, input=doc, env=env)
     _check_citeproc(r.stderr)
 
 
@@ -2080,20 +2120,34 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None, archive_map=
 
     # Footnote definitions render in an unnumbered <section> at document end, so a
     # citation pandoc placed INSIDE a footnote would map to no section. Attribute it
-    # to the section of the footnote's in-body [^id] reference marker instead, so a
-    # cite moved into a footnote still counts under the section that references it
+    # to the section(s) of the footnote's in-body [^id] reference MARKER(s) instead,
+    # so a cite moved into a footnote still counts under the section(s) referencing it
     # (the sources-card "Sec. N" pill and the claim gate both key off citesec-<key>-N).
+    # A footnote can be referenced from MORE THAN ONE section (pandoc reuses #fnN for
+    # each marker), so map fnN -> every distinct referencing section and stamp an
+    # anchor per section -- a claim naming any of them must find its anchor. A marker
+    # INSIDE the endnotes span is a nested-footnote ref, not the primary in-body
+    # reference, so skip it (else it pollutes the map with the unnumbered end position).
+    fn_lo, fn_hi = _footnotes_span(body_html)
     fn_marker_sec = {}
     for mo in re.finditer(r'<a\b[^>]*\bclass="footnote-ref"[^>]*>', body_html):
+        if fn_lo <= mo.start() < fn_hi:
+            continue
         href = re.search(r'\bhref="#(fn\d+)"', mo.group(0))
         if href:
-            fn_marker_sec[href.group(1)] = _section_positional(mo.start())
-    fn_lo, fn_hi = _footnotes_span(body_html)
+            s = _section_positional(mo.start())
+            if s is not None:
+                secs = fn_marker_sec.setdefault(href.group(1), [])
+                if s not in secs:
+                    secs.append(s)
     fn_li = sorted((m.start(), m.group(1))
                    for m in re.finditer(r'<li id="(fn\d+)"', body_html)
                    if fn_lo <= m.start() < fn_hi)
 
-    def _section_at(pos):
+    def _sections_at(pos):
+        # A citation inside a footnote def -> every section referencing that footnote;
+        # a normal citation -> its single positional section ([] under an unnumbered
+        # heading). Always a list, so id_first stamps one anchor per section.
         if fn_lo <= pos < fn_hi:
             fid = None
             for lpos, name in fn_li:
@@ -2101,21 +2155,21 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None, archive_map=
                     fid = name
                 else:
                     break
-            if fid is not None and fid in fn_marker_sec:
-                return fn_marker_sec[fid]
-        return _section_positional(pos)
+            return fn_marker_sec.get(fid, []) if fid is not None else []
+        s = _section_positional(pos)
+        return [] if s is None else [s]
 
     def id_first(mo):
         key = mo.group(1)
-        # Per-section anchor before the key's FIRST citation in this section (an empty
+        # Per-section anchor before the key's FIRST citation in each section (an empty
         # span, so the <a>'s own #cite-<key> id -- load-bearing for the backref/
         # :target -- is left untouched).
         prefix = ""
-        sec = _section_at(mo.start())
-        if sec is not None and (key, sec) not in seen_sec:
-            seen_sec.add((key, sec))
-            prefix = ('<span class="citesec-anchor" id="citesec-%s-%d"></span>'
-                      % (key, sec))
+        for sec in _sections_at(mo.start()):
+            if (key, sec) not in seen_sec:
+                seen_sec.add((key, sec))
+                prefix += ('<span class="citesec-anchor" id="citesec-%s-%d"></span>'
+                           % (key, sec))
         if key in seen:
             return prefix + mo.group(0)
         seen.add(key)
