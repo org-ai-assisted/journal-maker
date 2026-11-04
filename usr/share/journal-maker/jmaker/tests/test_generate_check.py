@@ -3131,6 +3131,40 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn("a.footnote-ref[href^='#fn']", js)
         self.assertIn(".footnote-back", js)
 
+    def test_no_fouc_or_reload_shift_invariants(self):
+        # No content shift on reload / no FOUC, locked structurally (empirically
+        # CLS=0 on reload). The three reflow/flash sources are kept eliminated:
+        #   - CSS is a RENDER-BLOCKING same-origin <link> in <head> (styled first
+        #     paint), never an async preload/print-media swap (a known FOUC pattern);
+        #   - NO web fonts (system stack), so no font-swap reflow;
+        #   - site.js is DEFERRED (enhancements run after paint; they insert only
+        #     fixed/absolute/hidden nodes, so no flow shift).
+        # RED if a regression makes the CSS async, adds a web font, or drops defer.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with open(os.path.join(d, "articles", "art", "paper.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBody.\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+            with open(os.path.join(out, "assets", "style.css"), encoding="utf-8") as fh:
+                css = fh.read()
+        head = page[:page.index("</head>")]
+        # render-blocking stylesheet in <head>, not an async/print swap
+        self.assertIn('rel="stylesheet"', head)
+        self.assertIn('assets/style.css"', head)
+        self.assertNotIn('rel="preload"', head)
+        self.assertNotIn('media="print"', head)
+        # deferred JS (after first paint)
+        self.assertIn('assets/site.js" defer>', page)
+        # system-font stack: no web fonts anywhere -> no font-swap reflow
+        for sink in ("@font-face", "fonts.googleapis", "fonts.gstatic", "@import"):
+            self.assertNotIn(sink, css)
+            self.assertNotIn(sink, head)
+
     def test_citation_quote_store_for_hovercards(self):
         # The verbatim quote for a cited key is INLINED in that key's reference
         # entry (.csl-quote) -- one source, shared by the reference area and the
