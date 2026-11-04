@@ -1268,9 +1268,12 @@ class TestIdentityAndCite(unittest.TestCase):
 
     def test_statements(self):
         out = g._statements({"data_availability": "No new data.",
-                             "conflicts": "None."})
+                             "funding": "None."})
         self.assertIn("Data and Code Availability", out)
-        self.assertIn("Conflicts of Interest", out)
+        self.assertIn("Funding", out)
+        # COI is a separate submission field, never generated into the preview.
+        self.assertNotIn("Conflicts of Interest", out)
+        self.assertEqual(g._statements({"conflicts": "x"}), "")
         self.assertEqual(g._statements({}), "")
 
     def test_cite_box_formats(self):
@@ -3102,6 +3105,31 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('.back-to-top {', css)
         self.assertIn('.back-to-top', js)
         self.assertIn('scrollTo', js)
+
+    def test_footnote_hovercard_in_full_build(self):
+        # A footnote marker gets a hovercard preview of the note, reusing the
+        # citation hovercard's .hovercard chrome; progressive (the marker stays a
+        # working <a href="#fnN"> with no JS). The page must carry the marker and
+        # site.js the footnote-hovercard wiring. RED before the footnote-hovercard
+        # IIFE (site.js had no a.footnote-ref hovercard handler).
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with open(os.path.join(d, "articles", "art", "paper.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nThe device is "
+                         "locked.[^fb]\n\n[^fb]: A locked bootloader refuses "
+                         "unsigned images.\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+            with open(os.path.join(out, "assets", "site.js"), encoding="utf-8") as fh:
+                js = fh.read()
+        self.assertIn('class="footnote-ref"', page)   # pandoc emits the marker
+        # the footnote-hovercard handler (distinct from the citation one)
+        self.assertIn("a.footnote-ref[href^='#fn']", js)
+        self.assertIn(".footnote-back", js)
 
     def test_citation_quote_store_for_hovercards(self):
         # The verbatim quote for a cited key is INLINED in that key's reference

@@ -668,6 +668,85 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       idle = setTimeout(hide, 2000);
     }, { passive: true });
   })();
+
+  // Footnote hovercards: hover/focus a footnote marker to preview the note inline,
+  // mirroring the citation hovercard above. Progressive -- the marker stays a
+  // working <a href="#fnN"> with no JS (click still jumps to the note at the
+  // document end); this only adds a preview. The marker id namespace is pandoc's
+  // (#fnN), found by getElementById, so this is agnostic to whether pandoc wrapped
+  // the notes in <section> or <aside>. TT-safe: DOM APIs + cloneNode only.
+  (function () {
+    var marks = [].slice.call(
+      document.querySelectorAll("article.body a.footnote-ref[href^='#fn']"));
+    if (!marks.length) { return; }
+    function noteClone(id) {
+      // A clone of the <li id="fnN"> note, minus the back-reference arrow(s)
+      // (navigation chrome, noise in a preview); null if the note is missing.
+      var li = document.getElementById(id);
+      if (!li) { return null; }
+      var clone = li.cloneNode(true);
+      var backs = clone.querySelectorAll(".footnote-back");
+      for (var i = 0; i < backs.length; i++) {
+        if (backs[i].parentNode) { backs[i].parentNode.removeChild(backs[i]); }
+      }
+      return clone;
+    }
+    var card = document.createElement("div");
+    card.className = "hovercard";
+    card.setAttribute("role", "dialog");
+    card.hidden = true;
+    var body = document.createElement("div");
+    body.className = "hovercard-body";
+    card.appendChild(body);
+    document.body.appendChild(card);
+    var hideTimer = null, pinned = false;
+    function place(anchor) {
+      var rect = anchor.getBoundingClientRect();
+      var left = window.pageXOffset + rect.left;
+      var maxLeft = window.pageXOffset + document.documentElement.clientWidth - card.offsetWidth - 8;
+      if (left > maxLeft) { left = maxLeft; }
+      if (left < window.pageXOffset + 8) { left = window.pageXOffset + 8; }
+      card.style.left = left + "px";
+      card.style.top = (window.pageYOffset + rect.bottom + 6) + "px";
+    }
+    function show(anchor, id) {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      pinned = false;
+      var clone = noteClone(id);
+      if (!clone) { return; }
+      while (body.firstChild) { body.removeChild(body.firstChild); }
+      while (clone.firstChild) { body.appendChild(clone.firstChild); }
+      card.hidden = false;
+      place(anchor);
+    }
+    function hideSoon() { if (pinned) { return; } hideTimer = setTimeout(function () { card.hidden = true; }, 200); }
+    function cancelHide() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }
+    function dismiss() { card.hidden = true; pinned = false; cancelHide(); }
+    for (var m = 0; m < marks.length; m++) {
+      (function (a) {
+        var h = a.getAttribute("href");
+        if (!h || h.charAt(0) !== "#") { return; }
+        var id = h.slice(1);
+        var clone = noteClone(id);
+        if (clone) {
+          // Native tooltip as the JS-off-independent fallback (and for touch).
+          a.setAttribute("title", clone.textContent.replace(/\s+/g, " ").trim());
+        }
+        a.addEventListener("mouseenter", function () { show(a, id); });
+        a.addEventListener("mouseleave", hideSoon);
+        a.addEventListener("focus", function () { show(a, id); });
+        a.addEventListener("blur", hideSoon);
+      })(marks[m]);
+    }
+    card.addEventListener("mouseenter", cancelHide);
+    card.addEventListener("mouseleave", hideSoon);
+    // A pointer press inside the card pins it, so selecting text on touch (no
+    // hover there) is not cut short by the blur/hideSoon closing the card.
+    card.addEventListener("pointerdown", function () { pinned = true; cancelHide(); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") { dismiss(); } });
+    // A pinned card is dismissed by a click outside it.
+    document.addEventListener("click", function (e) { if (pinned && !card.hidden && !card.contains(e.target)) { dismiss(); } });
+  })();
 })();
 """
 
