@@ -33,7 +33,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 
 class BuildError(Exception):
@@ -294,13 +294,43 @@ def _parse_memento(memento):
     return "%s-%s-%s" % (ts[0:4], ts[4:6], ts[6:8]), original
 
 
+_UNRESERVED = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+
+def _decode_unreserved(s):
+    """Percent-decode ONLY the unreserved octets (RFC 3986 2.3), leaving reserved ones
+    escaped (uppercased) so an encoded delimiter stays distinct from URL structure -- a full
+    unquote would make a%2Fb compare equal to a/b and could pass a memento of a different
+    url through the honesty gate."""
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == "%" and i + 2 < len(s):
+            try:
+                ch = chr(int(s[i + 1:i + 3], 16))
+            except ValueError:
+                out.append(s[i])
+                i += 1
+                continue
+            if ch in _UNRESERVED:
+                out.append(ch)
+            else:
+                out.append("%" + s[i + 1:i + 3].upper())
+            i += 3
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
 def _norm_url_for_compare(url):
     """Conservative normalization for checking a memento's embedded original against the
-    bib url: percent-decode, lowercase scheme+host only, drop a single trailing slash.
-    Deliberately minimal -- a residual mismatch must FLAG (fail the build / render no link),
-    never be papered over into a fabricated archive link. Shared by the honesty gate and the
-    archiver so the archiver never stores what the gate would reject."""
-    sp = urlsplit(unquote(url.strip()))
+    bib url: decode only unreserved percent-escapes, lowercase scheme+host only, drop a
+    single trailing slash. Deliberately strict -- a residual mismatch must FLAG (fail the
+    build / render no link), never be papered over into a fabricated archive link. Shared by
+    the honesty gate and the archiver so the archiver never stores what the gate rejects."""
+    sp = urlsplit(_decode_unreserved(url.strip()))
     path = sp.path
     if len(path) > 1 and path.endswith("/"):
         path = path[:-1]
@@ -1978,9 +2008,10 @@ def _augment_archive_anchor(inner, original, memento, date):
         except ValueError:
             continue
         if host == "web.archive.org" or host.endswith(".web.archive.org"):
-            continue
-        if host == "doi.org" or host.endswith(".doi.org"):
-            continue
+            continue   # already an archive link
+        # No special doi.org skip: the url-equality test below already selects ONLY the
+        # anchor whose href is the cited source, so a doi.org link is matched iff it IS that
+        # source (and skipped otherwise).
         if _norm_url_for_compare(href) != norm_target:
             continue
         new_tag = tag[:-1] + (' data-versionurl="%s" data-versiondate="%s">'
