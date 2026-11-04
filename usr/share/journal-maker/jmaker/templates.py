@@ -390,11 +390,24 @@ ul.browse li { padding: 0.35rem 0; border-bottom: 1px solid var(--rule); font-fa
 ul.previews { list-style: none; padding: 0; }
 ul.previews li { padding: 0.6rem 0; border-bottom: 1px solid var(--rule); font-size: 1.05rem; }
 ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--sans); margin-left: 0.5rem; }
-/* Back-to-top floating control: fixed bottom-right, hidden until SITE_JS reveals it
-   past 400px of scroll (progressive -- the <a href="#top"> jumps to top with no JS). */
+/* Back-to-top floating control: fixed bottom-right. With JS, SITE_JS drives [hidden]
+   for the exact 400px threshold + idle-hide. With no JS it falls to the @supports
+   floor below (reveal past 400px on modern browsers; always-visible on legacy ones).
+   The <a href="#top"> jumps to <body id="top"> with no JS regardless. */
 .back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--surface); text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); transition: opacity 0.15s ease, background 0.12s ease; }
 .back-to-top:hover, .back-to-top:focus-visible { background: var(--fg); color: var(--surface); }
 .back-to-top[hidden] { display: none; }
+/* No-JS reveal floor: match the JS 400px threshold so a no-JS reader does not get the
+   control stuck visible at the top of the page. On browsers with scroll-driven
+   animations it reveals in a narrow band at ~400px (a wide range would fade in
+   progressively instead of at the threshold). The @supports guard is REQUIRED: without
+   scroll timelines the animation binds to the time timeline and would stick the control
+   hidden -- so unsupported browsers fall through to the always-visible base. [hidden]
+   still wins (display:none), so the JS idle-hide is unaffected when JS is present. */
+@supports (animation-timeline: scroll()) {
+  .back-to-top { opacity: 0; animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 380px 400px; }
+  @keyframes back-to-top-reveal { from { opacity: 0; pointer-events: none; } to { opacity: 1; pointer-events: auto; } }
+}
 @media print {
   :root { --bg: #ffffff; --fg: #000000; }
   a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.8em; word-break: break-all; }

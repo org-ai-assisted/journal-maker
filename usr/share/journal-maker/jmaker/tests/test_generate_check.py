@@ -3108,6 +3108,12 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # a11y: hide the control on blur near the top, so keyboard focus leaving it
         # does not leave it lingering until the next scroll.
         self.assertIn('btn.addEventListener("blur"', js)
+        # No-JS reveal floor: a scroll-driven @supports animation reveals the control
+        # past the same ~400px threshold, so a no-JS reader does not get it stuck
+        # visible at the top. Must stay guarded so legacy browsers fall through visible.
+        self.assertIn('@supports (animation-timeline: scroll())', css)
+        self.assertIn('animation-timeline: scroll(root)', css)
+        self.assertIn('@keyframes back-to-top-reveal', css)
 
     def test_footnote_hovercard_in_full_build(self):
         # A footnote marker gets a hovercard preview of the note, reusing the
