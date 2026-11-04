@@ -2141,10 +2141,14 @@ _SECTION_H2_RE = re.compile(r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*(\d+)\.(?!\d)', re.
 _SECTION_REF_RE = re.compile(
     r'\bSections?\s+(?>\d+)(?!\.\d)\b'
     r'(?:(?>(?:\s*(?:,|and|through|to|&amp;|&)\s*)+)(?>\d+)(?!\.\d)\b)*')
-# Whole <pre>/<code> spans, whole <a>...</a> spans, and whole tags, so the linkifier
-# never rewrites inside code, double-wraps an existing anchor, or touches an attribute.
+# Whole <pre>/<code> spans, whole <a>...</a> spans, whole <blockquote> quotations, and
+# whole tags, so the linkifier never rewrites inside code, inside a quotation (a quoted
+# source's "Table N"/"Section N" is not this paper's cross-reference), an existing
+# anchor, or an attribute. (Non-greedy, like <pre>/<code>; nested blockquotes, which the
+# body does not emit, would close at the first </blockquote>.)
 _HTML_TAG_OR_ANCHOR_RE = re.compile(
-    r'(<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>|<a\b[^>]*>.*?</a>|<[^>]+>)',
+    r'(<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>|<a\b[^>]*>.*?</a>'
+    r'|<blockquote\b[^>]*>.*?</blockquote>|<[^>]+>)',
     re.S | re.I)
 _DIGITS_RE = re.compile(r'\d+')
 # A plain pandoc table-caption paragraph "<p>Table N. ...": anchored (id="tbl-N") so a
@@ -2232,18 +2236,21 @@ def _refs_div_span(body_html):
 def _blockquote_spans(slc):
     """(start, end) spans of every <blockquote>...</blockquote>, close depth-matched
     past nesting (fail-safe to end-of-string on an unbalanced open, like
-    _refs_div_span). A caption scan skips these: a body quotation whose first
-    paragraph begins "Table N." is not a real caption and must not be anchored
-    id="tbl-N" (a duplicate-id collision with the real Table N caption)."""
+    _refs_div_span). An unbalanced CLOSE floors depth at 0 rather than going negative
+    -- otherwise a stray or split-straddling </blockquote> would swallow the next real
+    open and leave its quotation undetected. A caption scan skips these: a body
+    quotation whose first paragraph begins "Table N." is not a real caption and must
+    not be anchored id="tbl-N" (a duplicate-id collision with the real Table N caption)."""
     spans = []
     depth = 0
     start = -1
     for mo in re.finditer(r'<blockquote\b|</blockquote>', slc):
         if mo.group(0) == "</blockquote>":
-            depth -= 1
-            if depth == 0 and start != -1:
-                spans.append((start, mo.end()))
-                start = -1
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    spans.append((start, mo.end()))
+                    start = -1
         else:
             if depth == 0:
                 start = mo.start()

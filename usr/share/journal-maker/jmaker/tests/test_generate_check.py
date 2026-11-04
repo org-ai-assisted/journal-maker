@@ -2733,7 +2733,38 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         out2 = g._linkify_cross_refs(body2)
         self.assertEqual(out2.count('id="tbl-1"'), 1)
         self.assertIn('<p id="tbl-1">Table 1. The real caption.</p>', out2)
+        # the quotation's own "Table 1" is NOT linkified to the paper's table (a quoted
+        # source's cross-ref is not ours) -- the blockquote is left verbatim.
+        self.assertIn('<blockquote class="quotation"><p>Table 1. As quoted.</p>'
+                      '</blockquote>', out2)
         self.assertEqual(self._link_collisions(out2), [])
+        # (c) an unbalanced leading </blockquote> must not drive the span depth negative
+        # and swallow the real quotation -> still exactly one id="tbl-1". RED on the
+        # un-floored _blockquote_spans.
+        body3 = ('</blockquote><blockquote class="quotation"><p>Table 1. Quoted.</p>'
+                 '</blockquote><p>Table 1. The real caption.</p>')
+        out3 = g._linkify_cross_refs(body3)
+        self.assertEqual(out3.count('id="tbl-1"'), 1)
+        self.assertIn('<p id="tbl-1">Table 1. The real caption.</p>', out3)
+
+    def test_linkify_refs_in_blockquote_stay_plain(self):
+        # A quotation (blockquote) that mentions "Section N"/"Table N" by number refers
+        # to the QUOTED SOURCE's structure, not this paper's -- those must stay plain
+        # even when the paper has a matching target. RED before <blockquote> joined the
+        # protected-span set in _HTML_TAG_OR_ANCHOR_RE.
+        body = (
+            '<h2 id="intro">1. Intro</h2>'
+            '<p>Table 1. Real caption.</p>'
+            '<blockquote class="quotation"><p>The source discusses Section 1 and '
+            'Table 1 at length.</p></blockquote>'
+            '<p>Our prose cites Section 1 and Table 1.</p>')
+        out = g._linkify_cross_refs(body)
+        bq = out.split('<blockquote', 1)[1].split('</blockquote>', 1)[0]
+        self.assertNotIn('<a ', bq)
+        self.assertIn('discusses Section 1 and Table 1 at length', bq)
+        # our own prose still links
+        self.assertIn('cites Section <a href="#intro" aria-label="Section 1">1</a>', out)
+        self.assertIn('Table <a href="#tbl-1" aria-label="Table 1">1</a>.', out)
 
     def test_cross_refs_linked_after_refs_in_full_build(self):
         # End-to-end wiring: a real citeproc refs div sits before the appendix, and a
