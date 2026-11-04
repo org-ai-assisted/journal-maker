@@ -4,6 +4,7 @@
 Subcommands:
   build    articles/ + site.toml -> static site (HTML + PDF + meta + sitemap)
   check    gate a built site: Scholar compliance + PDF sanity + PDF security
+  archive  offline: populate Wayback archive links in an article's source-quotes.toml
   vtscan   VirusTotal every built asset before publishing (checklist + results)
   dewiki   MediaWiki source -> Markdown drafting starting point
   selftest run the unit tests
@@ -35,6 +36,11 @@ def _cmd_build(args):
 
 def _cmd_check(args):
     return checker.main([args.site])
+
+
+def _cmd_archive(args):
+    from jmaker import archive
+    return archive.main(args)
 
 
 def _cmd_vtscan(args):
@@ -101,6 +107,23 @@ def build_parser():
     pcheck = sub.add_parser("check", help="gate a built site")
     pcheck.add_argument("site")
     pcheck.set_defaults(func=_cmd_check)
+
+    parc = sub.add_parser("archive",
+                          help="offline: populate Wayback archive links in source-quotes.toml")
+    parc.add_argument("article_dir")
+    parc.add_argument("--fetch", action="store_true",
+                      help="query Wayback only (default: fetch then apply)")
+    parc.add_argument("--apply", action="store_true",
+                      help="write archive lines into source-quotes.toml only")
+    parc.add_argument("--save", action="store_true",
+                      help="Save Page Now for misses, via the ia-save helper")
+    parc.add_argument("--tor", action="store_true",
+                      help="route Save Page Now over Tor (ia-save --tor)")
+    parc.add_argument("--cache", default=None,
+                      help="cache JSON path (default: <article_dir>/.archive-cache.json)")
+    parc.add_argument("--delay", type=float, default=4.0,
+                      help="seconds between archive.org requests (default: 4)")
+    parc.set_defaults(func=_cmd_archive)
 
     pvt = sub.add_parser("vtscan", help="VirusTotal all built assets")
     pvt.add_argument("site")

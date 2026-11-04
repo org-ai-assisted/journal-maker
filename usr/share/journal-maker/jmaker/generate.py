@@ -33,7 +33,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 
 class BuildError(Exception):
@@ -269,6 +269,92 @@ def _entries_missing_link(bib_path):
             if not _BIB_LINK_FIELD_RE.search(body)]
 
 
+# A genuine, dated Wayback memento: https + a 14-digit timestamp (+ an OPTIONAL 2-letter
+# modifier like if_/id_/im_ that real snapshots carry) + the embedded original URL. A bare
+# /web/*/ or /web/<non-14-digits>/ redirect is NOT a pinned snapshot and is rejected -- only
+# a specific, dated capture may back a rendered archive link.
+_ARCHIVE_MEMENTO_RE = re.compile(
+    r'^https://web\.archive\.org/web/(\d{14})(?:[a-z]{2}_)?/(.+)$')
+
+
+def _parse_memento(memento):
+    """(YYYY-MM-DD, embedded-original-URL) for a genuine Wayback memento, else None.
+    The display date is DERIVED from the 14-digit timestamp (single source of truth, so
+    it cannot drift from the snapshot it names)."""
+    mo = _ARCHIVE_MEMENTO_RE.match(memento)
+    if not mo:
+        return None
+    ts, original = mo.group(1), mo.group(2)
+    return "%s-%s-%s" % (ts[0:4], ts[4:6], ts[6:8]), original
+
+
+def _norm_url_for_compare(url):
+    """Conservative normalization for checking a memento's embedded original against the
+    bib url: percent-decode, lowercase scheme+host only, drop a single trailing slash.
+    Deliberately minimal -- a residual mismatch must FLAG (fail the build / render no link),
+    never be papered over into a fabricated archive link. Shared by the honesty gate and the
+    archiver so the archiver never stores what the gate would reject."""
+    sp = urlsplit(unquote(url.strip()))
+    path = sp.path
+    if len(path) > 1 and path.endswith("/"):
+        path = path[:-1]
+    return urlunsplit((sp.scheme.lower(), sp.netloc.lower(), path,
+                       sp.query, sp.fragment))
+
+
+def _validate_archive(adir, key, arc):
+    """Validate a source-quotes.toml [key] `archive` inline table: exactly ONE of
+    `memento` / `no_memento`. A memento must be a genuine dated Wayback snapshot
+    (_ARCHIVE_MEMENTO_RE); a no_memento is a non-empty reason string. Fail-closed so a
+    forged or bare-redirect link can never render. The memento's embedded original is
+    cross-checked against the bib url in render_sources (it needs the CSL url)."""
+    if not isinstance(arc, dict):
+        raise BuildError("%s/source-quotes.toml: [%s] archive must be a table"
+                         % (adir, key))
+    extra = set(arc) - {"memento", "no_memento"}
+    if extra:
+        raise BuildError("%s/source-quotes.toml: [%s] archive has unknown field(s): %s"
+                         % (adir, key, ", ".join(sorted(extra))))
+    if ("memento" in arc) == ("no_memento" in arc):
+        raise BuildError("%s/source-quotes.toml: [%s] archive needs exactly one of "
+                         "memento / no_memento" % (adir, key))
+    if "memento" in arc:
+        mem = arc["memento"]
+        if not isinstance(mem, str) or not _parse_memento(mem):
+            raise BuildError(
+                "%s/source-quotes.toml: [%s] archive.memento must be a genuine dated "
+                "Wayback snapshot (https://web.archive.org/web/<14-digit-timestamp>/<url>), "
+                "never a bare /web/*/ redirect: %r" % (adir, key, mem))
+    else:
+        nq = arc["no_memento"]
+        if not isinstance(nq, str) or not nq.strip():
+            raise BuildError("%s/source-quotes.toml: [%s] archive.no_memento must be a "
+                             "non-empty reason string" % (adir, key))
+
+
+def _checked_memento(adir, key, arc, bib_url):
+    """The honesty gate (pure, no pandoc -- so it is unit-testable in isolation): for a
+    validated `archive` table, return the genuine memento IFF its embedded original is the
+    cited source's own url; raise BuildError on a mismatch (never render a link whose
+    archived target is not what we cited); return None for a no_memento entry. If the bib
+    url is ITSELF a Wayback memento, compare against its embedded original (the archiver
+    archives the live source, not an older snapshot url)."""
+    if "memento" not in arc:
+        return None
+    _date, embedded = _parse_memento(arc["memento"])
+    cmp_url = bib_url or ""
+    bib_parsed = _parse_memento(cmp_url)
+    if bib_parsed:
+        cmp_url = bib_parsed[1]
+    if not cmp_url or (_norm_url_for_compare(embedded)
+                       != _norm_url_for_compare(cmp_url)):
+        raise BuildError(
+            "%s/source-quotes.toml: [%s] archive.memento original does not match the "
+            "refs.bib url (memento embeds %r, bib has %r) -- refusing to render an archive "
+            "link whose target is not the cited source" % (adir, key, embedded, bib_url))
+    return arc["memento"]
+
+
 def _load_sidecar(adir):
     """Load + validate the structured source-quotes.toml reviewer aid.
 
@@ -301,10 +387,12 @@ def _load_sidecar(adir):
                              % (adir, key))
         # Reject an unknown (e.g. misspelled) entry field: a typo like `cliams`
         # would otherwise be silently dropped from the rendered card.
-        extra = set(entry) - {"label", "claims", "quotes", "no_quote"}
+        extra = set(entry) - {"label", "claims", "quotes", "no_quote", "archive"}
         if extra:
             raise BuildError("%s/source-quotes.toml: [%s] unknown field(s): %s"
                              % (adir, key, ", ".join(sorted(extra))))
+        if "archive" in entry:
+            _validate_archive(adir, key, entry["archive"])
         # Keys are interpolated raw into id/href/label; hold them to the citekey
         # charset so they are HTML-attribute-safe and match the citeproc
         # #ref-<key> on the paper page (no entity-escaping divergence).
@@ -1861,8 +1949,42 @@ _REF_ENTRY_RE = re.compile(
     r'<div class="csl-left-margin">)([^<]*)'
     r'(</div><div class="csl-right-inline">)(.*?)(</div>\s*</div>)', re.S)
 
+_REF_OPEN_ANCHOR_RE = re.compile(r'<a\s+[^>]*?>', re.I)
 
-def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
+
+def _augment_archive_anchor(inner, original, memento, date):
+    """Add Robust Links Variant A attributes to the reference entry's LIVE-url anchor:
+    href stays the live original, data-versionurl = the memento, data-versiondate = the
+    snapshot date (spec https://robustlinks.mementoweb.org/spec/). Target the anchor whose
+    href IS the cited source's url; skip a doi.org link and an anchor already on
+    web.archive.org -- host-checked the browser way (urlsplit, endswith, never a substring),
+    an idiom echoed from mw-static-generator's _archive_links. Only the first match is
+    augmented. Returns (inner, matched)."""
+    norm_target = _norm_url_for_compare(original)
+    for mo in _REF_OPEN_ANCHOR_RE.finditer(inner):
+        tag = mo.group(0)
+        hm = re.search(r'href="([^"]*)"', tag, re.I)
+        if not hm:
+            continue
+        href = html.unescape(hm.group(1))
+        try:
+            host = (urlsplit(href.replace("\\", "/")).hostname or "").lower()
+        except ValueError:
+            continue
+        if host == "web.archive.org" or host.endswith(".web.archive.org"):
+            continue
+        if host == "doi.org" or host.endswith(".doi.org"):
+            continue
+        if _norm_url_for_compare(href) != norm_target:
+            continue
+        new_tag = tag[:-1] + (' data-versionurl="%s" data-versiondate="%s">'
+                              % (html.escape(memento, quote=True),
+                                 html.escape(date, quote=True)))
+        return inner[:mo.start()] + new_tag + inner[mo.end():], True
+    return inner, False
+
+
+def _enhance_references(body_html, sidecar_keys, quote_blocks=None, archive_map=None):
     """Cross-link + enrich the citeproc reference list (HTML ONLY, never the PDF --
     md_to_pdf never calls this, and the quotes live in the sidecar, not paper.md):
     - give the FIRST in-text citation of each key an id so it is a :target, and
@@ -1873,6 +1995,9 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
     - inline the verbatim source quote + attribution (the SAME block the citation
       hovercard shows), plus a link to its full sources-page card, so the preview
       and the reference area carry the same information;
+    - for a key with a genuine dated Wayback memento (archive_map), mark the live-url anchor
+      as a Robust Link (href stays live, + data-versionurl/data-versiondate) and append a
+      visible, no-JS "archived <date>" link, so the cited source stays reachable if it rots;
     - drop a per-section anchor (citesec-<key>-<N>) before the first citation of each
       key in each section, so a sources-card "Sec. N" pill can jump to THAT
       section's citation -- pandoc puts the single #cite-<key> on the first citation
@@ -1883,6 +2008,7 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
     seen = set()
     seen_sec = set()        # (key, section_number) already anchored within-section
     quote_blocks = quote_blocks or {}
+    archive_map = archive_map or {}   # rawkey -> genuine dated Wayback memento (gated)
     # Section boundaries (char offset -> number-or-None) from EVERY <h2>, so a
     # citation under an unnumbered heading maps to no section (None) instead of the
     # previous numbered one.
@@ -1941,6 +2067,18 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None):
             meta += (' <a class="csl-source" href="sources/#%s" '
                      'aria-label="full card for reference %s">full card</a>'
                      % (key, html.escape(refnum, quote=True)))
+        # Archive link (HTML only): only a gated, genuine dated memento reaches archive_map.
+        # Robust Links Variant A on the live anchor (progressive enhancement) + a visible
+        # "archived <date>" link that works with no JS. aria-label CONTAINS the visible text
+        # (WCAG 2.5.3) and carries the unique reference number (2.4.9).
+        mem = archive_map.get(rawkey)
+        if mem:
+            adate, aorig = _parse_memento(mem)
+            inner, _hit = _augment_archive_anchor(inner, aorig, mem, adate)
+            meta += (' <a class="csl-archive" href="%s" '
+                     'aria-label="archived %s, reference %s">archived %s</a>'
+                     % (html.escape(mem, quote=True), adate,
+                        html.escape(refnum, quote=True), adate))
         refmeta = '<div class="csl-refmeta">%s</div>' % meta if meta else ""
         qb = quote_blocks.get(rawkey, "")
         quote = '<div class="csl-quote">%s</div>' % qb if qb else ""
@@ -2068,7 +2206,8 @@ def _latex_menu(tex_formats, href_of):
 
 
 def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None,
-                   quote_blocks=None, cite_keys=None, claim_sections=None):
+                   quote_blocks=None, cite_keys=None, claim_sections=None,
+                   archive_map=None):
     rel_dir = _rel_dir(m)
     root_rel = _root_rel(rel_dir)
     landing_url = "%s/%s/" % (journal["base_url"], rel_dir)
@@ -2110,7 +2249,7 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
                          "(it is the plain-text meta/OG description)" % m["_dir"])
     body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
     body_html = _enhance_references(body_html, sidecar_keys or set(),
-                                    quote_blocks or {})
+                                    quote_blocks or {}, archive_map or {})
     body_html = _linkify_section_refs(body_html)
     # A sidecar entry that presents <key> as cited -- a claim section pill linking
     # ../#cite-<key>, or a no_quote "Remaining references" line whose note says
@@ -2371,10 +2510,12 @@ def render_sources(m, journal):
     <slug>/sources/, linked from the article. Each verbatim quote becomes a card;
     attribution (name, venue, title, link, retrieved) is pulled from refs.bib via
     the @key (CSL-JSON). Returns (rel_dir, page, card_keys, quote_blocks, cite_keys,
-    claim_sections) -- card_keys have a quote (a sources/#key anchor the paper links
-    to); cite_keys must be cited in the paper (a section pill links ../#cite-<key>, or
-    a no_quote entry is listed as a cited reference); claim_sections maps a key to the
-    section numbers its pills link into -- render_article validates both."""
+    claim_sections, archive_map, archive_missing) -- card_keys have a quote (a sources/#key
+    anchor the paper links to); cite_keys must be cited in the paper (a section pill links
+    ../#cite-<key>, or a no_quote entry is listed as a cited reference); claim_sections maps
+    a key to the section numbers its pills link into -- render_article validates both;
+    archive_map maps a key to its genuine dated Wayback memento (for the reference list);
+    archive_missing lists keys flagged archive.no_memento (a build notice, never a link)."""
     data = _load_sidecar(m["_dir"])
     csl = _csl_entries(os.path.join(m["_dir"], "refs.bib"))
     rel_dir = _rel_dir(m) + "/sources"
@@ -2387,6 +2528,8 @@ def render_sources(m, journal):
     #                     or a no_quote "Remaining references" entry claims to be cited
     claim_sections = {}  # key -> section numbers its claim pills link into; render_article
     #                      validates each has a citation of the key in that section
+    archive_map = {}    # key -> genuine dated Wayback memento, for the reference list
+    archive_missing = []  # keys whose archive.no_memento flags "no snapshot" (build notice)
     for key, entry in data.items():
         if key not in csl:
             raise BuildError("%s/source-quotes.toml: @%s has no refs.bib CSL-JSON "
@@ -2403,6 +2546,17 @@ def render_sources(m, journal):
         if nums:
             claim_sections[key] = nums
         att = _csl_attribution(csl[key])
+        # Archive honesty gate (HTML preview only): a genuine dated memento renders as a
+        # Robust Link on the reference ONLY once its embedded original is confirmed to be the
+        # cited source's own url (_checked_memento). _load_sidecar already proved the memento
+        # is a real dated snapshot; this is the cross-file check that needs the bib url.
+        arc = entry.get("archive")
+        if arc:
+            mem = _checked_memento(m["_dir"], key, arc, att["link"])
+            if mem:
+                archive_map[key] = mem
+            else:
+                archive_missing.append(key)
         if entry.get("quotes"):
             card_keys.add(key)
             cards.append(_sources_card(key, entry, att))
@@ -2456,7 +2610,8 @@ def render_sources(m, journal):
     page = _page(m.get("language", journal["language"]),
                  "%s -- %s" % (title, journal["title"]), description, canonical,
                  extra, main, journal, root_rel)
-    return rel_dir, page, card_keys, quote_blocks, cite_keys, claim_sections
+    return (rel_dir, page, card_keys, quote_blocks, cite_keys, claim_sections,
+            archive_map, archive_missing)
 
 
 def render_page(slug, md_text, journal):
@@ -2813,6 +2968,8 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
     os.makedirs(out_dir)
 
     urls = [journal["base_url"] + "/"]
+    archive_links_total = 0       # rendered Wayback archive links (HTML preview), for a notice
+    archive_missing_all = []      # (slug, key) flagged archive.no_memento across all articles
     # Prev/next neighbours in reading order (volume, issue, article number/slug).
     ordered = sorted(articles, key=_order_key)
     nbr = {}
@@ -2831,19 +2988,22 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
         quote_blocks = {}
         cite_keys = set()
         claim_sections = {}
+        archive_map = {}
         if os.path.exists(os.path.join(m["_dir"], "source-quotes.toml")):
             (s_rel, s_page, card_keys, quote_blocks, cite_keys,
-             claim_sections) = render_sources(m, journal)
+             claim_sections, archive_map, archive_missing) = render_sources(m, journal)
             s_dest = os.path.join(out_dir, s_rel)
             os.makedirs(s_dest, exist_ok=True)
             with open(os.path.join(s_dest, "index.html"), "w",
                       encoding="utf-8") as fh:
                 fh.write(s_page)
             urls.append("%s/%s/" % (journal["base_url"], s_rel))
+            archive_links_total += len(archive_map)
+            archive_missing_all.extend((m["slug"], k) for k in archive_missing)
         rel_dir, _pdf_name, page = render_article(
             m, journal, nbr.get(_rel_dir(m)), skip_pdf=skip_pdf,
             sidecar_keys=card_keys, quote_blocks=quote_blocks, cite_keys=cite_keys,
-            claim_sections=claim_sections)
+            claim_sections=claim_sections, archive_map=archive_map)
         dest = os.path.join(out_dir, rel_dir)
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, "index.html"), "w", encoding="utf-8") as fh:
@@ -2967,5 +3127,16 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
     with open(os.path.join(gh_dir, "articles.json"), "w", encoding="utf-8") as fh:
         json.dump(sorted(article_routes), fh)
     open(os.path.join(out_dir, ".nojekyll"), "w").close()
+
+    # Archive-link notice (HTML preview): report rendered memento links and HONESTLY flag
+    # every reference with no snapshot (archive.no_memento) -- those render with NO link, so
+    # a missing archive is surfaced, never silently dropped and never faked.
+    if archive_links_total or archive_missing_all:
+        print("archive: %d reference archive link(s) rendered" % archive_links_total)
+    if archive_missing_all:
+        flagged = ", ".join("%s/%s" % (slug, key)
+                            for slug, key in archive_missing_all)
+        print("archive: %d reference(s) have no snapshot (no link rendered): %s"
+              % (len(archive_missing_all), flagged))
 
     return len(articles), out_dir

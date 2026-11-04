@@ -304,6 +304,10 @@ article.body blockquote { margin: 1rem 0; padding-left: 1.25rem; border-left: 3p
 .csl-citekey { font-family: var(--mono); font-size: 0.78rem; color: var(--accent); text-decoration: none; }
 .csl-citekey:hover, .csl-citekey:focus-visible { text-decoration: underline; }
 .csl-refmeta { margin-top: 0.15rem; font-size: 0.78rem; }
+/* Visible, no-JS Wayback archive link on a reference (the source's memento). Quiet, in the
+   .csl-source family; the live link stays primary. */
+.csl-archive { font-family: var(--sans); font-size: 0.78rem; margin-left: 0.6rem; white-space: nowrap; color: var(--muted); }
+.csl-archive:hover, .csl-archive:focus-visible { color: var(--accent); }
 .csl-quote { margin: 0.45rem 0 0.3rem; }
 article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 2px var(--warn-rule); border-radius: 3px; }
 .hovercard { position: absolute; z-index: 50; max-width: min(90vw, 30rem); background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18); padding: 0.55rem 0.75rem; font-size: 0.85rem; line-height: 1.5; }

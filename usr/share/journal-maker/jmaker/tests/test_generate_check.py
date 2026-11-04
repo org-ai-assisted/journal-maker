@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
+from jmaker import archive as a
 from jmaker import check as c
 from jmaker import generate as g
 
@@ -3196,6 +3197,188 @@ class TestSidecar(unittest.TestCase):
         # an uncaught ValueError (the CLI catches only BuildError).
         self.assertEqual(g._csl_date([["2020a"]]), "2020a")
         self.assertEqual(g._csl_date([[2020, "spring"]]), "2020-spring")
+
+
+_GOOD_MEM = "https://web.archive.org/web/20260102030405/https://a.example/x"
+
+
+class TestArchiveSidecar(unittest.TestCase):
+    """archive = {...} honesty gate + helpers. Canaries: prove the gate FAILS on a forged /
+    bare-redirect / mismatched memento, so only a genuine dated snapshot can ever render."""
+
+    def _dir(self, toml, bib=_BIB):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+            fh.write(bib)
+        with open(os.path.join(d, "source-quotes.toml"), "w", encoding="utf-8") as fh:
+            fh.write(toml)
+        return d
+
+    # --- _parse_memento / _norm_url_for_compare (pure) ---
+    def test_parse_memento_date_and_original(self):
+        self.assertEqual(g._parse_memento(_GOOD_MEM), ("2026-01-02", "https://a.example/x"))
+        # an if_/id_ modifier after the 14 digits is tolerated; the date is unchanged
+        self.assertEqual(
+            g._parse_memento("https://web.archive.org/web/20260102030405if_/https://a.example/x"),
+            ("2026-01-02", "https://a.example/x"))
+
+    def test_parse_memento_rejects_non_snapshots(self):
+        for bad in ("https://web.archive.org/web/https://a.example/x",     # bare redirect
+                    "https://web.archive.org/web/2026/https://a.example/x",  # short ts
+                    "http://web.archive.org/web/20260102030405/https://a.example/x",  # http
+                    "https://evil.example/x"):
+            self.assertIsNone(g._parse_memento(bad), bad)
+
+    def test_norm_url_for_compare(self):
+        n = g._norm_url_for_compare
+        self.assertEqual(n("https://a.example/x/"), n("https://a.example/x"))
+        self.assertEqual(n("https://A.Example/x"), n("https://a.example/x"))
+        self.assertEqual(n("https://a.example/%7Ex"), n("https://a.example/~x"))
+
+    # --- _load_sidecar archive-shape canaries (pure, no pandoc) ---
+    def test_valid_archive_memento_loads(self):
+        d = self._dir('[alpha]\nquotes = [{ text = "x" }]\n'
+                      'archive = { memento = "%s" }\n' % _GOOD_MEM)
+        self.assertIn("alpha", g._load_sidecar(d))
+
+    def test_valid_archive_no_memento_loads(self):
+        d = self._dir('[alpha]\nquotes = [{ text = "x" }]\n'
+                      'archive = { no_memento = "EUR-Lex not archivable" }\n')
+        self.assertIn("alpha", g._load_sidecar(d))
+
+    def test_archive_bad_shapes_rejected(self):
+        bad_archives = (
+            'archive = { memento = "https://web.archive.org/web/https://a.example/x" }',  # bare redirect
+            'archive = { memento = "https://web.archive.org/web/2026/https://a.example/x" }',  # short ts
+            'archive = { memento = "http://web.archive.org/web/20260102030405/https://a.example/x" }',  # http
+            'archive = { memento = "%s", no_memento = "x" }' % _GOOD_MEM,  # both
+            'archive = {}',                                               # neither
+            'archive = { foo = "x" }',                                    # unknown subfield
+            'archive = { memento = 1 }',                                  # non-string
+            'archive = { no_memento = "" }',                              # empty reason
+            'archive = "nope"',                                           # not a table
+        )
+        for arc in bad_archives:
+            d = self._dir('[alpha]\nquotes = [{ text = "x" }]\n' + arc + "\n")
+            with self.assertRaises(g.BuildError, msg=arc):
+                g._load_sidecar(d)
+
+    # --- _checked_memento honesty gate (pure, no pandoc): embedded original vs bib url ---
+    def test_gate_rejects_mismatched_memento(self):
+        bad = "https://web.archive.org/web/20260102030405/https://WRONG.example/x"
+        with self.assertRaises(g.BuildError) as cm:
+            g._checked_memento("d", "alpha", {"memento": bad}, "https://a.example/x")
+        self.assertIn("does not match", str(cm.exception))
+
+    def test_gate_rejects_memento_on_linkless_entry(self):
+        # No bib url to verify against -> cannot honestly render; fail.
+        with self.assertRaises(g.BuildError):
+            g._checked_memento("d", "alpha", {"memento": _GOOD_MEM}, "")
+
+    def test_gate_accepts_matching_memento(self):
+        self.assertEqual(
+            g._checked_memento("d", "alpha", {"memento": _GOOD_MEM}, "https://a.example/x"),
+            _GOOD_MEM)
+        # a trailing-slash-only difference still matches
+        self.assertEqual(
+            g._checked_memento("d", "alpha", {"memento": _GOOD_MEM}, "https://a.example/x/"),
+            _GOOD_MEM)
+
+    def test_gate_matches_when_bib_url_is_itself_a_memento(self):
+        # refs.bib url already a Wayback memento -> compare against its embedded original.
+        bib_mem = "https://web.archive.org/web/20200101000000/https://a.example/x"
+        self.assertEqual(
+            g._checked_memento("d", "alpha", {"memento": _GOOD_MEM}, bib_mem), _GOOD_MEM)
+
+    def test_gate_no_memento_returns_none(self):
+        self.assertIsNone(
+            g._checked_memento("d", "alpha", {"no_memento": "paywalled"}, "https://a.example/x"))
+
+
+class TestArchiveRender(unittest.TestCase):
+    """_enhance_references emits Robust Links Variant A + a visible no-JS archive link, and
+    leaves the href (live original) and any doi.org link untouched. Pure; no pandoc."""
+
+    def _ref(self):
+        return ('<p><a href="#ref-alpha" role="doc-biblioref">[1]</a></p>'
+                '<div id="ref-alpha" class="csl-entry" role="listitem">'
+                '<div class="csl-left-margin">[1]</div>'
+                '<div class="csl-right-inline">Org A. Available: '
+                '<a href="https://a.example/x">https://a.example/x</a>. '
+                'doi: <a href="https://doi.org/10.1/x">10.1/x</a></div></div>')
+
+    def test_memento_renders_robust_link_and_visible_link(self):
+        out = g._enhance_references(self._ref(), set(), {}, {"alpha": _GOOD_MEM})
+        # Variant A: href stays the LIVE original, data-* carry the snapshot.
+        self.assertIn('href="https://a.example/x" data-versionurl="%s" '
+                      'data-versiondate="2026-01-02"' % _GOOD_MEM, out)
+        # Visible, no-JS archive link with the derived date.
+        self.assertIn('class="csl-archive"', out)
+        self.assertIn("archived 2026-01-02", out)
+        # The doi.org link is never turned into an archive anchor.
+        self.assertNotIn('href="https://doi.org/10.1/x" data-versionurl', out)
+
+    def test_no_memento_emits_no_archive_link(self):
+        out = g._enhance_references(self._ref(), set(), {}, {})
+        self.assertNotIn("csl-archive", out)
+        self.assertNotIn("data-versionurl", out)
+
+    def test_augment_skips_already_archived_anchor(self):
+        inner = ('see <a href="https://web.archive.org/web/20200101000000/https://a.example/x">'
+                 'old</a>')
+        _out, hit = g._augment_archive_anchor(
+            inner, "https://a.example/x", _GOOD_MEM, "2026-01-02")
+        self.assertFalse(hit)   # the only anchor is already a memento -> not augmented
+
+
+class TestArchiveTool(unittest.TestCase):
+    """archive.py pure helpers: Availability parsing, memento matching, Retry-After, and the
+    surgical source-quotes.toml apply. No live network."""
+
+    def test_closest_memento_parsing(self):
+        js = {"archived_snapshots": {"closest": {
+            "url": "http://web.archive.org/web/20260102030405/https://a.example/x"}}}
+        self.assertEqual(a._closest_memento(js), _GOOD_MEM)   # http forced to https
+        self.assertIsNone(a._closest_memento({"archived_snapshots": {}}))
+        self.assertIsNone(a._closest_memento(
+            {"archived_snapshots": {"closest": {"url": "https://web.archive.org/web/x/y"}}}))
+
+    def test_memento_matches(self):
+        self.assertTrue(a._memento_matches(_GOOD_MEM, "https://a.example/x"))
+        self.assertTrue(a._memento_matches(_GOOD_MEM, "https://a.example/x/"))  # trailing slash
+        self.assertFalse(a._memento_matches(_GOOD_MEM, "https://b.example/y"))
+        self.assertFalse(a._memento_matches("https://web.archive.org/web/x/y",
+                                            "https://a.example/x"))
+
+    def test_retry_after_seconds(self):
+        self.assertEqual(a._retry_after_seconds("5"), 5.0)
+        self.assertIsNone(a._retry_after_seconds("not-a-date"))
+        self.assertIsNone(a._retry_after_seconds(None))
+
+    def test_archive_toml_line(self):
+        self.assertEqual(a._archive_toml_line({"memento": _GOOD_MEM}),
+                         'archive = { memento = "%s" }\n' % _GOOD_MEM)
+        self.assertEqual(a._archive_toml_line({"no_memento": 'a "q" b'}),
+                         'archive = { no_memento = "a \\"q\\" b" }\n')
+
+    def test_apply_text_inserts_and_is_idempotent(self):
+        toml = ('[alpha]\nlabel = "a"\nquotes = [{ text = "x" }]\n\n'
+                '[beta]\nquotes = [{ text = "y" }]\n')
+        cache = {"alpha": {"memento": _GOOD_MEM}}
+        new, applied = a._apply_text(toml, cache)
+        self.assertEqual(applied, {"alpha"})
+        self.assertIn('[alpha]\narchive = { memento = "%s" }\n' % _GOOD_MEM, new)
+        self.assertIn('[beta]\nquotes', new)          # other tables untouched
+        # Re-apply must not duplicate the line (drops the stale one first).
+        new2, _ = a._apply_text(new, cache)
+        self.assertEqual(new2.count("archive = {"), 1)
+
+    def test_apply_text_only_managed_tables(self):
+        toml = '[alpha]\nquotes = [{ text = "x" }]\narchive = { no_memento = "keep me" }\n'
+        # beta is in the cache but absent from the file -> not applied (caller treats as drift)
+        _new, applied = a._apply_text(toml, {"beta": {"memento": _GOOD_MEM}})
+        self.assertEqual(applied, set())
 
 
 class TestBibLinkPresence(unittest.TestCase):
