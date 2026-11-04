@@ -642,7 +642,7 @@ def load_article(adir):
                 r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]", str(oid)):
             raise BuildError("%s/meta.toml: orcid must be 0000-0000-0000-000X, "
                              "got %r" % (adir, oid))
-    for key in ("data_availability", "funding", "conflicts"):
+    for key in ("data_availability", "funding"):
         if key in m and not isinstance(m[key], str):
             raise BuildError("%s/meta.toml: %s must be a string" % (adir, key))
     if "article_number" in m:
@@ -654,7 +654,7 @@ def load_article(adir):
                              "[A-Za-z0-9][A-Za-z0-9.-]*, got %r" % (adir, an))
         m["article_number"] = an
     # Per-article vendor-mention allowlist: exact phrases permitted in THIS
-    # article's output only (e.g. a COI disclosure naming the project).
+    # article's output only (e.g. the contact email naming the project).
     av = m.setdefault("allow_vendor_mentions", [])
     if not isinstance(av, list) or not all(
             isinstance(x, str) and x.strip() for x in av):
@@ -1944,8 +1944,7 @@ def _license_footer(m, journal):
 def _statements(m):
     out = []
     for title, key in (("Data and Code Availability", "data_availability"),
-                       ("Funding", "funding"),
-                       ("Conflicts of Interest", "conflicts")):
+                       ("Funding", "funding")):
         if m.get(key):
             out.append('<section class="statement"><h2>%s</h2>\n<p>%s</p>'
                        "</section>\n" % (title, html.escape(m[key])))
@@ -2686,7 +2685,7 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
         '<section class="abstract"><h2>Abstract</h2>%s</section>\n'
         "%s"                                   # toc
         '<article class="body">\n%s\n</article>\n'
-        "%s"                                   # statements (data/funding/COI)
+        "%s"                                   # statements (data/funding)
         "%s"                                   # prev/next article nav
         "%s\n</main>"                          # license footer
     ) % (banner, pill, html.escape(m["title"]), authors_line, affil_bit, venue,
