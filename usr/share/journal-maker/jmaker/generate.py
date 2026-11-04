@@ -285,6 +285,12 @@ def _parse_memento(memento):
     if not mo:
         return None
     ts, original = mo.group(1), mo.group(2)
+    # Reject a well-formed-but-impossible timestamp (month 13, day 32, hour 25), so a
+    # malformed memento never renders a nonsense "archived 2026-13-.." date.
+    try:
+        datetime.datetime.strptime(ts, "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
     return "%s-%s-%s" % (ts[0:4], ts[4:6], ts[6:8]), original
 
 
@@ -2969,7 +2975,7 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
 
     urls = [journal["base_url"] + "/"]
     archive_links_total = 0       # rendered Wayback archive links (HTML preview), for a notice
-    archive_missing_all = []      # (slug, key) flagged archive.no_memento across all articles
+    archive_missing_all: list = []  # (slug, key) flagged archive.no_memento across all articles
     # Prev/next neighbours in reading order (volume, issue, article number/slug).
     ordered = sorted(articles, key=_order_key)
     nbr = {}

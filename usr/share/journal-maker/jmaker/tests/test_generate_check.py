@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 from jmaker import archive as a
@@ -3227,6 +3228,8 @@ class TestArchiveSidecar(unittest.TestCase):
         for bad in ("https://web.archive.org/web/https://a.example/x",     # bare redirect
                     "https://web.archive.org/web/2026/https://a.example/x",  # short ts
                     "http://web.archive.org/web/20260102030405/https://a.example/x",  # http
+                    "https://web.archive.org/web/20261301000000/https://a.example/x",  # month 13
+                    "https://web.archive.org/web/20260132000000/https://a.example/x",  # day 32
                     "https://evil.example/x"):
             self.assertIsNone(g._parse_memento(bad), bad)
 
@@ -3379,6 +3382,30 @@ class TestArchiveTool(unittest.TestCase):
         # beta is in the cache but absent from the file -> not applied (caller treats as drift)
         _new, applied = a._apply_text(toml, {"beta": {"memento": _GOOD_MEM}})
         self.assertEqual(applied, set())
+
+    def test_apply_text_preserves_multiline_string(self):
+        # A managed table with a multiline string whose body contains `[beta]` and an
+        # `archive =` line must NOT be corrupted: the archive line is inserted at the table
+        # level and the string body is untouched (the line editor skips multiline bodies).
+        toml = ('[alpha]\nno_quote = """\n'
+                'archive = part of the reason\n[beta]\nmore\n"""\n\n'
+                '[beta]\nquotes = [{ text = "y" }]\n')
+        cache = {"alpha": {"memento": _GOOD_MEM}}
+        new, applied = a._apply_text(toml, cache)
+        self.assertEqual(applied, {"alpha"})
+        self.assertIn('[alpha]\narchive = { memento = "%s" }\nno_quote = """' % _GOOD_MEM, new)
+        self.assertIn('archive = part of the reason\n[beta]\nmore\n"""', new)
+        a._verify_only_archive_changed(toml, new, cache, "t.toml")   # must not raise
+        parsed = tomllib.loads(new)
+        self.assertIn("[beta]", parsed["alpha"]["no_quote"])   # string body intact
+        self.assertEqual(parsed["alpha"]["archive"], {"memento": _GOOD_MEM})
+
+    def test_verify_rejects_a_non_archive_change(self):
+        # The fail-closed net: if the edit changed anything but the archive field, refuse.
+        old = '[alpha]\nquotes = [{ text = "x" }]\n'
+        corrupt = '[alpha]\nquotes = [{ text = "CORRUPT" }]\narchive = { memento = "%s" }\n' % _GOOD_MEM
+        with self.assertRaises(g.BuildError):
+            a._verify_only_archive_changed(old, corrupt, {"alpha": {"memento": _GOOD_MEM}}, "t.toml")
 
 
 class TestBibLinkPresence(unittest.TestCase):

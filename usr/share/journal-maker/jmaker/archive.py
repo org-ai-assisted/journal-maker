@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from urllib.parse import quote, urlsplit
@@ -130,7 +131,7 @@ def _save_page_now(url, *, tor, log):
     """Capture `url` with Save Page Now via the installed `ia-save` helper (reuse of the
     single source, not a reimplementation). Returns a genuine https memento, or None on a
     failure / rate-limit / bot-block (ia-save exits non-zero with a message)."""
-    cmd = ["ia-save"] + (["--tor"] if tor else []) + [url]
+    cmd = ["ia-save"] + (["--tor"] if tor else []) + ["--", url]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -211,27 +212,78 @@ def _archive_toml_line(entry):
     return 'archive = { no_memento = "%s" }\n' % _toml_escape(entry["no_memento"])
 
 
+def _ml_after(line, state):
+    """Track TOML multiline-string ('''/\"\"\") open/close across lines so a [bracket] or
+    `archive =` sequence INSIDE a string value is not mistaken for structure. Approximate
+    (it does not model single-line string contents), but apply() re-parses the result with
+    tomllib and refuses to write unless only the archive field changed -- so a miss fails
+    closed, it never corrupts the file. `state` is None or the open delimiter."""
+    i, n = 0, len(line)
+    while i < n:
+        if state is None:
+            if line.startswith('"""', i) or line.startswith("'''", i):
+                state = line[i:i + 3]
+                i += 3
+                continue
+        elif line.startswith(state, i):
+            state = None
+            i += 3
+            continue
+        i += 1
+    return state
+
+
 def _apply_text(text, cache):
     """Return source-quotes.toml text with one `archive = { ... }` line inserted right after
     each [citekey] header present in the cache (replacing any prior archive line in that
-    table, so a re-apply is idempotent). A line-oriented edit: nothing else is reformatted.
-    Returns (new_text, applied_keys)."""
+    table, so a re-apply is idempotent). A line-oriented edit that skips multiline-string
+    bodies: nothing else is reformatted. Returns (new_text, applied_keys)."""
     out = []
     cur = None
     applied = set()
+    in_ml = None
     for line in text.splitlines(keepends=True):
-        m = _HEADER_RE.match(line)
-        if m:
-            cur = m.group(1)
-            out.append(line)
-            if cur in cache:
-                out.append(_archive_toml_line(cache[cur]))
-                applied.add(cur)
-            continue
-        if cur in cache and _ARCHIVE_LINE_RE.match(line):
-            continue   # drop a stale archive line in a managed table
+        if in_ml is None:
+            m = _HEADER_RE.match(line)
+            if m:
+                cur = m.group(1)
+                out.append(line)
+                if cur in cache:
+                    out.append(_archive_toml_line(cache[cur]))
+                    applied.add(cur)
+                in_ml = _ml_after(line, in_ml)
+                continue
+            if cur in cache and _ARCHIVE_LINE_RE.match(line):
+                in_ml = _ml_after(line, in_ml)
+                continue   # drop a stale archive line in a managed table
         out.append(line)
+        in_ml = _ml_after(line, in_ml)
     return "".join(out), applied
+
+
+def _verify_only_archive_changed(old_text, new_text, cache, toml_path):
+    """Fail-closed safety net: re-parse both texts with tomllib and refuse to write unless
+    the ONLY difference is the archive field of each managed [key] (every other table and
+    field byte-equal in meaning). Catches any edit the line-oriented pass got wrong rather
+    than silently rewriting the author's source of truth."""
+    old = tomllib.loads(old_text)
+    new = tomllib.loads(new_text)
+    if set(old) != set(new):
+        raise generate.BuildError(
+            "archive: apply would change the set of tables in %s -- refusing to write"
+            % toml_path)
+    for key, table in old.items():
+        if key in cache:
+            expected = {k: v for k, v in table.items() if k != "archive"}
+            expected["archive"] = ({"memento": cache[key]["memento"]}
+                                   if "memento" in cache[key]
+                                   else {"no_memento": cache[key]["no_memento"]})
+        else:
+            expected = table
+        if new.get(key) != expected:
+            raise generate.BuildError(
+                "archive: apply would change more than the archive field of [%s] in %s -- "
+                "refusing to write (multiline value or unexpected edit?)" % (key, toml_path))
 
 
 def apply(article_dir, *, cache_path, log):
@@ -248,6 +300,7 @@ def apply(article_dir, *, cache_path, log):
         raise generate.BuildError(
             "archive: %d cache key(s) have no [table] in %s (refs.bib / sidecar drift?): %s"
             % (len(missing), toml_path, ", ".join(missing)))
+    _verify_only_archive_changed(text, new_text, cache, toml_path)
     with open(toml_path, "w", encoding="utf-8") as fh:
         fh.write(new_text)
     links = sum(1 for e in cache.values() if "memento" in e)
