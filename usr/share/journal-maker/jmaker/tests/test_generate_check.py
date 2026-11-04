@@ -1267,12 +1267,12 @@ class TestIdentityAndCite(unittest.TestCase):
         self.assertNotIn("Licensed under", out)
 
     def test_statements(self):
-        out = g._statements({"data_availability": "No new data.",
-                             "funding": "None."})
+        out = g._statements({"data_availability": "No new data."})
         self.assertIn("Data and Code Availability", out)
-        self.assertIn("Funding", out)
-        # COI is a separate submission field, never generated into the preview.
+        # Funding and COI are separate submission fields, never in the preview.
+        self.assertNotIn("Funding", out)
         self.assertNotIn("Conflicts of Interest", out)
+        self.assertEqual(g._statements({"funding": "x"}), "")
         self.assertEqual(g._statements({"conflicts": "x"}), "")
         self.assertEqual(g._statements({}), "")
 
