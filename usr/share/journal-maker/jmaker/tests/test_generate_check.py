@@ -6,9 +6,12 @@ import subprocess
 import tempfile
 import tomllib
 import unittest
+import urllib.error
+import urllib.request
 
 from jmaker import archive as a
 from jmaker import check as c
+from jmaker import cli
 from jmaker import generate as g
 
 
@@ -2695,6 +2698,67 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('aria-label="Section 1">1</a>', appendix)
         self.assertIn('aria-label="Table 1">1</a>', appendix)
 
+    def test_linkify_table_caption_in_refs_not_targeted(self):
+        # A source quote inside the citeproc refs container that begins "Table N."
+        # must NOT be anchored as tbl-N, and a prose "Table N" with no REAL table must
+        # stay plain. Caption discovery runs only outside _refs_div_span.
+        body = ('<p>See Table 1.</p>'
+                '<div id="refs"><div class="csl-quote"><blockquote>'
+                '<p>Table 1. External source text.</p></blockquote></div></div>')
+        out = g._linkify_cross_refs(body)
+        self.assertNotIn('id="tbl-1"', out)
+        self.assertNotIn('href="#tbl-1"', out)
+        self.assertIn('<p>Table 1. External source text.</p>', out)
+
+    def test_linkify_appendix_heading_not_self_linked_any_punctuation(self):
+        # An appendix heading's own label must never self-link, regardless of trailing
+        # punctuation ("Appendix A", "Appendix A:", "Appendix A."). The prose ref still
+        # links.
+        for head in ('<h2 id="app-a">Appendix A</h2>',
+                     '<h2 id="app-a">Appendix A: Keys</h2>',
+                     '<h2 id="app-a">Appendix A.</h2>'):
+            out = g._linkify_cross_refs(head + '<p>See Appendix A here.</p>')
+            heading, prose = out.split('</h2>', 1)
+            self.assertNotIn('<a', heading)
+            self.assertIn('<a href="#app-a" aria-label="Appendix A">A</a>', prose)
+
+    def test_linkify_appendix_subref_stays_plain(self):
+        # A dotted sub-appendix ref into an external work ("Appendix A.1") stays plain,
+        # like Section/Table sub-refs; a sentence-ending "Appendix A." still links.
+        body = ('<h2 id="app-a">Appendix A. Proofs</h2>'
+                '<p>See Appendix A.1 in the source. But Appendix A. links.</p>')
+        prose = g._linkify_cross_refs(body).split('</h2>', 1)[1]
+        self.assertIn('See Appendix A.1 in the source', prose)
+        self.assertIn('Appendix <a href="#app-a" aria-label="Appendix A">A</a>. links',
+                      prose)
+
+    def test_linkify_appendix_postcomma_capital_stays_plain(self):
+        # A capitalized variable/pronoun after a comma ("In Appendix A, B is ...") must
+        # NOT be linked as Appendix B even when Appendix B exists (appendix refs are
+        # singular, no connective run).
+        body = ('<h2 id="app-a">Appendix A. P</h2><h2 id="app-b">Appendix B. D</h2>'
+                '<p>In Appendix A, B is the set.</p>')
+        prose = g._linkify_cross_refs(body).split('Appendix B. D</h2>', 1)[1]
+        self.assertIn('<a href="#app-a" aria-label="Appendix A">A</a>', prose)
+        self.assertNotIn('href="#app-b"', prose)
+        self.assertIn(', B is the set', prose)
+
+    def test_linkify_no_cross_pass_splice(self):
+        # Pathological: a heading id containing a space and the word "Appendix" must not
+        # let the appendix pass rewrite inside the href the section pass just inserted.
+        body = ('<h2 id="Appendix A">1. Intro</h2>'
+                '<h2 id="app-a">Appendix A. Keys</h2><p>See Section 1.</p>')
+        out = g._linkify_cross_refs(body)
+        self.assertEqual(re.findall(r'href="#[^"]*<a', out), [])
+
+    def test_linkify_table_caption_id_collision_skipped(self):
+        # If a heading already carries id="tbl-N" (pandoc auto-id of a heading named
+        # "Tbl N"), the caption is NOT re-anchored to the same id -- no duplicate id.
+        body = ('<h2 id="tbl-1">2. Tbl 1</h2><p>See Table 1.</p>'
+                '<p>Table 1. Real caption.</p>')
+        out = g._linkify_cross_refs(body)
+        self.assertEqual(out.count('id="tbl-1"'), 1)
+
     def test_enhance_references_decodes_nonascii_key(self):
         # A non-ASCII citekey is ASCII-entity-encoded in body_html, but the sidecar
         # dict/set are keyed by the RAW key; _enhance_references must decode for the
@@ -3303,6 +3367,42 @@ class TestSidecar(unittest.TestCase):
 _GOOD_MEM = "https://web.archive.org/web/20260102030405/https://a.example/x"
 
 
+class _FakeResp:
+    def __init__(self, body):
+        self._b = body.encode("utf-8")
+
+    def read(self):
+        return self._b
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeOpener:
+    """Serves queued response bodies (or raises a queued exception) for archive.py tests."""
+
+    def __init__(self, responses):
+        self._r = list(responses)
+
+    def open(self, req, timeout=None):
+        r = self._r.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return _FakeResp(r)
+
+
+def _no_sleep(testcase):
+    orig = a._sleep
+    a._sleep = lambda _s: None
+    testcase.addCleanup(lambda: setattr(a, "_sleep", orig))
+
+
 class TestArchiveSidecar(unittest.TestCase):
     """archive = {...} honesty gate + helpers. Canaries: prove the gate FAILS on a forged /
     bare-redirect / mismatched memento, so only a genuine dated snapshot can ever render."""
@@ -3337,7 +3437,10 @@ class TestArchiveSidecar(unittest.TestCase):
         n = g._norm_url_for_compare
         self.assertEqual(n("https://a.example/x/"), n("https://a.example/x"))
         self.assertEqual(n("https://A.Example/x"), n("https://a.example/x"))
-        self.assertEqual(n("https://a.example/%7Ex"), n("https://a.example/~x"))
+        self.assertEqual(n("https://a.example/%7Ex"), n("https://a.example/~x"))  # unreserved
+        # a reserved octet stays escaped: a%2Fb must NOT compare equal to a/b, so a memento
+        # of a structurally-different url cannot slip through the honesty gate.
+        self.assertNotEqual(n("https://a.example/a%2Fb"), n("https://a.example/a/b"))
 
     # --- _load_sidecar archive-shape canaries (pure, no pandoc) ---
     def test_valid_archive_memento_loads(self):
@@ -3434,6 +3537,27 @@ class TestArchiveRender(unittest.TestCase):
             inner, "https://a.example/x", _GOOD_MEM, "2026-01-02")
         self.assertFalse(hit)   # the only anchor is already a memento -> not augmented
 
+    def test_augment_doi_anchor_that_is_the_cited_source(self):
+        # A doi.org link IS augmented when it is the cited original (the url-equality test,
+        # not a blanket doi skip, decides); an unrelated doi link stays untouched.
+        inner = ('<a href="https://doi.org/10.1/x">x</a> '
+                 '<a href="https://doi.org/10.9/other">o</a>')
+        mem = "https://web.archive.org/web/20260102030405/https://doi.org/10.1/x"
+        out, hit = g._augment_archive_anchor(inner, "https://doi.org/10.1/x", mem, "2026-01-02")
+        self.assertTrue(hit)
+        self.assertIn('href="https://doi.org/10.1/x" data-versionurl="%s"' % mem, out)
+        self.assertNotIn('href="https://doi.org/10.9/other" data-versionurl', out)
+
+
+class TestArchiveCli(unittest.TestCase):
+    def test_delay_validator(self):
+        import argparse
+        self.assertEqual(cli._nonneg_float("4"), 4.0)
+        self.assertEqual(cli._nonneg_float("0"), 0.0)
+        for bad in ("-1", "nan", "inf"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                cli._nonneg_float(bad)
+
 
 class TestArchiveTool(unittest.TestCase):
     """archive.py pure helpers: Availability parsing, memento matching, Retry-After, and the
@@ -3469,6 +3593,114 @@ class TestArchiveTool(unittest.TestCase):
         self.assertIsNone(a._spn_memento_from_status(
             {"status": "success", "timestamp": "20261301000000",            # month 13
              "original_url": "https://a.example/x"}))
+
+    def test_save_page_now_auth_submit_poll_success(self):
+        _no_sleep(self)
+        op = _FakeOpener([
+            json.dumps({"job_id": "J1", "url": "https://a.example/x"}),
+            json.dumps({"status": "pending"}),
+            json.dumps({"status": "success", "timestamp": "20260102030405",
+                        "original_url": "https://a.example/x"})])
+        mem = a._save_page_now_auth("https://a.example/x", "AK", "SK", opener=op,
+                                    base_delay=0, log=lambda _m: None)
+        self.assertEqual(mem, _GOOD_MEM)
+
+    def test_save_page_now_auth_rejects_non_dict(self):
+        _no_sleep(self)
+        op = _FakeOpener([json.dumps(["not", "an", "object"])])
+        self.assertIsNone(a._save_page_now_auth("https://a.example/x", "AK", "SK",
+                                                opener=op, base_delay=0, log=lambda _m: None))
+
+    def test_availability_transient_failure_is_sentinel(self):
+        _no_sleep(self)
+        err = urllib.error.HTTPError("https://archive.org/x", 429, "rl", {}, None)
+        self.assertIs(
+            a._availability("https://a.example/x", opener=_FakeOpener([err, err, err, err]),
+                            base_delay=0, log=lambda _m: None),
+            a._LOOKUP_FAILED)
+
+    def test_redirect_handler_blocks_offhost_keeps_archive(self):
+        h = a._ArchiveOnlyRedirect()
+        req = urllib.request.Request("https://web.archive.org/save/x")
+        with self.assertRaises(urllib.error.HTTPError):
+            h.redirect_request(req, _FakeResp(""), 302, "", {}, "https://evil.example/x")
+        with self.assertRaises(urllib.error.HTTPError):   # off-host even if https
+            h.redirect_request(req, _FakeResp(""), 302, "", {},
+                               "http://web.archive.org/x")   # non-https
+        out = h.redirect_request(
+            req, _FakeResp(""), 302, "", {},
+            "https://web.archive.org/web/20260101000000/https://a.example/x")
+        self.assertIsNotNone(out)
+
+    def test_header_key_quoted_dotted_and_comment(self):
+        self.assertEqual(a._header_key("[alpha]\n"), "alpha")
+        self.assertEqual(a._header_key('["a.b.c"]\n'), "a.b.c")   # dotted citekey must quote
+        self.assertEqual(a._header_key("[alpha]   # a note\n"), "alpha")
+        self.assertIsNone(a._header_key("label = 1\n"))
+        self.assertIsNone(a._header_key("[[arr]]\n"))
+
+    def test_atomic_write_replaces_file(self):
+        import shutil as _sh
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: _sh.rmtree(d))
+        p = os.path.join(d, "f.toml")
+        a._atomic_write(p, "hello\n")
+        with open(p, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "hello\n")
+
+    def test_apply_rejects_symlinked_toml(self):
+        import shutil as _sh
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: _sh.rmtree(d))
+        target = os.path.join(d, "real.toml")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write('[alpha]\nquotes = [{ text = "x" }]\n')
+        os.symlink(target, os.path.join(d, "source-quotes.toml"))
+        cache = os.path.join(d, "cache.json")
+        with open(cache, "w", encoding="utf-8") as fh:
+            json.dump({"alpha": {"memento": _GOOD_MEM}}, fh)
+        with self.assertRaises(g.BuildError) as cm:
+            a.apply(d, cache_path=cache, log=lambda _m: None)
+        self.assertIn("symlink", str(cm.exception))
+
+    def test_fetch_absence_transient_success_reuse(self):
+        import shutil as _sh
+        _no_sleep(self)
+        orig_csl = g._csl_entries
+        g._csl_entries = lambda _bib: {"alpha": {"URL": "https://a.example/x"}}
+        self.addCleanup(lambda: setattr(g, "_csl_entries", orig_csl))
+        orig_av = a._availability
+        self.addCleanup(lambda: setattr(a, "_availability", orig_av))
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: _sh.rmtree(d))
+        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+            fh.write("unused -- _csl_entries is patched")
+        cache_path = os.path.join(d, "cache.json")
+        kw = dict(save=False, tor=False, base_delay=0, log=lambda _m: None)
+
+        def _rm():
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+
+        a._availability = lambda _u, **_k: None                       # confirmed absence
+        c = a.fetch(d, cache_path=cache_path, **kw)
+        self.assertEqual(c["alpha"], {"no_memento": "no Wayback snapshot available"})
+
+        _rm()
+        a._availability = lambda _u, **_k: a._LOOKUP_FAILED           # transient -> unresolved
+        c = a.fetch(d, cache_path=cache_path, **kw)
+        self.assertNotIn("alpha", c)                                  # NOT recorded no_memento
+
+        _rm()
+        a._availability = lambda _u, **_k: _GOOD_MEM                  # success
+        c = a.fetch(d, cache_path=cache_path, **kw)
+        self.assertEqual(c["alpha"], {"memento": _GOOD_MEM})
+
+        def _boom(_u, **_k):                                          # reuse: must not re-query
+            raise AssertionError("availability called despite a valid cached memento")
+        a._availability = _boom
+        c = a.fetch(d, cache_path=cache_path, **kw)
+        self.assertEqual(c["alpha"], {"memento": _GOOD_MEM})
 
     def test_archive_toml_line(self):
         self.assertEqual(a._archive_toml_line({"memento": _GOOD_MEM}),

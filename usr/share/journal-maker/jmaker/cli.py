@@ -12,6 +12,7 @@ Subcommands:
 """
 
 import argparse
+import math
 import os
 import sys
 import unittest
@@ -36,6 +37,13 @@ def _cmd_build(args):
 
 def _cmd_check(args):
     return checker.main([args.site])
+
+
+def _nonneg_float(s):
+    v = float(s)
+    if not math.isfinite(v) or v < 0:
+        raise argparse.ArgumentTypeError("must be a finite, non-negative number")
+    return v
 
 
 def _cmd_archive(args):
@@ -122,7 +130,7 @@ def build_parser():
                       help="route the anonymous ia-save Save Page Now over Tor")
     parc.add_argument("--cache", default=None,
                       help="cache JSON path (default: <article_dir>/.archive-cache.json)")
-    parc.add_argument("--delay", type=float, default=4.0,
+    parc.add_argument("--delay", type=_nonneg_float, default=4.0,
                       help="seconds between archive.org requests (default: 4)")
     parc.set_defaults(func=_cmd_archive)
 

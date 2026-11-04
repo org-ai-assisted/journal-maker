@@ -24,6 +24,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 import tomllib
 import urllib.error
@@ -33,6 +34,28 @@ from urllib.parse import quote, urlencode, urlsplit
 from jmaker import generate
 
 _USER_AGENT = "journal-maker-archive (reference preservation)"
+
+# Sentinel distinguishing a TRANSIENT lookup failure (429/5xx/network, retries exhausted)
+# from a CONFIRMED absence (the API answered: no snapshot). fetch() must never record
+# no_memento for a transient failure -- a re-run retries it.
+_LOOKUP_FAILED = object()
+
+# Never sleep longer than this for a Retry-After header (a hostile/huge value must not stall).
+_RETRY_AFTER_CAP = 300.0
+
+
+class _ArchiveOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect ONLY to archive.org over https. Refuse any other target so a
+    redirect can never forward the SPN2 IA_S3 Authorization header off the trusted host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        host = (urlsplit(newurl).hostname or "").lower()
+        if not newurl.lower().startswith("https://") or not (
+                host == "archive.org" or host.endswith(".archive.org")):
+            raise urllib.error.HTTPError(
+                req.full_url, code, "refusing redirect off archive.org: %s" % newurl,
+                headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _sleep(seconds):
@@ -91,16 +114,18 @@ def _retry_after_seconds(header):
 
 
 def _build_opener():
-    # http(s) only; no handler for file:/ftp: etc.
+    # http(s) only (no file:/ftp: handler), and redirects confined to archive.org so a
+    # cross-host redirect cannot carry the SPN2 credential away.
     return urllib.request.build_opener(
         urllib.request.HTTPHandler(), urllib.request.HTTPSHandler(),
-        urllib.request.HTTPRedirectHandler())
+        _ArchiveOnlyRedirect())
 
 
 def _availability(url, *, opener, base_delay, log, attempts=4, timeout=30):
-    """Closest genuine memento for `url` from the Availability API, or None. Hard-throttles
-    (base_delay before every request), honors Retry-After, and backs off exponentially on
-    429/5xx -- this host rate-limits bursts."""
+    """Closest genuine memento for `url` from the Availability API. Returns the memento, None
+    for a CONFIRMED absence (the API answered with no usable snapshot), or _LOOKUP_FAILED for
+    a TRANSIENT failure (429/5xx/network, retries exhausted) -- the caller must not treat the
+    latter as absence. Hard-throttles, honors a capped Retry-After, backs off on 429/5xx."""
     api = "https://archive.org/wayback/available?url=" + quote(url, safe="")
     req = urllib.request.Request(api, headers={"User-Agent": _USER_AGENT})
     delay = base_delay
@@ -112,21 +137,22 @@ def _availability(url, *, opener, base_delay, log, attempts=4, timeout=30):
             return _closest_memento(data)
         except urllib.error.HTTPError as exc:
             if exc.code in (429, 500, 502, 503, 504) and attempt + 1 < attempts:
-                wait = _retry_after_seconds(exc.headers.get("Retry-After")) or delay
+                wait = min(_retry_after_seconds(exc.headers.get("Retry-After")) or delay,
+                           _RETRY_AFTER_CAP)
                 log("  availability HTTP %d; backing off %.0fs" % (exc.code, wait))
                 _sleep(wait)
                 delay *= 2
                 continue
-            log("  availability HTTP %d (giving up)" % exc.code)
-            return None
+            log("  availability HTTP %d (transient; will retry on a re-run)" % exc.code)
+            return _LOOKUP_FAILED
         except (urllib.error.URLError, ValueError, OSError) as exc:
             if attempt + 1 < attempts:
                 log("  availability error (%s); retrying" % exc)
                 _sleep(delay)
                 delay *= 2
                 continue
-            return None
-    return None
+            return _LOOKUP_FAILED
+    return _LOOKUP_FAILED
 
 
 def _save_page_now(url, *, tor, log):
@@ -174,19 +200,39 @@ def _save_page_now_auth(url, access, secret, *, opener, base_delay, log,
     headers = {"Accept": "application/json",
                "Authorization": "LOW %s:%s" % (access, secret),
                "User-Agent": _USER_AGENT}
+    # if_not_archived_within=30d makes a resubmit return the existing capture rather than a
+    # duplicate, so retrying a transient 429/5xx is safe.
     body = urlencode({"url": url, "skip_first_archive": "1",
                       "if_not_archived_within": "30d"}).encode("ascii")
-    _sleep(base_delay)
-    try:
-        req = urllib.request.Request(_SPN_SAVE_URL, data=body, headers=headers)
-        with opener.open(req, timeout=60) as resp:
-            submit = json.loads(resp.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as exc:
-        log("  SPN2 submit HTTP %d (%s)" % (exc.code, "auth/quota"
-                                            if exc.code in (401, 403, 429) else "error"))
-        return None
-    except (urllib.error.URLError, ValueError, OSError) as exc:
-        log("  SPN2 submit error: %s" % exc)
+    req = urllib.request.Request(_SPN_SAVE_URL, data=body, headers=headers)
+    submit = None
+    delay = base_delay
+    for attempt in range(4):
+        _sleep(base_delay)
+        try:
+            with opener.open(req, timeout=60) as resp:
+                submit = json.loads(resp.read().decode("utf-8", "replace"))
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code in (429, 500, 502, 503, 504) and attempt + 1 < 4:
+                wait = min(_retry_after_seconds(exc.headers.get("Retry-After")) or delay,
+                           _RETRY_AFTER_CAP)
+                log("  SPN2 submit HTTP %d; backing off %.0fs" % (exc.code, wait))
+                _sleep(wait)
+                delay *= 2
+                continue
+            log("  SPN2 submit HTTP %d (%s)" % (exc.code, "auth" if exc.code in (401, 403)
+                                                else "giving up"))
+            return None
+        except (urllib.error.URLError, ValueError, OSError) as exc:
+            if attempt + 1 < 4:
+                log("  SPN2 submit error (%s); retrying" % exc)
+                _sleep(delay)
+                delay *= 2
+                continue
+            return None
+    if not isinstance(submit, dict):
+        log("  SPN2 submit: unexpected (non-object) response")
         return None
     job_id = submit.get("job_id")
     if not job_id:
@@ -194,13 +240,20 @@ def _save_page_now_auth(url, access, secret, *, opener, base_delay, log,
         return None
     status_req = urllib.request.Request(_SPN_STATUS_URL + quote(str(job_id), safe=""),
                                         headers=headers)
+    errors = 0
     for _ in range(poll_attempts):
         _sleep(base_delay)
         try:
             with opener.open(status_req, timeout=60) as resp:
                 st = json.loads(resp.read().decode("utf-8", "replace"))
         except (urllib.error.URLError, ValueError, OSError) as exc:
-            log("  SPN2 status error: %s" % exc)
+            errors += 1
+            log("  SPN2 status error (%s)" % exc)
+            if errors >= 3:
+                return None
+            continue   # a transient status-fetch error should not abandon the capture
+        if not isinstance(st, dict):
+            log("  SPN2 status: unexpected (non-object) response")
             return None
         state = st.get("status")
         if state == "success":
@@ -252,12 +305,17 @@ def fetch(article_dir, *, save, tor, base_delay, cache_path, log):
         if host == "web.archive.org" or host.endswith(".web.archive.org"):
             log("%s: bib url is already a Wayback memento; skipping" % key)
             continue
-        if cache.get(key, {}).get("memento"):
-            continue   # already resolved
+        cached_mem = cache.get(key, {}).get("memento")
+        if cached_mem and _memento_matches(cached_mem, url):
+            continue   # already resolved for the CURRENT url (re-query if the url changed)
         log("%s: %s" % (key, url))
-        mem = _availability(url, opener=opener, base_delay=base_delay, log=log)
-        if not (mem and _memento_matches(mem, url)):
-            if mem:
+        avail = _availability(url, opener=opener, base_delay=base_delay, log=log)
+        if avail is _LOOKUP_FAILED:
+            log("  availability lookup failed (transient); leaving unresolved for a re-run")
+            continue   # never record no_memento for a failed lookup -- a re-run retries
+        mem = avail if (avail and _memento_matches(avail, url)) else None
+        if not mem:
+            if avail:
                 log("  availability snapshot is of a different url; ignoring")
             if save:
                 log("  Save Page Now ...")
@@ -279,8 +337,20 @@ def fetch(article_dir, *, save, tor, base_delay, cache_path, log):
     return cache
 
 
-_HEADER_RE = re.compile(r'^\[([^\[\]]+)\]\s*$')
+# A top-level table header: a bare key, or a quoted key (a dotted citekey must be quoted so
+# it is one table, not nested), with an optional trailing comment.
+_HEADER_RE = re.compile(
+    r'^\[\s*(?:"([^"\n]+)"|\'([^\'\n]+)\'|([^\[\]"\'#\s]+))\s*\](?:\s*#.*)?\s*$')
 _ARCHIVE_LINE_RE = re.compile(r'^\s*archive\s*=')
+
+
+def _header_key(line):
+    """The table key of a `[key]` / `[ "quoted.key" ]` header (with an optional trailing
+    comment), unquoted so a quoted/dotted citekey matches its cache key, or None."""
+    m = _HEADER_RE.match(line)
+    if not m:
+        return None
+    return m.group(1) or m.group(2) or m.group(3)
 
 
 def _toml_escape(value):
@@ -325,9 +395,9 @@ def _apply_text(text, cache):
     in_ml = None
     for line in text.splitlines(keepends=True):
         if in_ml is None:
-            m = _HEADER_RE.match(line)
-            if m:
-                cur = m.group(1)
+            hk = _header_key(line)
+            if hk is not None:
+                cur = hk
                 out.append(line)
                 if cur in cache:
                     out.append(_archive_toml_line(cache[cur]))
@@ -367,8 +437,31 @@ def _verify_only_archive_changed(old_text, new_text, cache, toml_path):
                 "refusing to write (multiline value or unexpected edit?)" % (key, toml_path))
 
 
+def _atomic_write(path, text):
+    """Write text to a temp file in the same directory, fsync it, then os.replace it onto
+    path -- so a crash mid-write leaves the original intact, never a truncated file."""
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".archive-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def apply(article_dir, *, cache_path, log):
     toml_path = os.path.join(article_dir, "source-quotes.toml")
+    # Read + published verbatim like _load_sidecar: refuse a symlink (it could redirect the
+    # write off the article dir).
+    if os.path.islink(toml_path):
+        raise generate.BuildError("archive: %s must not be a symlink" % toml_path)
     cache = _load_cache(cache_path)
     if not cache:
         raise generate.BuildError("archive: cache %s is empty; run fetch first"
@@ -382,8 +475,7 @@ def apply(article_dir, *, cache_path, log):
             "archive: %d cache key(s) have no [table] in %s (refs.bib / sidecar drift?): %s"
             % (len(missing), toml_path, ", ".join(missing)))
     _verify_only_archive_changed(text, new_text, cache, toml_path)
-    with open(toml_path, "w", encoding="utf-8") as fh:
-        fh.write(new_text)
+    _atomic_write(toml_path, new_text)
     links = sum(1 for e in cache.values() if "memento" in e)
     log("archive: wrote %d archive line(s) (%d memento, %d no_memento) into %s"
         % (len(applied), links, len(applied) - links, toml_path))
