@@ -3829,6 +3829,11 @@ class TestArchiveSidecar(unittest.TestCase):
         # one must still match its own snapshot. Regression: the old len(path)>1 guard left
         # the root "/" on, so every root url was wrongly rejected as a different-url memento.
         self.assertEqual(n("https://a.example/"), n("https://a.example"))
+        # FRAGMENT: a #anchor is client-side (RFC 3986 3.5), never captured by any archiver,
+        # so a memento of the fragmentless page must match the #anchored citation -- else the
+        # entry is permanently un-archivable. Query is kept distinct; only the fragment drops.
+        self.assertEqual(n("https://a.example/x#sec"), n("https://a.example/x"))
+        self.assertEqual(n("https://a.example/p?q=1#frag"), n("https://a.example/p?q=1"))
         self.assertEqual(n("https://A.Example/x"), n("https://a.example/x"))
         self.assertEqual(n("https://a.example/%7Ex"), n("https://a.example/~x"))  # unreserved
         # a reserved octet stays escaped: a%2Fb must NOT compare equal to a/b, so a memento
@@ -3889,6 +3894,11 @@ class TestArchiveSidecar(unittest.TestCase):
         self.assertEqual(
             g._checked_memento("d", "alpha", {"memento": root_mem}, "https://a.example"),
             root_mem)
+        # FRAGMENT: the cited url has a #section but the memento (like any snapshot) embeds the
+        # fragmentless page -- it must still match, or an #anchored citation can never archive.
+        self.assertEqual(
+            g._checked_memento("d", "alpha", {"memento": _GOOD_MEM},
+                               "https://a.example/x#install"), _GOOD_MEM)
 
     def test_gate_matches_when_bib_url_is_itself_a_memento(self):
         # refs.bib url already a Wayback memento -> compare against its embedded original.

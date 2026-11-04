@@ -327,9 +327,10 @@ def _decode_unreserved(s):
 def _norm_url_for_compare(url):
     """Conservative normalization for checking a memento's embedded original against the
     bib url: decode only unreserved percent-escapes, lowercase scheme+host only, drop a
-    single trailing slash. Deliberately strict -- a residual mismatch must FLAG (fail the
-    build / render no link), never be papered over into a fabricated archive link. Shared by
-    the honesty gate and the archiver so the archiver never stores what the gate rejects."""
+    single trailing slash, and drop the fragment. Deliberately strict -- a residual mismatch
+    must FLAG (fail the build / render no link), never be papered over into a fabricated
+    archive link. Shared by the honesty gate and the archiver so the archiver never stores
+    what the gate rejects."""
     sp = urlsplit(_decode_unreserved(url.strip()))
     # Drop a single trailing slash, INCLUDING a lone root "/" (an empty path and "/" are
     # equivalent per RFC 3986 6.2.3, and Wayback canonicalizes a bare-host original WITH the
@@ -337,8 +338,12 @@ def _norm_url_for_compare(url):
     path = sp.path
     if path.endswith("/"):
         path = path[:-1]
-    return urlunsplit((sp.scheme.lower(), sp.netloc.lower(), path,
-                       sp.query, sp.fragment))
+    # Drop the fragment: it is a client-side anchor (RFC 3986 3.5), never sent to the server,
+    # so NO archiver (Availability or Save Page Now) ever captures it. A memento of the
+    # fragmentless page IS the archive of the cited section (the same document), so comparing
+    # WITH the fragment would reject every #anchored citation as a different-url memento --
+    # leaving it permanently un-archivable.
+    return urlunsplit((sp.scheme.lower(), sp.netloc.lower(), path, sp.query, ""))
 
 
 def _validate_archive(adir, key, arc):
