@@ -2134,11 +2134,13 @@ _SECTION_H2_RE = re.compile(r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*(\d+)\.(?!\d)', re.
 # into a CITED EXTERNAL work, not this paper's section 3, so it must stay plain -- and
 # the atomic group stops "35.5" from degrading to a bare "3" via backtracking. A
 # sentence-ending period ("see Section 3.") is NOT a sub-number, so it still links.
+# The trailing \b after each number rejects a glued letter, so "Section 1a" stays
+# plain (the number must end on a word boundary), matching _SEC_ITEM's own guard.
 # The connective run (?>(...)+) absorbs a ", and" so an Oxford-comma list
 # ("Sections 8, 10, and 13") links every number, not just the first two.
 _SECTION_REF_RE = re.compile(
-    r'\bSections?\s+(?>\d+)(?!\.\d)'
-    r'(?:(?>(?:\s*(?:,|and|through|to|&amp;|&)\s*)+)(?>\d+)(?!\.\d))*')
+    r'\bSections?\s+(?>\d+)(?!\.\d)\b'
+    r'(?:(?>(?:\s*(?:,|and|through|to|&amp;|&)\s*)+)(?>\d+)(?!\.\d)\b)*')
 # Whole <pre>/<code> spans, whole <a>...</a> spans, and whole tags, so the linkifier
 # never rewrites inside code, double-wraps an existing anchor, or touches an attribute.
 _HTML_TAG_OR_ANCHOR_RE = re.compile(
@@ -2151,14 +2153,16 @@ _TBL_CAPTION_RE = re.compile(r'<p>(Table\s+(\d+)\.\s)')
 # A "Table N" / "Tables N and M" reference run, mirroring _SECTION_REF_RE: atomic
 # number, (?!\.\d) drops a dotted "Table 3.5" sub-number into a cited external work
 # while a sentence-ending "Table 3." still links; the connective run absorbs an
-# Oxford-comma list.
+# Oxford-comma list. The trailing \b keeps "Table 1" from matching inside "Table 1a".
 _TABLE_REF_RE = re.compile(
-    r'\bTables?\s+(?>\d+)(?!\.\d)'
-    r'(?:(?>(?:\s*(?:,|and|through|to|&amp;|&)\s*)+)(?>\d+)(?!\.\d))*')
+    r'\bTables?\s+(?>\d+)(?!\.\d)\b'
+    r'(?:(?>(?:\s*(?:,|and|through|to|&amp;|&)\s*)+)(?>\d+)(?!\.\d)\b)*')
 # An appendix heading "<h2 id=...>Appendix X. ..." -> (id, letter). pandoc keeps the
 # letter (and a literal "." ) in the id, but the letter is read from the visible text.
+# The (?!\.[A-Za-z0-9]) guard (mirroring _APPENDIX_REF_RE) drops a dotted sub-appendix
+# heading ("Appendix A.1. Details") so it does not register a stray letter "A".
 _APPENDIX_H2_RE = re.compile(
-    r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*Appendix\s+([A-Z])\b', re.I)
+    r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*Appendix\s+([A-Z])\b(?!\.[A-Za-z0-9])', re.I)
 # A single "Appendix X" reference. No connective run: the paper never lists
 # appendices, and a run would mis-link a post-comma capital (a variable or the
 # pronoun "I") as an appendix. (?!\.[A-Za-z0-9]) drops a dotted sub-appendix
@@ -2225,6 +2229,30 @@ def _refs_div_span(body_html):
     return (start, len(body_html))
 
 
+def _blockquote_spans(slc):
+    """(start, end) spans of every <blockquote>...</blockquote>, close depth-matched
+    past nesting (fail-safe to end-of-string on an unbalanced open, like
+    _refs_div_span). A caption scan skips these: a body quotation whose first
+    paragraph begins "Table N." is not a real caption and must not be anchored
+    id="tbl-N" (a duplicate-id collision with the real Table N caption)."""
+    spans = []
+    depth = 0
+    start = -1
+    for mo in re.finditer(r'<blockquote\b|</blockquote>', slc):
+        if mo.group(0) == "</blockquote>":
+            depth -= 1
+            if depth == 0 and start != -1:
+                spans.append((start, mo.end()))
+                start = -1
+        else:
+            if depth == 0:
+                start = mo.start()
+            depth += 1
+    if depth > 0 and start != -1:
+        spans.append((start, len(slc)))
+    return spans
+
+
 def _linkify_region(region, sec_anchors, tbl_anchors, app_anchors, app_heading_ids):
     """Linkify Section/Table/Appendix refs in one non-refs region. Each ref type is a
     SEPARATE pass that re-splits tags/anchors/code, so a later pass can never rewrite
@@ -2289,7 +2317,8 @@ def _linkify_cross_refs(body_html):
     ToC/links clickable). The citeproc reference container (<div id="refs">) is left
     untouched; everything AROUND it -- including the appendices, which follow
     References -- is linkified. Table captions are anchored (id="tbl-N") ONLY outside
-    that container, so a source quote beginning "Table N." never becomes a target."""
+    that container AND outside any body <blockquote>, so a source quote beginning
+    "Table N." never becomes a target (nor collides with the real caption's id)."""
     rs, re_ = _refs_div_span(body_html)
     pre, refs, post = ((body_html, "", "") if rs == -1
                        else (body_html[:rs], body_html[rs:re_], body_html[re_:]))
@@ -2299,16 +2328,25 @@ def _linkify_cross_refs(body_html):
     existing_ids = set(_ID_ATTR_RE.findall(body_html))
     tbl_anchors: dict[int, str] = {}
     for slc in (pre, post):
+        bq = _blockquote_spans(slc)
         for mo in _TBL_CAPTION_RE.finditer(slc):
+            if any(s <= mo.start() < e for s, e in bq):
+                continue
             n = int(mo.group(2))
             if ("tbl-%d" % n) not in existing_ids and n not in tbl_anchors:
                 tbl_anchors[n] = "tbl-%d" % n
 
     def anchor_captions(slc):
-        return _TBL_CAPTION_RE.sub(
-            lambda mo: ('<p id="tbl-%d">%s' % (int(mo.group(2)), mo.group(1))
-                        if tbl_anchors.get(int(mo.group(2))) else mo.group(0)),
-            slc)
+        bq = _blockquote_spans(slc)
+        def repl(mo):
+            # A "Table N." inside a body blockquote is a quotation, not a caption:
+            # leave it un-anchored so it cannot duplicate the real caption's id.
+            if any(s <= mo.start() < e for s, e in bq):
+                return mo.group(0)
+            n = int(mo.group(2))
+            return ('<p id="tbl-%d">%s' % (n, mo.group(1))
+                    if tbl_anchors.get(n) else mo.group(0))
+        return _TBL_CAPTION_RE.sub(repl, slc)
     pre, post = anchor_captions(pre), anchor_captions(post)
 
     sec_anchors: dict[int, str] = {}

@@ -2670,6 +2670,71 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertEqual(self._link_collisions(out), [])
         self.assertEqual(self._label_in_name_bad(out), [])
 
+    def test_linkify_table_ref_trailing_letter_stays_plain(self):
+        # Regression: "Table 1a" (a glued-letter figure label) must NOT wrap its "1" as
+        # a link to Table 1; a bare "Table 1" still links. The (?!\.\d) guard only
+        # blocks a dotted sub-number -- the trailing \b blocks the letter. RED without \b.
+        body = (
+            '<p>See Table 1a for the variant, and Table 1 for the base.</p>'
+            '<p>Table 1. The caption.</p>')
+        out = g._linkify_cross_refs(body)
+        # glued-letter form left verbatim -- no partial wrap of "1"
+        self.assertIn('See Table 1a for the variant', out)
+        self.assertNotIn('aria-label="Table 1">1</a>a', out)
+        # a plain "Table 1" still links to the caption
+        self.assertIn('Table <a href="#tbl-1" aria-label="Table 1">1</a> for the base',
+                      out)
+        self.assertEqual(self._link_collisions(out), [])
+        self.assertEqual(self._label_in_name_bad(out), [])
+
+    def test_linkify_section_ref_trailing_letter_stays_plain(self):
+        # Same-class as the table guard: "Section 1a" must NOT wrap "1" as a link to
+        # section 1 (the trailing \b rejects the glued letter); a bare "Section 1"
+        # still links. RED without \b on _SECTION_REF_RE.
+        body = (
+            '<h2 id="intro">1. Intro</h2>'
+            '<p>See Section 1a (a figure label), but Section 1 is the intro.</p>')
+        out = g._linkify_cross_refs(body)
+        self.assertIn('See Section 1a (a figure label)', out)
+        self.assertNotIn('aria-label="Section 1">1</a>a', out)
+        self.assertIn('but Section <a href="#intro" aria-label="Section 1">1</a> is',
+                      out)
+
+    def test_linkify_appendix_h2_subheading_not_registered(self):
+        # Regression: an "Appendix A.1. Details" SUB-heading must NOT register appendix
+        # letter "A" (its id is a sub-section target, not the real Appendix A). With no
+        # real "Appendix A" heading, prose "Appendix A" then stays plain rather than
+        # linking to the A.1 heading. RED without the (?!\.[A-Za-z0-9]) guard on
+        # _APPENDIX_H2_RE.
+        body = (
+            '<h2 class="unnumbered" id="app-a.1.-details">Appendix A.1. Details</h2>'
+            '<p>See Appendix A for the overview.</p>')
+        out = g._linkify_cross_refs(body)
+        self.assertNotIn('aria-label="Appendix A"', out)
+        self.assertNotIn('<a href="#app-a.1.-details"', out)
+        self.assertIn('See Appendix A for the overview', out)
+
+    def test_linkify_table_caption_in_body_blockquote_not_targeted(self):
+        # Regression: a body quotation blockquote whose first paragraph begins "Table
+        # N." must NOT be anchored id="tbl-N" -- it is quoted source, not a caption.
+        # RED without the blockquote-span skip in _linkify_cross_refs.
+        # (a) blockquote alone, no real caption -> no tbl-1 anchor emitted at all.
+        body = ('<blockquote class="quotation"><p>Table 1. As quoted.</p></blockquote>'
+                '<p>Body paragraph.</p>')
+        out = g._linkify_cross_refs(body)
+        self.assertNotIn('id="tbl-1"', out)
+        self.assertIn('<blockquote class="quotation"><p>Table 1. As quoted.</p>'
+                      '</blockquote>', out)
+        # (b) collision: a real caption AND a body blockquote both begin "Table 1." ->
+        # exactly ONE id="tbl-1" (the real caption); anchoring the blockquote too would
+        # emit a duplicate id.
+        body2 = ('<blockquote class="quotation"><p>Table 1. As quoted.</p></blockquote>'
+                 '<p>Table 1. The real caption.</p>')
+        out2 = g._linkify_cross_refs(body2)
+        self.assertEqual(out2.count('id="tbl-1"'), 1)
+        self.assertIn('<p id="tbl-1">Table 1. The real caption.</p>', out2)
+        self.assertEqual(self._link_collisions(out2), [])
+
     def test_cross_refs_linked_after_refs_in_full_build(self):
         # End-to-end wiring: a real citeproc refs div sits before the appendix, and a
         # table caption is a plain paragraph. The appendix's "Section 1" ref and a
