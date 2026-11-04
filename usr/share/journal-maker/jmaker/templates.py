@@ -660,6 +660,12 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
         && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
     });
+    // hide() is skipped while the control holds focus, so after a keyboard user
+    // Tabs AWAY near the top nothing re-hides it until the next scroll. Re-run the
+    // threshold check on blur so it does not linger once focus leaves.
+    btn.addEventListener("blur", function () {
+      if (window.scrollY < 400) { btn.hidden = true; }
+    });
     var idle = null;
     window.addEventListener("scroll", function () {
       if (window.scrollY < 400) { hide(); return; }
@@ -689,11 +695,24 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       for (var i = 0; i < backs.length; i++) {
         if (backs[i].parentNode) { backs[i].parentNode.removeChild(backs[i]); }
       }
+      // The card is a DECORATIVE preview (aria-hidden, body-appended, not in tab
+      // order): a keyboard user reaches the note's real links by activating the
+      // marker (href="#fnN" -> the note at document end, where the links ARE in
+      // tab order). So drop href from the preview's own links -- a link that is
+      // focusable but can never be tabbed to is the a11y trap; without href it is
+      // inert citation text, no trap, and the live links stay one marker-activation
+      // away. The marker's title= carries the note text for assistive tech.
+      var links = clone.querySelectorAll("a[href]");
+      for (var j = 0; j < links.length; j++) {
+        links[j].removeAttribute("href");
+      }
       return clone;
     }
     var card = document.createElement("div");
     card.className = "hovercard";
-    card.setAttribute("role", "dialog");
+    // decorative preview, not a dialog: aria-hidden keeps assistive tech from
+    // announcing an unreachable duplicate of the note (reached via the marker).
+    card.setAttribute("aria-hidden", "true");
     card.hidden = true;
     var body = document.createElement("div");
     body.className = "hovercard-body";

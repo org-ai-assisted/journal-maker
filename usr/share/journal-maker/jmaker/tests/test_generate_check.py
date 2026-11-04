@@ -3105,6 +3105,9 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('.back-to-top {', css)
         self.assertIn('.back-to-top', js)
         self.assertIn('scrollTo', js)
+        # a11y: hide the control on blur near the top, so keyboard focus leaving it
+        # does not leave it lingering until the next scroll.
+        self.assertIn('btn.addEventListener("blur"', js)
 
     def test_footnote_hovercard_in_full_build(self):
         # A footnote marker gets a hovercard preview of the note, reusing the
@@ -3130,6 +3133,11 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # the footnote-hovercard handler (distinct from the citation one)
         self.assertIn("a.footnote-ref[href^='#fn']", js)
         self.assertIn(".footnote-back", js)
+        # a11y: the preview is decorative (aria-hidden) and its links are
+        # neutralized (href stripped), so it is not a focusable-but-unreachable
+        # tab trap -- the live links stay reachable via the marker's #fnN jump.
+        self.assertIn('card.setAttribute("aria-hidden", "true")', js)
+        self.assertIn('removeAttribute("href")', js)
 
     def test_no_fouc_or_reload_shift_invariants(self):
         # No content shift on reload / no FOUC, locked structurally (empirically
