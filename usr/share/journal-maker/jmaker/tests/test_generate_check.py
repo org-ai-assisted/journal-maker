@@ -3359,6 +3359,17 @@ class TestArchiveTool(unittest.TestCase):
         self.assertIsNone(a._retry_after_seconds("not-a-date"))
         self.assertIsNone(a._retry_after_seconds(None))
 
+    def test_spn_memento_from_status(self):
+        ok = {"status": "success", "timestamp": "20260102030405",
+              "original_url": "https://a.example/x"}
+        self.assertEqual(a._spn_memento_from_status(ok), _GOOD_MEM)
+        self.assertIsNone(a._spn_memento_from_status({"status": "pending"}))
+        self.assertIsNone(a._spn_memento_from_status(
+            {"status": "success", "original_url": "https://a.example/x"}))  # no timestamp
+        self.assertIsNone(a._spn_memento_from_status(
+            {"status": "success", "timestamp": "20261301000000",            # month 13
+             "original_url": "https://a.example/x"}))
+
     def test_archive_toml_line(self):
         self.assertEqual(a._archive_toml_line({"memento": _GOOD_MEM}),
                          'archive = { memento = "%s" }\n' % _GOOD_MEM)

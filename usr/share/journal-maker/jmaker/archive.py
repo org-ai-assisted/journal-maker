@@ -6,8 +6,10 @@ per-reference `archive = { ... }` field in an article's source-quotes.toml, whic
 then reads to render Robust Links. Two phases:
 
   fetch  -- for each url-bearing refs.bib entry, ask the Wayback Availability API for the
-            closest genuine snapshot; for a miss, optionally Save Page Now via the installed
-            `ia-save` helper. Writes a resumable cache (key -> memento | no_memento reason).
+            closest genuine snapshot; for a miss, optionally Save Page Now -- authenticated
+            SPN2 (archive.org S3 keys in IA_S3_ACCESS_KEY / IA_S3_SECRET_KEY, which bypass the
+            anonymous datacenter 429), else the anonymous `ia-save` helper. Writes a resumable
+            cache (key -> memento | no_memento reason).
             Connects ONLY to archive.org, never to the cited target, so there is no SSRF
             surface to guard (unlike a dead-link scanner that fetches the target itself).
   apply  -- surgically insert one `archive = { ... }` line per [citekey] table in
@@ -26,7 +28,7 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from jmaker import generate
 
@@ -146,6 +148,72 @@ def _save_page_now(url, *, tor, log):
     return mem if generate._parse_memento(mem) else None
 
 
+_SPN_SAVE_URL = "https://web.archive.org/save"
+_SPN_STATUS_URL = "https://web.archive.org/save/status/"
+
+
+def _spn_memento_from_status(status):
+    """Build a genuine https memento from an SPN2 status payload (status==success, with a
+    14-digit `timestamp` and the captured `original_url`), or None. Pure -- unit-testable."""
+    if (status or {}).get("status") != "success":
+        return None
+    ts = str(status.get("timestamp") or "")
+    original = status.get("original_url") or ""
+    if not ts or not original:
+        return None
+    mem = "https://web.archive.org/web/%s/%s" % (ts, original)
+    return mem if generate._parse_memento(mem) else None
+
+
+def _save_page_now_auth(url, access, secret, *, opener, base_delay, log,
+                        poll_attempts=20):
+    """Capture `url` via the AUTHENTICATED Save Page Now 2 API (archive.org S3 keys), which
+    is not subject to the anonymous datacenter 429. Submits the job, polls its status
+    (throttled), and returns a genuine https memento on success, else None. Talks only to
+    archive.org."""
+    headers = {"Accept": "application/json",
+               "Authorization": "LOW %s:%s" % (access, secret),
+               "User-Agent": _USER_AGENT}
+    body = urlencode({"url": url, "skip_first_archive": "1",
+                      "if_not_archived_within": "30d"}).encode("ascii")
+    _sleep(base_delay)
+    try:
+        req = urllib.request.Request(_SPN_SAVE_URL, data=body, headers=headers)
+        with opener.open(req, timeout=60) as resp:
+            submit = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        log("  SPN2 submit HTTP %d (%s)" % (exc.code, "auth/quota"
+                                            if exc.code in (401, 403, 429) else "error"))
+        return None
+    except (urllib.error.URLError, ValueError, OSError) as exc:
+        log("  SPN2 submit error: %s" % exc)
+        return None
+    job_id = submit.get("job_id")
+    if not job_id:
+        log("  SPN2 no job_id: %s" % (submit.get("message") or submit))
+        return None
+    status_req = urllib.request.Request(_SPN_STATUS_URL + quote(str(job_id), safe=""),
+                                        headers=headers)
+    for _ in range(poll_attempts):
+        _sleep(base_delay)
+        try:
+            with opener.open(status_req, timeout=60) as resp:
+                st = json.loads(resp.read().decode("utf-8", "replace"))
+        except (urllib.error.URLError, ValueError, OSError) as exc:
+            log("  SPN2 status error: %s" % exc)
+            return None
+        state = st.get("status")
+        if state == "success":
+            return _spn_memento_from_status(st)
+        if state == "error":
+            log("  SPN2 capture error: %s" % (st.get("message")
+                                              or st.get("exception") or "unknown"))
+            return None
+        # else pending/processing -> keep polling
+    log("  SPN2 still pending after %d polls; giving up" % poll_attempts)
+    return None
+
+
 def _load_cache(path):
     if not os.path.exists(path):
         return {}
@@ -167,6 +235,15 @@ def fetch(article_dir, *, save, tor, base_delay, cache_path, log):
     csl = generate._csl_entries(bib)
     cache = _load_cache(cache_path)
     opener = _build_opener()
+    # Authenticated SPN2 (archive.org S3 keys) bypasses the anonymous datacenter 429. When
+    # the keys are present it is the Save-Page-Now path; otherwise fall back to the anonymous
+    # ia-save helper. Build stays unaffected either way (this is the offline tool).
+    ia_access = os.environ.get("IA_S3_ACCESS_KEY")
+    ia_secret = os.environ.get("IA_S3_SECRET_KEY")
+    if save and ia_access and ia_secret:
+        log("Save Page Now: authenticated SPN2 (archive.org S3 keys)")
+    elif save:
+        log("Save Page Now: anonymous ia-save (no IA_S3 keys; may be 429-limited)")
     for key, entry in csl.items():
         url = (entry.get("URL") or "").strip()
         if not url:
@@ -184,7 +261,11 @@ def fetch(article_dir, *, save, tor, base_delay, cache_path, log):
                 log("  availability snapshot is of a different url; ignoring")
             if save:
                 log("  Save Page Now ...")
-                spn = _save_page_now(url, tor=tor, log=log)
+                if ia_access and ia_secret:
+                    spn = _save_page_now_auth(url, ia_access, ia_secret, opener=opener,
+                                              base_delay=base_delay, log=log)
+                else:
+                    spn = _save_page_now(url, tor=tor, log=log)
                 mem = spn if (spn and _memento_matches(spn, url)) else None
             else:
                 mem = None

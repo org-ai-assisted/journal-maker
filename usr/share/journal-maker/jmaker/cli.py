@@ -116,9 +116,10 @@ def build_parser():
     parc.add_argument("--apply", action="store_true",
                       help="write archive lines into source-quotes.toml only")
     parc.add_argument("--save", action="store_true",
-                      help="Save Page Now for misses, via the ia-save helper")
+                      help="Save Page Now for misses: authenticated SPN2 when IA_S3_ACCESS_KEY"
+                           " / IA_S3_SECRET_KEY are set, else the anonymous ia-save helper")
     parc.add_argument("--tor", action="store_true",
-                      help="route Save Page Now over Tor (ia-save --tor)")
+                      help="route the anonymous ia-save Save Page Now over Tor")
     parc.add_argument("--cache", default=None,
                       help="cache JSON path (default: <article_dir>/.archive-cache.json)")
     parc.add_argument("--delay", type=float, default=4.0,
