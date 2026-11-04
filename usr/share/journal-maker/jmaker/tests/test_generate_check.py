@@ -340,6 +340,13 @@ class TestZenodo(unittest.TestCase):
                          g._source_date_epoch({"date": "2026-01-01"}))
         self.assertEqual(g._source_date_epoch({"date": "2024-02-31"}),
                          g._source_date_epoch({"date": "2024-01-01"}))
+        # Year 0000 is the one 4-digit year the regex accepts that datetime cannot
+        # represent; the fallback must clamp it, not re-raise. RED before the clamp
+        # (the fallback re-ran strptime on "0000-01-01" -> ValueError escaped).
+        self.assertEqual(g._source_date_epoch({"date": "0000"}),
+                         g._source_date_epoch({"date": "0001-01-01"}))
+        self.assertEqual(g._source_date_epoch({"date": "0000-13-40"}),
+                         g._source_date_epoch({"date": "0001-01-01"}))
 
     def test_pdf_reproducible_env(self):
         # Bit-for-bit reproducible PDF: pin pdfTeX's dates (SOURCE_DATE_EPOCH = the
@@ -3000,6 +3007,27 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             '</ol></section>')
         out = g._enhance_references(body, {"aosp"}, {})
         # attributed to the marker's section 14, not the unnumbered footnotes block
+        self.assertIn('id="citesec-aosp-14"', out)
+
+    def test_enhance_references_footnote_cite_aside_wrapper(self):
+        # pandoc 3.1.3 (Ubuntu 24.04 apt, the CSR selftest + content-deploy pandoc)
+        # wraps the end-of-document footnotes in <aside ...>, not the <section ...> of
+        # pandoc >= 3.1.11. The marker-section attribution must work for EITHER wrapper
+        # -- the CSR pandoc is not version-pinned. RED before _footnotes_span matched
+        # <aside> too (span not found -> in-footnote cite mapped to the wrong section,
+        # no citesec-aosp-14; this is exactly the CI selftest failure on PR #65).
+        body = (
+            '<h2 id="disc">14. Discussion</h2>'
+            '<p>Verdict: No<a href="#fn1" class="footnote-ref" id="fnref1" '
+            'role="doc-noteref"><sup>1</sup></a>.</p>'
+            '<h2 id="refs-h" class="unnumbered">References</h2>'
+            '<div id="refs"><div class="csl-entry">x</div></div>'
+            '<aside id="footnotes" class="footnotes footnotes-end-of-document" '
+            'role="doc-endnotes"><ol><li id="fn1"><p>A locked bootloader refuses '
+            'unsigned images <span class="citation">'
+            '<a href="#ref-aosp" role="doc-biblioref">[1]</a></span>.</p></li>'
+            '</ol></aside>')
+        out = g._enhance_references(body, {"aosp"}, {})
         self.assertIn('id="citesec-aosp-14"', out)
 
     def test_footnote_cite_multi_section_refs_attributed_to_all(self):

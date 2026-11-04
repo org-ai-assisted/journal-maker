@@ -882,7 +882,11 @@ def _source_date_epoch(m):
     try:
         dt = datetime.datetime.strptime(d, "%Y-%m-%d")
     except ValueError:
-        dt = datetime.datetime.strptime(d[:4] + "-01-01", "%Y-%m-%d")
+        # Calendar-invalid day/month -> Jan 1; a year datetime cannot represent
+        # (0000, the only out-of-range 4-digit the load_article regex accepts) ->
+        # clamped into [1, 9999], so this fallback itself can never re-raise.
+        yr = max(1, min(9999, int(d[:4])))
+        dt = datetime.datetime.strptime("%04d-01-01" % yr, "%Y-%m-%d")
     return int(dt.replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
@@ -2074,16 +2078,23 @@ def _augment_archive_anchor(inner, original, memento, date):
 
 
 def _footnotes_span(body_html):
-    """(start, end) of pandoc's end-of-document footnotes <section>, its close
-    depth-matched past any nested <section> (fail-safe to end-of-string on an
-    unbalanced open, like _refs_div_span); (-1, -1) if absent."""
-    m = re.search(r'<section\b[^>]*\bclass="[^"]*\bfootnotes\b[^"]*"', body_html)
+    """(start, end) of pandoc's end-of-document footnotes wrapper, its close
+    depth-matched past any nested same-tag element (fail-safe to end-of-string on
+    an unbalanced open, like _refs_div_span); (-1, -1) if absent. pandoc emits the
+    wrapper as either <section ... class="footnotes ..."> (>= 3.1.11) or <aside ...
+    class="footnotes ..."> (e.g. 3.1.3, Ubuntu 24.04's apt pandoc, which the CSR
+    selftest and content deploy both run). The CSR pandoc is NOT version-pinned, so
+    match either tag and depth-match that same tag -- else the span is missed and an
+    in-footnote citation is mis-attributed to the wrong section."""
+    m = re.search(r'<(section|aside)\b[^>]*\bclass="[^"]*\bfootnotes\b[^"]*"',
+                  body_html)
     if not m:
         return (-1, -1)
+    tag = m.group(1)
     start = m.start()
     depth = 0
-    for mo in re.finditer(r'<section\b|</section>', body_html[start:]):
-        depth += 1 if mo.group(0) == "<section" else -1
+    for mo in re.finditer(r'<%s\b|</%s>' % (tag, tag), body_html[start:]):
+        depth += 1 if mo.group(0) == "<" + tag else -1
         if depth == 0:
             return (start, start + mo.end())
     return (start, len(body_html))
