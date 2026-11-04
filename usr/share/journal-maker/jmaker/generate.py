@@ -2114,6 +2114,29 @@ _HTML_TAG_OR_ANCHOR_RE = re.compile(
     r'(<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>|<a\b[^>]*>.*?</a>|<[^>]+>)',
     re.S | re.I)
 _DIGITS_RE = re.compile(r'\d+')
+# A plain pandoc table-caption paragraph "<p>Table N. ...": anchored (id="tbl-N") so a
+# "Table N" reference can link to it. Captions carry no id of their own.
+_TBL_CAPTION_RE = re.compile(r'<p>(Table\s+(\d+)\.\s)')
+# A "Table N" / "Tables N and M" reference run, mirroring _SECTION_REF_RE: atomic
+# number, (?!\.\d) drops a dotted "Table 3.5" sub-number into a cited external work
+# while a sentence-ending "Table 3." still links; the connective run absorbs an
+# Oxford-comma list.
+_TABLE_REF_RE = re.compile(
+    r'\bTables?\s+(?>\d+)(?!\.\d)'
+    r'(?:(?>(?:\s*(?:,|and|through|to|&amp;|&)\s*)+)(?>\d+)(?!\.\d))*')
+# An appendix heading "<h2 id=...>Appendix X. ..." -> (id, letter). pandoc keeps the
+# letter (and a literal "." ) in the id, but the letter is read from the visible text.
+_APPENDIX_H2_RE = re.compile(
+    r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*Appendix\s+([A-Z])\b', re.I)
+# A single "Appendix X" reference. No connective run: the paper never lists
+# appendices, and a run would mis-link a post-comma capital (a variable or the
+# pronoun "I") as an appendix. (?!\.[A-Za-z0-9]) drops a dotted sub-appendix
+# ("Appendix A.1", external) like the section/table (?!\.\d) guard, while a
+# sentence-ending "Appendix A." still links. Group 1 is the kept-verbatim
+# keyword+space, group 2 the letter (only the letter is wrapped, so the "A" in
+# "Appendix" is never linked).
+_APPENDIX_REF_RE = re.compile(r'\b(Append(?:ix|ices)\s+)([A-Z])\b(?!\.[A-Za-z0-9])')
+_ID_ATTR_RE = re.compile(r'\bid="([^"]+)"')
 # A claim's `section` field names the paper section(s) a citation backs, e.g.
 # "Sec. 3", "Sec. 8, 12", "Secs. 5, 7", "Secs. 1, 2, and 3" (Oxford comma -> all
 # three), "Secs. 1 through 5" / "Sec. 1-3" / "Secs. 1 to 3" (a range -> every
@@ -2156,40 +2179,121 @@ def _claim_section_nums(section_str):
     return nums
 
 
-def _linkify_section_refs(body_html):
-    """Wrap the bare number in an in-text "Section N" reference with an anchor to the
-    matching <h2> (HTML ONLY -- md_to_pdf never calls this; hyperref already makes the
-    PDF ToC/links clickable). Only the digit is linked; the words Section(s)/and/
-    through and the commas stay plain text. A number with no matching heading stays
-    plain (keeps the broken-link gate honest), as does a sub-section reference
-    ("Section N.M", a pointer into a cited external work, not this paper's section N).
-    Each target gets a distinct accessible
-    name (aria-label="Section N") so the axe identical-links-same-purpose rule is
-    satisfied, and the visible digit is a substring of that label (label-in-name).
-    The citeproc reference container (<div id="refs">) is left untouched."""
-    anchors: dict[int, str] = {}
-    for mo in _SECTION_H2_RE.finditer(body_html):
-        anchors.setdefault(int(mo.group(2)), mo.group(1))
-    if not anchors:
+def _refs_div_span(body_html):
+    """(start, end) of the citeproc "<div id=\"refs\"> ... </div>" container, its
+    close matched past the nested csl-entry divs by depth. (-1, -1) if absent; an
+    unbalanced open fails safe to end-of-string (the whole tail treated as the div)."""
+    start = body_html.find('<div id="refs"')
+    if start == -1:
+        return (-1, -1)
+    depth = 0
+    for mo in re.finditer(r'<div\b|</div>', body_html[start:]):
+        depth += 1 if mo.group(0) == "<div" else -1
+        if depth == 0:
+            return (start, start + mo.end())
+    return (start, len(body_html))
+
+
+def _linkify_region(region, sec_anchors, tbl_anchors, app_anchors, app_heading_ids):
+    """Linkify Section/Table/Appendix refs in one non-refs region. Each ref type is a
+    SEPARATE pass that re-splits tags/anchors/code, so a later pass can never rewrite
+    inside an anchor an earlier pass inserted (no cross-pass splice). Only the
+    number/letter is wrapped; a ref with no matching target stays plain (honest
+    broken-link gate). Each target gets a distinct aria-label (axe
+    identical-links-same-purpose), with the visible number/letter a substring of the
+    label (label-in-name)."""
+    def link_num(anchors, label):
+        def repl(mo):
+            a = anchors.get(int(mo.group(0)))
+            return mo.group(0) if a is None else (
+                '<a href="#%s" aria-label="%s %s">%s</a>'
+                % (a, label, mo.group(0), mo.group(0)))
+        return repl
+
+    def pass_over(region, make_text):
+        parts = _HTML_TAG_OR_ANCHOR_RE.split(region)
+        for i in range(0, len(parts), 2):
+            parts[i] = make_text(parts[i], parts[i - 1] if i > 0 else "")
+        return "".join(parts)
+
+    def sec_text(text, _prev):
+        return _SECTION_REF_RE.sub(
+            lambda m: _DIGITS_RE.sub(link_num(sec_anchors, "Section"), m.group(0)),
+            text)
+
+    def tbl_text(text, prev):
+        # A caption's own leading "Table N." label must not self-link, but a table it
+        # cites must.
+        if re.match(r'<p id="tbl-\d+">', prev):
+            lead = re.match(r'(Table\s+\d+\.\s)', text)
+            head, rest = (lead.group(1), text[lead.end():]) if lead else ("", text)
+            return head + _TABLE_REF_RE.sub(
+                lambda m: _DIGITS_RE.sub(link_num(tbl_anchors, "Table"), m.group(0)),
+                rest)
+        return _TABLE_REF_RE.sub(
+            lambda m: _DIGITS_RE.sub(link_num(tbl_anchors, "Table"), m.group(0)), text)
+
+    def app_repl(mo):
+        a = app_anchors.get(mo.group(2).upper())
+        return mo.group(0) if a is None else (
+            '%s<a href="#%s" aria-label="Appendix %s">%s</a>'
+            % (mo.group(1), a, mo.group(2), mo.group(2)))
+
+    def app_text(text, prev):
+        # An appendix heading's own text is its label -- never self-link it (robust to
+        # any heading punctuation: "Appendix A", "Appendix A:", "Appendix A.").
+        mid = _ID_ATTR_RE.search(prev)
+        if re.match(r'<h2\b', prev, re.I) and mid and mid.group(1) in app_heading_ids:
+            return text
+        return _APPENDIX_REF_RE.sub(app_repl, text)
+
+    region = pass_over(region, sec_text)
+    region = pass_over(region, tbl_text)
+    return pass_over(region, app_text)
+
+
+def _linkify_cross_refs(body_html):
+    """Link in-text "Section N" / "Table N" / "Appendix X" cross-references to their
+    targets (HTML ONLY -- md_to_pdf never calls this; hyperref already makes the PDF
+    ToC/links clickable). The citeproc reference container (<div id="refs">) is left
+    untouched; everything AROUND it -- including the appendices, which follow
+    References -- is linkified. Table captions are anchored (id="tbl-N") ONLY outside
+    that container, so a source quote beginning "Table N." never becomes a target."""
+    rs, re_ = _refs_div_span(body_html)
+    pre, refs, post = ((body_html, "", "") if rs == -1
+                       else (body_html[:rs], body_html[rs:re_], body_html[re_:]))
+
+    # Anchor table captions outside the refs div, int-normalized, never colliding with
+    # an existing element id.
+    existing_ids = set(_ID_ATTR_RE.findall(body_html))
+    tbl_anchors: dict[int, str] = {}
+    for slc in (pre, post):
+        for mo in _TBL_CAPTION_RE.finditer(slc):
+            n = int(mo.group(2))
+            if ("tbl-%d" % n) not in existing_ids and n not in tbl_anchors:
+                tbl_anchors[n] = "tbl-%d" % n
+
+    def anchor_captions(slc):
+        return _TBL_CAPTION_RE.sub(
+            lambda mo: ('<p id="tbl-%d">%s' % (int(mo.group(2)), mo.group(1))
+                        if tbl_anchors.get(int(mo.group(2))) else mo.group(0)),
+            slc)
+    pre, post = anchor_captions(pre), anchor_captions(post)
+
+    sec_anchors: dict[int, str] = {}
+    app_anchors: dict[str, str] = {}
+    app_heading_ids: set[str] = set()
+    for slc in (pre, post):
+        for mo in _SECTION_H2_RE.finditer(slc):
+            sec_anchors.setdefault(int(mo.group(2)), mo.group(1))
+        for mo in _APPENDIX_H2_RE.finditer(slc):
+            app_anchors.setdefault(mo.group(2).upper(), mo.group(1))
+            app_heading_ids.add(mo.group(1))
+    if not (sec_anchors or tbl_anchors or app_anchors):
         return body_html
-    idx = body_html.find('<div id="refs"')
-    prefix = body_html if idx == -1 else body_html[:idx]
-    suffix = "" if idx == -1 else body_html[idx:]
 
-    def link_number(mo):
-        anchor = anchors.get(int(mo.group(0)))
-        if anchor is None:
-            return mo.group(0)
-        return ('<a href="#%s" aria-label="Section %s">%s</a>'
-                % (anchor, mo.group(0), mo.group(0)))
-
-    def link_span(mo):
-        return _DIGITS_RE.sub(link_number, mo.group(0))
-
-    parts = _HTML_TAG_OR_ANCHOR_RE.split(prefix)
-    for i in range(0, len(parts), 2):
-        parts[i] = _SECTION_REF_RE.sub(link_span, parts[i])
-    return "".join(parts) + suffix
+    args = (sec_anchors, tbl_anchors, app_anchors, app_heading_ids)
+    return _linkify_region(pre, *args) + refs + _linkify_region(post, *args)
 
 
 def _latex_menu(tex_formats, href_of):
@@ -2256,7 +2360,7 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
     body_html = md_to_html_fragment(m["_body_md"], bib_path if has_bib else None)
     body_html = _enhance_references(body_html, sidecar_keys or set(),
                                     quote_blocks or {}, archive_map or {})
-    body_html = _linkify_section_refs(body_html)
+    body_html = _linkify_cross_refs(body_html)
     # A sidecar entry that presents <key> as cited -- a claim section pill linking
     # ../#cite-<key>, or a no_quote "Remaining references" line whose note says
     # "cited but no verbatim text" -- requires the paper to actually cite <key>.

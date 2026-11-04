@@ -2505,7 +2505,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             '<p>See Section 9 and Sections 8 and 12. Section 99 is out of range. '
             'An <a href="#detect">existing Section 9 link</a> stays.</p>'
             '<div id="refs"><div class="csl-entry">Cites Section 9 here.</div></div>')
-        out = g._linkify_section_refs(body)
+        out = g._linkify_cross_refs(body)
         # mapped numbers: only the digit linked, unique aria per target
         self.assertIn('See Section <a href="#detect" aria-label="Section 9">9</a> and',
                       out)
@@ -2534,7 +2534,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             '<h2 id="big">35. Big Section</h2>'
             '<p>Internal: see Section 3 alone. At the end Section 3. '
             'External: (Section 3.5) and Section 35.5 are sub-section refs.</p>')
-        out = g._linkify_section_refs(body)
+        out = g._linkify_cross_refs(body)
         # bare top-level ref links; sentence-ending period still links
         self.assertIn('see Section <a href="#tm" aria-label="Section 3">3</a> alone', out)
         self.assertIn('the end Section <a href="#tm" aria-label="Section 3">3</a>. ', out)
@@ -2554,7 +2554,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
             '<p>As in Sections 8, 10, and 13 we note things. '
             'Run <code>grep Section 3 file</code> next.</p>'
             '<pre><code>see Section 3 for setup</code></pre>')
-        out = g._linkify_section_refs(body)
+        out = g._linkify_cross_refs(body)
         # every number in the Oxford-comma run links; connectives stay intact
         self.assertIn('Sections <a href="#s8" aria-label="Section 8">8</a>, '
                       '<a href="#s10" aria-label="Section 10">10</a>, and '
@@ -2570,13 +2570,13 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # jumping to the 3.2 heading. RED on the pre-(?!\d)-guard _SECTION_H2_RE.
         body = ('<h2 id="sub">3.2. Methods detail</h2>'
                 '<p>As discussed in Section 3 above.</p>')
-        out = g._linkify_section_refs(body)
+        out = g._linkify_cross_refs(body)
         self.assertIn('in Section 3 above', out)
         self.assertNotIn('<a href="#sub"', out)
         self.assertNotIn('aria-label="Section 3"', out)
 
     def test_section_refs_linked_in_full_build(self):
-        # Wiring guard: render_article must call _linkify_section_refs, so a numbered
+        # Wiring guard: render_article must call _linkify_cross_refs, so a numbered
         # section referenced in prose is clickable in the built page. RED if the
         # call-site is removed (the helper-only test would still pass).
         with tempfile.TemporaryDirectory() as d:
@@ -2594,6 +2594,167 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 page = fh.read()
         self.assertIn('aria-label="Section 2">2</a>', page)
         self.assertIn('Section <a href="#', page)
+
+    def test_linkify_cross_refs_appendix_after_refs(self):
+        # Regression: an appendix follows the citeproc <div id="refs"> container, and
+        # its in-text "Section N" refs must still linkify. RED on the old prefix/suffix
+        # split, which linkified only the text BEFORE the refs div and appended the
+        # rest (the appendices) verbatim -- so Appendix B section mentions were plain.
+        body = (
+            '<h2 id="s7">7. Storage</h2><h2 id="s9">9. Rootkits</h2>'
+            '<h2 id="s13">13. Inspection</h2>'
+            '<p>Body ref to Section 7.</p>'
+            '<h2 class="unnumbered" id="references">References</h2>'
+            '<div id="refs"><div class="csl-entry">A work on Section 7.</div></div>'
+            '<h2 class="unnumbered" id="app-b">Appendix B. Rooting</h2>'
+            '<p>treated in the body (Sections 7, 9, 10, 11) and, as Section 13 notes.</p>')
+        out = g._linkify_cross_refs(body)
+        appb = out.split('id="app-b"', 1)[1]
+        self.assertIn('<a href="#s7" aria-label="Section 7">7</a>', appb)
+        self.assertIn('<a href="#s9" aria-label="Section 9">9</a>', appb)
+        self.assertIn('<a href="#s13" aria-label="Section 13">13</a>', appb)
+        # unmapped (no section-10/11 heading) stays plain -- broken-link gate honest
+        self.assertNotIn('aria-label="Section 10"', appb)
+        # the refs-div interior is still left verbatim
+        self.assertIn('<div id="refs"><div class="csl-entry">A work on Section 7.'
+                      '</div></div>', out)
+        self.assertEqual(self._link_collisions(out), [])
+        self.assertEqual(self._label_in_name_bad(out), [])
+
+    def test_linkify_table_refs(self):
+        # "Table N" references link to the matching caption paragraph (anchored
+        # id="tbl-N"); only the digit links. The caption's OWN label does not
+        # self-link, but a "Table M" the caption cites does; a sentence-ending period
+        # still links; an unmapped number stays plain. RED before table linking.
+        body = (
+            '<p>As summarized in Table 2. See also Tables 1 and 2.</p>'
+            '<p>Table 1. First caption.</p>'
+            '<p>Table 2. Second, citing the Table 1 data.</p>')
+        out = g._linkify_cross_refs(body)
+        # prose refs link (incl. the sentence-ending "Table 2.")
+        self.assertIn('summarized in Table <a href="#tbl-2" aria-label="Table 2">2</a>. ',
+                      out)
+        self.assertIn('Tables <a href="#tbl-1" aria-label="Table 1">1</a> and '
+                      '<a href="#tbl-2" aria-label="Table 2">2</a>', out)
+        # captions are anchored, and their leading label is NOT self-linked
+        self.assertIn('<p id="tbl-1">Table 1. First caption.</p>', out)
+        self.assertIn('<p id="tbl-2">Table 2. Second, citing', out)
+        # the "Table 1" the caption CITES does link
+        self.assertIn('citing the Table <a href="#tbl-1" aria-label="Table 1">1</a> data',
+                      out)
+        self.assertEqual(self._link_collisions(out), [])
+        self.assertEqual(self._label_in_name_bad(out), [])
+
+    def test_linkify_appendix_refs(self):
+        # "Appendix X" references link to the matching appendix <h2>; only the letter
+        # links. The appendix heading's OWN label does not self-link; an unmapped
+        # letter stays plain. RED before appendix linking.
+        body = (
+            '<p>See Appendix A and Appendix B. Appendix C is absent.</p>'
+            '<h2 class="unnumbered" id="app-a.-keys">Appendix A. Keys</h2>'
+            '<p>Body.</p>'
+            '<h2 class="unnumbered" id="app-b.-rooting">Appendix B. Rooting</h2>')
+        out = g._linkify_cross_refs(body)
+        self.assertIn('See Appendix <a href="#app-a.-keys" aria-label="Appendix A">A</a>',
+                      out)
+        self.assertIn('Appendix <a href="#app-b.-rooting" aria-label="Appendix B">B</a>',
+                      out)
+        # unmapped letter stays plain (no Appendix C heading)
+        self.assertNotIn('aria-label="Appendix C"', out)
+        # appendix headings are not self-linked
+        self.assertIn('>Appendix A. Keys</h2>', out)
+        self.assertIn('>Appendix B. Rooting</h2>', out)
+        self.assertEqual(self._link_collisions(out), [])
+        self.assertEqual(self._label_in_name_bad(out), [])
+
+    def test_cross_refs_linked_after_refs_in_full_build(self):
+        # End-to-end wiring: a real citeproc refs div sits before the appendix, and a
+        # table caption is a plain paragraph. The appendix's "Section 1" ref and a
+        # "Table 1" ref must be clickable in the built page. RED if the refs-div-span
+        # fix or the table/caption linking regresses.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            adir = os.path.join(d, "articles", "art")
+            with open(os.path.join(adir, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@misc{k, title={{T}}, author={A}, year={2020}, "
+                         "url={https://example.org}}\n")
+            with open(os.path.join(adir, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write(
+                    "# T\n\n## Abstract\n\nA sufficiently long abstract for the "
+                    "validation step here.\n\n"
+                    "## 1. Intro\n\nText [@k] and see Table 1.\n\n"
+                    "Table 1. A caption.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+                    "## References\n\n::: {#refs}\n:::\n\n"
+                    "## Appendix A. Extra\n\nAs Section 1 and Table 1 show.\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+        appendix = page.split("Appendix A", 1)[1]
+        # the appendix (after the refs div) links its Section 1 and Table 1 refs
+        self.assertIn('aria-label="Section 1">1</a>', appendix)
+        self.assertIn('aria-label="Table 1">1</a>', appendix)
+
+    def test_linkify_table_caption_in_refs_not_targeted(self):
+        # A source quote inside the citeproc refs container that begins "Table N."
+        # must NOT be anchored as tbl-N, and a prose "Table N" with no REAL table must
+        # stay plain. Caption discovery runs only outside _refs_div_span.
+        body = ('<p>See Table 1.</p>'
+                '<div id="refs"><div class="csl-quote"><blockquote>'
+                '<p>Table 1. External source text.</p></blockquote></div></div>')
+        out = g._linkify_cross_refs(body)
+        self.assertNotIn('id="tbl-1"', out)
+        self.assertNotIn('href="#tbl-1"', out)
+        self.assertIn('<p>Table 1. External source text.</p>', out)
+
+    def test_linkify_appendix_heading_not_self_linked_any_punctuation(self):
+        # An appendix heading's own label must never self-link, regardless of trailing
+        # punctuation ("Appendix A", "Appendix A:", "Appendix A."). The prose ref still
+        # links.
+        for head in ('<h2 id="app-a">Appendix A</h2>',
+                     '<h2 id="app-a">Appendix A: Keys</h2>',
+                     '<h2 id="app-a">Appendix A.</h2>'):
+            out = g._linkify_cross_refs(head + '<p>See Appendix A here.</p>')
+            heading, prose = out.split('</h2>', 1)
+            self.assertNotIn('<a', heading)
+            self.assertIn('<a href="#app-a" aria-label="Appendix A">A</a>', prose)
+
+    def test_linkify_appendix_subref_stays_plain(self):
+        # A dotted sub-appendix ref into an external work ("Appendix A.1") stays plain,
+        # like Section/Table sub-refs; a sentence-ending "Appendix A." still links.
+        body = ('<h2 id="app-a">Appendix A. Proofs</h2>'
+                '<p>See Appendix A.1 in the source. But Appendix A. links.</p>')
+        prose = g._linkify_cross_refs(body).split('</h2>', 1)[1]
+        self.assertIn('See Appendix A.1 in the source', prose)
+        self.assertIn('Appendix <a href="#app-a" aria-label="Appendix A">A</a>. links',
+                      prose)
+
+    def test_linkify_appendix_postcomma_capital_stays_plain(self):
+        # A capitalized variable/pronoun after a comma ("In Appendix A, B is ...") must
+        # NOT be linked as Appendix B even when Appendix B exists (appendix refs are
+        # singular, no connective run).
+        body = ('<h2 id="app-a">Appendix A. P</h2><h2 id="app-b">Appendix B. D</h2>'
+                '<p>In Appendix A, B is the set.</p>')
+        prose = g._linkify_cross_refs(body).split('Appendix B. D</h2>', 1)[1]
+        self.assertIn('<a href="#app-a" aria-label="Appendix A">A</a>', prose)
+        self.assertNotIn('href="#app-b"', prose)
+        self.assertIn(', B is the set', prose)
+
+    def test_linkify_no_cross_pass_splice(self):
+        # Pathological: a heading id containing a space and the word "Appendix" must not
+        # let the appendix pass rewrite inside the href the section pass just inserted.
+        body = ('<h2 id="Appendix A">1. Intro</h2>'
+                '<h2 id="app-a">Appendix A. Keys</h2><p>See Section 1.</p>')
+        out = g._linkify_cross_refs(body)
+        self.assertEqual(re.findall(r'href="#[^"]*<a', out), [])
+
+    def test_linkify_table_caption_id_collision_skipped(self):
+        # If a heading already carries id="tbl-N" (pandoc auto-id of a heading named
+        # "Tbl N"), the caption is NOT re-anchored to the same id -- no duplicate id.
+        body = ('<h2 id="tbl-1">2. Tbl 1</h2><p>See Table 1.</p>'
+                '<p>Table 1. Real caption.</p>')
+        out = g._linkify_cross_refs(body)
+        self.assertEqual(out.count('id="tbl-1"'), 1)
 
     def test_enhance_references_decodes_nonascii_key(self):
         # A non-ASCII citekey is ASCII-entity-encoded in body_html, but the sidecar
