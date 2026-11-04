@@ -3027,6 +3027,31 @@ class TestCheckSiteDiscovery(unittest.TestCase):
                 page = fh.read()
         self.assertIn('id="citesec-beta-1"', page)
 
+    def test_back_to_top_control_in_full_build(self):
+        # The back-to-top control is emitted on every page (<body id="top"> target +
+        # a fixed <a class="back-to-top" href="#top">), with its CSS in style.css and
+        # its reveal/smooth-scroll JS in site.js. RED before the back-to-top wiring.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            with open(os.path.join(d, "articles", "art", "paper.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nBody.\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+            with open(os.path.join(out, "assets", "style.css"), encoding="utf-8") as fh:
+                css = fh.read()
+            with open(os.path.join(out, "assets", "site.js"), encoding="utf-8") as fh:
+                js = fh.read()
+        self.assertIn('<body id="top">', page)
+        self.assertIn('class="back-to-top" href="#top"', page)
+        self.assertIn('aria-label="Back to top of the page"', page)
+        self.assertIn('.back-to-top {', css)
+        self.assertIn('.back-to-top', js)
+        self.assertIn('scrollTo', js)
+
     def test_citation_quote_store_for_hovercards(self):
         # The verbatim quote for a cited key is INLINED in that key's reference
         # entry (.csl-quote) -- one source, shared by the reference area and the

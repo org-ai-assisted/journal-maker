@@ -1658,7 +1658,8 @@ def _icon_links(root_rel):
 
 def _page(lang, head_title, description, canonical, extra_head, body,
           journal, root_rel):
-    from jmaker.templates import STYLE_CSS, site_header, site_footer  # noqa
+    from jmaker.templates import (STYLE_CSS, site_header, site_footer,  # noqa
+                                   BACK_TO_TOP_HTML)
     robots = ('<meta name="robots" content="noindex">\n'
               if journal.get("_no_index") else "")
     return (
@@ -1677,9 +1678,9 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         "%s\n"
         '<link rel="stylesheet" href="%sassets/style.css">\n'
         '<script src="%sassets/site.js" defer></script>\n'
-        "</head>\n<body>\n"
+        '</head>\n<body id="top">\n'
         '<a class="skip-link" href="#main">Skip to content</a>\n'
-        "%s\n%s\n%s\n</body>\n</html>\n"
+        "%s\n%s\n%s\n%s\n</body>\n</html>\n"
     ) % (
         html.escape(lang), _csp_meta(), robots, html.escape(head_title),
         html.escape(description),
@@ -1687,7 +1688,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         html.escape(journal["title"], quote=True), root_rel,
         extra_head, _icon_links(root_rel), root_rel, root_rel,
         site_header(journal["title"], _site_root(journal)), body,
-        site_footer(journal, _site_root(journal)),
+        site_footer(journal, _site_root(journal)), BACK_TO_TOP_HTML,
     )
 
 

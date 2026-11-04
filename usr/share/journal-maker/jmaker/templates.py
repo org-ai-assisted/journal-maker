@@ -390,13 +390,30 @@ ul.browse li { padding: 0.35rem 0; border-bottom: 1px solid var(--rule); font-fa
 ul.previews { list-style: none; padding: 0; }
 ul.previews li { padding: 0.6rem 0; border-bottom: 1px solid var(--rule); font-size: 1.05rem; }
 ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--sans); margin-left: 0.5rem; }
+/* Back-to-top floating control: fixed bottom-right, hidden until SITE_JS reveals it
+   past 400px of scroll (progressive -- the <a href="#top"> jumps to top with no JS). */
+.back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--surface); text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); transition: opacity 0.15s ease, background 0.12s ease; }
+.back-to-top:hover, .back-to-top:focus-visible { background: var(--fg); color: var(--surface); }
+.back-to-top[hidden] { display: none; }
 @media print {
   :root { --bg: #ffffff; --fg: #000000; }
   a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.8em; word-break: break-all; }
-  nav.toc, .actions, details.cite-this, .skip-link, .status-pill-row { display: none; }
+  nav.toc, .actions, details.cite-this, .skip-link, .status-pill-row, .back-to-top-nav { display: none; }
   h1, h2, h3, figure { break-inside: avoid; }
 }
 """
+
+
+# Back-to-top control markup: a static <a href="#top"> (works with no JS -- #top is
+# the <body id="top">), enhanced by SITE_JS. Inline SVG chevron (no icon font).
+BACK_TO_TOP_HTML = (
+    '<nav class="back-to-top-nav" aria-label="Back to top">'
+    '<a class="back-to-top" href="#top" aria-label="Back to top of the page">'
+    '<svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" '
+    'focusable="false"><path d="M5 12.5l5-5 5 5" fill="none" stroke="currentColor" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    '</a></nav>'
+)
 
 
 def site_header(journal_title, site_root):
@@ -627,6 +644,25 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     imgs[k].classList.add("zoomable");
     imgs[k].addEventListener("click", function (e) { lightbox(e.currentTarget); });
   }
+
+  // Back-to-top: reveal past 400px of scroll, auto-hide 2s after scrolling stops,
+  // smooth-scroll on click. Progressive -- the <a href="#top"> works with no JS.
+  (function () {
+    var btn = document.querySelector(".back-to-top");
+    if (!btn) { return; }
+    btn.hidden = true;
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+    var idle = null;
+    window.addEventListener("scroll", function () {
+      if (window.scrollY < 400) { btn.hidden = true; return; }
+      btn.hidden = false;
+      clearTimeout(idle);
+      idle = setTimeout(function () { btn.hidden = true; }, 2000);
+    }, { passive: true });
+  })();
 })();
 """
 
