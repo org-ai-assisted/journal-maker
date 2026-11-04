@@ -3734,6 +3734,11 @@ class TestArchiveSidecar(unittest.TestCase):
     def test_norm_url_for_compare(self):
         n = g._norm_url_for_compare
         self.assertEqual(n("https://a.example/x/"), n("https://a.example/x"))
+        # ROOT url: a bare host and a lone "/" are equivalent (RFC 3986 6.2.3); Wayback
+        # canonicalizes the embedded original WITH the slash, so a bib url written without
+        # one must still match its own snapshot. Regression: the old len(path)>1 guard left
+        # the root "/" on, so every root url was wrongly rejected as a different-url memento.
+        self.assertEqual(n("https://a.example/"), n("https://a.example"))
         self.assertEqual(n("https://A.Example/x"), n("https://a.example/x"))
         self.assertEqual(n("https://a.example/%7Ex"), n("https://a.example/~x"))  # unreserved
         # a reserved octet stays escaped: a%2Fb must NOT compare equal to a/b, so a memento
@@ -3788,6 +3793,12 @@ class TestArchiveSidecar(unittest.TestCase):
         self.assertEqual(
             g._checked_memento("d", "alpha", {"memento": _GOOD_MEM}, "https://a.example/x/"),
             _GOOD_MEM)
+        # ROOT url: Wayback embeds the original WITH a slash; a root bib url without one must
+        # still match (regression -- previously rejected, forcing every root url to no_memento).
+        root_mem = "https://web.archive.org/web/20260102030405/https://a.example/"
+        self.assertEqual(
+            g._checked_memento("d", "alpha", {"memento": root_mem}, "https://a.example"),
+            root_mem)
 
     def test_gate_matches_when_bib_url_is_itself_a_memento(self):
         # refs.bib url already a Wayback memento -> compare against its embedded original.

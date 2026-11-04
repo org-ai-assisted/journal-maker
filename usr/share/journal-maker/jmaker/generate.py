@@ -331,8 +331,11 @@ def _norm_url_for_compare(url):
     build / render no link), never be papered over into a fabricated archive link. Shared by
     the honesty gate and the archiver so the archiver never stores what the gate rejects."""
     sp = urlsplit(_decode_unreserved(url.strip()))
+    # Drop a single trailing slash, INCLUDING a lone root "/" (an empty path and "/" are
+    # equivalent per RFC 3986 6.2.3, and Wayback canonicalizes a bare-host original WITH the
+    # slash) -- so a root bib url written without one still matches its own snapshot.
     path = sp.path
-    if len(path) > 1 and path.endswith("/"):
+    if path.endswith("/"):
         path = path[:-1]
     return urlunsplit((sp.scheme.lower(), sp.netloc.lower(), path,
                        sp.query, sp.fragment))
