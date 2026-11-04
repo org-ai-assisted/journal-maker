@@ -2021,6 +2021,22 @@ def _augment_archive_anchor(inner, original, memento, date):
     return inner, False
 
 
+def _footnotes_span(body_html):
+    """(start, end) of pandoc's end-of-document footnotes <section>, its close
+    depth-matched past any nested <section> (fail-safe to end-of-string on an
+    unbalanced open, like _refs_div_span); (-1, -1) if absent."""
+    m = re.search(r'<section\b[^>]*\bclass="[^"]*\bfootnotes\b[^"]*"', body_html)
+    if not m:
+        return (-1, -1)
+    start = m.start()
+    depth = 0
+    for mo in re.finditer(r'<section\b|</section>', body_html[start:]):
+        depth += 1 if mo.group(0) == "<section" else -1
+        if depth == 0:
+            return (start, start + mo.end())
+    return (start, len(body_html))
+
+
 def _enhance_references(body_html, sidecar_keys, quote_blocks=None, archive_map=None):
     """Cross-link + enrich the citeproc reference list (HTML ONLY, never the PDF --
     md_to_pdf never calls this, and the quotes live in the sidecar, not paper.md):
@@ -2053,7 +2069,7 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None, archive_map=
                        int(mo.group(1)) if mo.group(1) else None)
                       for mo in _H2_ANY_RE.finditer(body_html))
 
-    def _section_at(pos):
+    def _section_positional(pos):
         sec = None
         for hpos, num in headings:
             if hpos <= pos:
@@ -2061,6 +2077,33 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None, archive_map=
             else:
                 break
         return sec
+
+    # Footnote definitions render in an unnumbered <section> at document end, so a
+    # citation pandoc placed INSIDE a footnote would map to no section. Attribute it
+    # to the section of the footnote's in-body [^id] reference marker instead, so a
+    # cite moved into a footnote still counts under the section that references it
+    # (the sources-card "Sec. N" pill and the claim gate both key off citesec-<key>-N).
+    fn_marker_sec = {}
+    for mo in re.finditer(r'<a\b[^>]*\bclass="footnote-ref"[^>]*>', body_html):
+        href = re.search(r'\bhref="#(fn\d+)"', mo.group(0))
+        if href:
+            fn_marker_sec[href.group(1)] = _section_positional(mo.start())
+    fn_lo, fn_hi = _footnotes_span(body_html)
+    fn_li = sorted((m.start(), m.group(1))
+                   for m in re.finditer(r'<li id="(fn\d+)"', body_html)
+                   if fn_lo <= m.start() < fn_hi)
+
+    def _section_at(pos):
+        if fn_lo <= pos < fn_hi:
+            fid = None
+            for lpos, name in fn_li:
+                if lpos <= pos:
+                    fid = name
+                else:
+                    break
+            if fid is not None and fid in fn_marker_sec:
+                return fn_marker_sec[fid]
+        return _section_positional(pos)
 
     def id_first(mo):
         key = mo.group(1)

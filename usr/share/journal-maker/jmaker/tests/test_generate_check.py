@@ -2873,6 +2873,54 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('href="sources/#m&#252;ller"', out)
         self.assertIn('>full card</a>', out)
 
+    def test_enhance_references_footnote_cite_uses_marker_section(self):
+        # A citation pandoc rendered inside a footnote DEFINITION (appended in the
+        # unnumbered end-of-document footnotes <section>) must be attributed to the
+        # section of its [^id] reference MARKER, not the def's position. Without this
+        # a cite moved into a footnote maps to no section (None) -> no citesec anchor
+        # -> the sources-card "Sec. N" pill and the claim gate break. RED before the
+        # footnote-marker section attribution in _enhance_references.
+        body = (
+            '<h2 id="disc">14. Discussion</h2>'
+            '<p>Verdict: No<a href="#fn1" class="footnote-ref" id="fnref1" '
+            'role="doc-noteref"><sup>1</sup></a>.</p>'
+            '<h2 id="refs-h" class="unnumbered">References</h2>'
+            '<div id="refs"><div class="csl-entry">x</div></div>'
+            '<section id="footnotes" class="footnotes footnotes-end-of-document" '
+            'role="doc-endnotes"><ol><li id="fn1"><p>A locked bootloader refuses '
+            'unsigned images <span class="citation">'
+            '<a href="#ref-aosp" role="doc-biblioref">[1]</a></span>.</p></li>'
+            '</ol></section>')
+        out = g._enhance_references(body, {"aosp"}, {})
+        # attributed to the marker's section 14, not the unnumbered footnotes block
+        self.assertIn('id="citesec-aosp-14"', out)
+
+    def test_footnote_cite_counts_in_marker_section_full_build(self):
+        # End-to-end (dev1355's scenario): a [@cite] moved INTO a footnote whose [^id]
+        # marker sits in section 1, with a source-quotes claim naming "Sec. 1", must
+        # BUILD -- the footnote cite is attributed to the marker's section so the claim
+        # gate finds citesec-beta-1. RED before the footnote-marker attribution (build
+        # raised BuildError: "@beta claims Sec. 1 but no #citesec-beta-1 anchor").
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            ad = os.path.join(d, "articles", "art")
+            with open(os.path.join(ad, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write(_BIB)
+            with open(os.path.join(ad, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write("# T\n\n## Abstract\n\nA sufficiently long abstract for "
+                         "validation here.\n\n## 1. Intro\n\nThe device is locked.[^fb]"
+                         "\n\n[^fb]: A locked bootloader refuses unsigned images "
+                         "[@beta].\n\n## 2. References\n\n::: {#refs}\n:::\n")
+            with open(os.path.join(ad, "source-quotes.toml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('[beta]\nclaims = [{ section = "Sec. 1", text = "x" }]\n'
+                         'quotes = [{ text = "q" }]\n')
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)  # must not raise
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+        self.assertIn('id="citesec-beta-1"', page)
+
     def test_citation_quote_store_for_hovercards(self):
         # The verbatim quote for a cited key is INLINED in that key's reference
         # entry (.csl-quote) -- one source, shared by the reference area and the
