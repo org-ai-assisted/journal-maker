@@ -3118,9 +3118,11 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # fights the JS focus-guard; SITE_JS marks the document js-capable to disable it.
         self.assertIn(':root:not(.js) .back-to-top', css)
         self.assertIn('classList.add("js")', js)
-        # visibility (not opacity alone) keeps the hidden control out of the tab order
-        # and non-clickable (no invisible focus stop / click target).
+        # Discrete visibility flip (no opacity fade) keeps the hidden control out of the
+        # tab order / non-clickable, and never interactive-while-faint: the control is
+        # either fully hidden or fully shown, matching the JS path's instant toggle.
         self.assertIn('visibility: hidden; animation: back-to-top-reveal', css)
+        self.assertNotIn('opacity: 0; visibility: hidden; animation', css)
 
     def test_footnote_hovercard_in_full_build(self):
         # A footnote marker gets a hovercard preview of the note, reusing the

@@ -400,17 +400,21 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
 /* No-JS reveal floor -- a pure progressive-enhancement fallback. SITE_JS adds the `js`
    class to the root, so with JS this NEVER applies: the script then owns [hidden]
    entirely and its focus-guard / idle-hide can never be overridden by a competing CSS
-   reveal. With no JS it reveals the control past the JS 400px threshold instead of
-   leaving it stuck visible at the top. visibility (not opacity alone) carries the hide
-   so a hidden control is neither focusable nor clickable: on a short page the scroll
-   timeline is inactive and the animation drops out to the visibility:hidden base (no
-   invisible click target), and below the threshold the control is out of the tab order
-   (no invisible focus stop). The @supports guard is REQUIRED: without scroll timelines
-   the animation binds to the time timeline and would stick the control hidden -- so
-   unsupported browsers fall through to the always-visible base. */
+   reveal. With no JS the control reveals once scrolled past the JS 400px threshold
+   instead of sitting stuck visible at the top. A DISCRETE visibility flip (not an
+   opacity fade): visibility carries the whole state, so the control is either fully
+   hidden -- out of the tab order, no click target, no faint focus stop -- or fully
+   shown, mirroring the JS path's instant toggle and never interactive-while-faint
+   (an opacity fade is `visible` throughout, so it would be clickable at ~0 opacity).
+   visibility flips to `visible` for any scroll progress past the range start, so the
+   400px start IS the reveal point (the 440px end is nominal). On a short page the scroll
+   timeline is inactive and the animation drops out to the visibility:hidden base. The
+   @supports guard is REQUIRED: without scroll timelines the animation binds to the time
+   timeline and would stick the control hidden -- so unsupported browsers fall through
+   to the always-visible base. */
 @supports (animation-timeline: scroll()) {
-  :root:not(.js) .back-to-top { opacity: 0; visibility: hidden; animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 380px 400px; }
-  @keyframes back-to-top-reveal { from { opacity: 0; visibility: hidden; } to { opacity: 1; visibility: visible; } }
+  :root:not(.js) .back-to-top { visibility: hidden; animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 400px 440px; }
+  @keyframes back-to-top-reveal { from { visibility: hidden; } to { visibility: visible; } }
 }
 @media print {
   :root { --bg: #ffffff; --fg: #000000; }
