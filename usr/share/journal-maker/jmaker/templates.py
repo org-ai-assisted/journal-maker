@@ -645,7 +645,16 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       if (ni < 0 || ni >= order.length) { return; }
       cancelHide();
       pinned = true;
+      var hadFocusInside = card.contains(document.activeElement);
       populate(ni);
+      // populate() replaces the body, so a focused body link (e.g. a reference DOI/URL
+      // in the citation card) is removed and the browser drops focus to <body>, which
+      // would stall further arrow stepping. If focus was inside the card, move it to the
+      // nav button for the direction stepped -- it survives populate and stays focusable
+      // (end buttons are aria-disabled, not disabled) -- so keyboard stepping continues.
+      if (hadFocusInside && !card.contains(document.activeElement)) {
+        (delta < 0 ? cprev : cnext).focus({ preventScroll: true });
+      }
       // Keep a dragged card where the user put it; otherwise re-anchor on resize.
       if (curAnchor && !moved) { place(curAnchor); }
     }
@@ -849,9 +858,13 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       var li = document.getElementById(id);
       if (!li) { return null; }
       var clone = li.cloneNode(true);
-      var backs = clone.querySelectorAll(".footnote-back");
-      for (var i = 0; i < backs.length; i++) {
-        if (backs[i].parentNode) { backs[i].parentNode.removeChild(backs[i]); }
+      // Drop the back-reference arrow(s) (navigation chrome) AND any copy button that
+      // addCopy() already injected into a <pre> in the note: both are noise in a preview,
+      // and a .copy-btn cloned into this aria-hidden card would be a dead duplicate and a
+      // focusable control inside aria-hidden (the a11y trap the href strip below avoids).
+      var chrome = clone.querySelectorAll(".footnote-back, .copy-btn");
+      for (var i = 0; i < chrome.length; i++) {
+        if (chrome[i].parentNode) { chrome[i].parentNode.removeChild(chrome[i]); }
       }
       // The card is a DECORATIVE preview (aria-hidden, not in tab order): a keyboard
       // user reaches the note's real links by activating the marker (href="#fnN" ->

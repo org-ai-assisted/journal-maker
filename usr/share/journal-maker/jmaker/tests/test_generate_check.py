@@ -1206,6 +1206,13 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn('setAttribute("aria-disabled", "true")', js)
         self.assertNotIn("cprev.disabled", js)
         self.assertNotIn("cnext.disabled", js)
+        # Stepping while a body link held focus (e.g. a reference DOI/URL) removes it on
+        # populate; focus is kept in the card (moved to the direction's nav button) so
+        # arrow stepping does not stall.
+        self.assertIn("hadFocusInside", js)
+        # Footnote clones drop copy buttons addCopy injected into a note's <pre> (dead
+        # duplicate + focusable control inside the aria-hidden card), like .footnote-back.
+        self.assertIn(".footnote-back, .copy-btn", js)
         # Modified arrows (selection / history / word jump) are left to the browser.
         self.assertIn("e.altKey || e.ctrlKey || e.metaKey || e.shiftKey", js)
         # A single-target card keeps its nav bar as a drag grip (only the step controls
