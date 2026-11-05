@@ -3114,6 +3114,13 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('@supports (animation-timeline: scroll())', css)
         self.assertIn('animation-timeline: scroll(root)', css)
         self.assertIn('@keyframes back-to-top-reveal', css)
+        # JS-scoped (:root:not(.js)) so the floor is a pure no-JS fallback and never
+        # fights the JS focus-guard; SITE_JS marks the document js-capable to disable it.
+        self.assertIn(':root:not(.js) .back-to-top', css)
+        self.assertIn('classList.add("js")', js)
+        # visibility (not opacity alone) keeps the hidden control out of the tab order
+        # and non-clickable (no invisible focus stop / click target).
+        self.assertIn('visibility: hidden; animation: back-to-top-reveal', css)
 
     def test_footnote_hovercard_in_full_build(self):
         # A footnote marker gets a hovercard preview of the note, reusing the

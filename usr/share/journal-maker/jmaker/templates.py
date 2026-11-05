@@ -397,16 +397,20 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
 .back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--surface); text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); transition: opacity 0.15s ease, background 0.12s ease; }
 .back-to-top:hover, .back-to-top:focus-visible { background: var(--fg); color: var(--surface); }
 .back-to-top[hidden] { display: none; }
-/* No-JS reveal floor: match the JS 400px threshold so a no-JS reader does not get the
-   control stuck visible at the top of the page. On browsers with scroll-driven
-   animations it reveals in a narrow band at ~400px (a wide range would fade in
-   progressively instead of at the threshold). The @supports guard is REQUIRED: without
-   scroll timelines the animation binds to the time timeline and would stick the control
-   hidden -- so unsupported browsers fall through to the always-visible base. [hidden]
-   still wins (display:none), so the JS idle-hide is unaffected when JS is present. */
+/* No-JS reveal floor -- a pure progressive-enhancement fallback. SITE_JS adds the `js`
+   class to the root, so with JS this NEVER applies: the script then owns [hidden]
+   entirely and its focus-guard / idle-hide can never be overridden by a competing CSS
+   reveal. With no JS it reveals the control past the JS 400px threshold instead of
+   leaving it stuck visible at the top. visibility (not opacity alone) carries the hide
+   so a hidden control is neither focusable nor clickable: on a short page the scroll
+   timeline is inactive and the animation drops out to the visibility:hidden base (no
+   invisible click target), and below the threshold the control is out of the tab order
+   (no invisible focus stop). The @supports guard is REQUIRED: without scroll timelines
+   the animation binds to the time timeline and would stick the control hidden -- so
+   unsupported browsers fall through to the always-visible base. */
 @supports (animation-timeline: scroll()) {
-  .back-to-top { opacity: 0; animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 380px 400px; }
-  @keyframes back-to-top-reveal { from { opacity: 0; pointer-events: none; } to { opacity: 1; pointer-events: auto; } }
+  :root:not(.js) .back-to-top { opacity: 0; visibility: hidden; animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 380px 400px; }
+  @keyframes back-to-top-reveal { from { opacity: 0; visibility: hidden; } to { opacity: 1; visibility: visible; } }
 }
 @media print {
   :root { --bg: #ffffff; --fg: #000000; }
@@ -450,6 +454,10 @@ def site_header(journal_title, site_root):
 SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
 (function () {
   "use strict";
+
+  // Mark the document JS-capable so the no-JS back-to-top CSS reveal floor (a pure
+  // progressive-enhancement fallback) steps aside and this script owns the control.
+  document.documentElement.classList.add("js");
 
   // Copy button on each cite-box / code <pre>.
   function addCopy(pre) {
