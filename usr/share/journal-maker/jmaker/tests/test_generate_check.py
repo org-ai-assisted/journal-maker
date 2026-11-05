@@ -1199,10 +1199,13 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn("card.contains(ae) || anchors.indexOf(ae) >= 0", js)
         self.assertNotIn("pinned || card.contains(ae)", js)
         self.assertNotIn("activeHovercard", js)
-        # Reaching an end disables the focused button; focus is moved to the enabled
-        # sibling (not dropped to <body>), so keyboard arrow stepping keeps working.
-        self.assertIn("cnext.focus({ preventScroll: true })", js)
-        self.assertIn("cprev.focus({ preventScroll: true })", js)
+        # End buttons use aria-disabled, NOT the disabled property: a disabled button
+        # that holds focus makes the browser drop focus to <body>, stalling keyboard
+        # arrow stepping at an end. aria-disabled keeps the button focusable (step()
+        # no-ops out of range), so stepping survives reaching an end.
+        self.assertIn('setAttribute("aria-disabled", "true")', js)
+        self.assertNotIn("cprev.disabled", js)
+        self.assertNotIn("cnext.disabled", js)
         # Modified arrows (selection / history / word jump) are left to the browser.
         self.assertIn("e.altKey || e.ctrlKey || e.metaKey || e.shiftKey", js)
         # A single-target card keeps its nav bar as a drag grip (only the step controls

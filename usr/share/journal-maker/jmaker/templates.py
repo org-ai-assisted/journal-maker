@@ -352,7 +352,7 @@ article.body .citation a:target { background: var(--warn-bg); box-shadow: 0 0 0 
 .hovercard.dragging .hovercard-nav { cursor: grabbing; }
 .hovercard-nav[hidden] { display: none; }
 .hovercard-navbtn { font-family: var(--sans); font-size: 0.8rem; line-height: 1; padding: 0.15rem 0.45rem; border: 1px solid var(--rule); border-radius: 4px; background: transparent; color: var(--accent); cursor: pointer; }
-.hovercard-navbtn:disabled { opacity: 0.4; cursor: default; }
+.hovercard-navbtn[aria-disabled="true"] { opacity: 0.4; cursor: default; }
 .hovercard-pos { font-family: var(--sans); font-size: 0.75rem; color: var(--muted); }
 details.cite-this { font-family: var(--sans); font-size: 0.9rem; border: 1px solid var(--rule); border-radius: 5px; padding: 0.6rem 1rem; margin: 1.5rem 0; }
 details.cite-this summary { cursor: pointer; font-weight: 650; }
@@ -605,16 +605,17 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       // a lone-target card stays drag-moveable.
       var single = order.length < 2;
       cprev.hidden = single; cnext.hidden = single; cpos.hidden = single;
-      cprev.disabled = idx === 0;
-      cnext.disabled = idx === order.length - 1;
-      // If a pointer click just disabled the button that held focus (stepping to an
-      // end), move focus to the still-enabled sibling instead of letting the browser
-      // drop it to <body> -- keeps keyboard arrow stepping working, and keeps focus
-      // inside the card. At order >= 2 the opposite end is always enabled; decorative
-      // cards never focus their buttons (mousedown is prevented), so this is dialog-only.
-      var ae = document.activeElement;
-      if (ae === cprev && cprev.disabled) { cnext.focus({ preventScroll: true }); }
-      else if (ae === cnext && cnext.disabled) { cprev.focus({ preventScroll: true }); }
+      // Mark the end buttons aria-disabled, NOT disabled: a real `disabled` on the
+      // button that holds focus makes the browser drop focus to <body>, which would
+      // stall keyboard arrow stepping at an end. aria-disabled greys the button and
+      // tells assistive tech it is inert while keeping it focusable; step() already
+      // no-ops out of range, so a click/Enter on an end button does nothing.
+      setDisabled(cprev, idx === 0);
+      setDisabled(cnext, idx === order.length - 1);
+    }
+    function setDisabled(btn, off) {
+      if (off) { btn.setAttribute("aria-disabled", "true"); }
+      else { btn.removeAttribute("aria-disabled"); }
     }
     function place(anchor) {
       var rect = anchor.getBoundingClientRect();
