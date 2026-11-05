@@ -1718,7 +1718,7 @@ _TAG_STRIP_RE = re.compile(r'<[^>]+>')
 
 def _build_toc(body_html):
     """Table of contents from the body's H2 headings (pandoc-assigned ids)."""
-    items = re.findall(r'<h2[^>]*\bid="([^"]+)"[^>]*>(.*?)</h2>', body_html,
+    items = re.findall(r'<h2[^>]*\sid="([^"]+)"[^>]*>(.*?)</h2>', body_html,
                        re.I | re.S)
     if len(items) < 3:
         return ""
@@ -2253,7 +2253,10 @@ def _enhance_references(body_html, sidecar_keys, quote_blocks=None, archive_map=
 # the leading number from an h2 id but keeps "N." in the visible text, so the
 # number->anchor map is read from the heading's inner text, not its id. The (?!\d)
 # keeps a subsection heading ("3.2. ...") out of the section-N map (it is not section 3).
-_SECTION_H2_RE = re.compile(r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*(\d+)\.(?!\d)', re.I)
+# \sid= (whitespace before the attribute), never \bid=: a word boundary also sits inside
+# "data-id" (after the hyphen), so \bid= plus a greedy [^>]* captures a data-id value as
+# the heading id. Every real id attribute is whitespace-preceded, so \s is exact.
+_SECTION_H2_RE = re.compile(r'<h2[^>]*\sid="([^"]+)"[^>]*>\s*(\d+)\.(?!\d)', re.I)
 # A "Section N" / "Sections N, M and K" / "Sections N through M" run. Capitalized per
 # house style; `&amp;` because the body is HTML-entity-encoded. Each number is atomic
 # (?>\d+) with a (?!\.\d) guard: a trailing sub-number ("Section 3.5") is a reference
@@ -2292,7 +2295,7 @@ _TABLE_REF_RE = re.compile(
 # The (?!\.[A-Za-z0-9]) guard (mirroring _APPENDIX_REF_RE) drops a dotted sub-appendix
 # heading ("Appendix A.1. Details") so it does not register a stray letter "A".
 _APPENDIX_H2_RE = re.compile(
-    r'<h2[^>]*\bid="([^"]+)"[^>]*>\s*Appendix\s+([A-Z])\b(?!\.[A-Za-z0-9])', re.I)
+    r'<h2[^>]*\sid="([^"]+)"[^>]*>\s*Appendix\s+([A-Z])\b(?!\.[A-Za-z0-9])', re.I)
 # A single "Appendix X" reference. No connective run: the paper never lists
 # appendices, and a run would mis-link a post-comma capital (a variable or the
 # pronoun "I") as an appendix. (?!\.[A-Za-z0-9]) drops a dotted sub-appendix
@@ -2507,7 +2510,7 @@ def _linkify_cross_refs(body_html):
 # new id is emitted.
 _HEADERLINK_TBL_RE = re.compile(r'(<p id="tbl-(\d+)">)(.*?)(</p>)', re.S)
 _HEADERLINK_H_RE = re.compile(
-    r'(<h([23])\b[^>]*\bid="([^"]+)"[^>]*>)(.*?)(</h\2>)', re.I | re.S)
+    r'(<h([23])\b[^>]*\sid="([^"]+)"[^>]*>)(.*?)(</h\2>)', re.I | re.S)
 
 
 def _add_headerlinks(body_html):

@@ -3037,6 +3037,17 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertEqual(self._link_collisions(out2), [])
         self.assertEqual(self._label_in_name_bad(out2), [])
 
+    def test_headerlink_id_match_excludes_data_id(self):
+        # The heading-id regex must match the real id attribute, not the "id" inside a
+        # neighbouring data-id (a word boundary sits after the hyphen). With \bid= plus a
+        # greedy [^>]*, "<h3 id='actual' data-id='other'>" would target #other. RED on
+        # the \bid= form.
+        body = '<h3 id="actual" data-id="other">Overview</h3>'
+        out = g._add_headerlinks(body)
+        self.assertIn('href="#actual" '
+                      'aria-label="Permalink to Overview (section actual)">#</a>', out)
+        self.assertNotIn('href="#other"', out)
+
     def test_headerlinks_in_full_build(self):
         # End-to-end: the built page exposes a "#" permalink on the table caption AND on
         # section headings, the Contents nav does NOT ingest the glyph (headerlinks are
