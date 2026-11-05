@@ -2995,6 +2995,22 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertEqual(self._link_collisions(out), [])
         self.assertEqual(self._label_in_name_bad(out), [])
 
+    def test_headerlink_duplicate_titled_headings_distinct_labels(self):
+        # Pandoc gives same-titled headings distinct ids (overview, overview-1) but the
+        # SAME visible text, so a bare "Permalink to <title>" accessible name would
+        # collide under axe identical-links-same-purpose (WCAG 2.4.9). A per-title
+        # occurrence ordinal keeps each permalink's name unique. RED before the ordinal.
+        body = ('<h3 id="overview">Overview</h3><p>a</p>'
+                '<h3 id="overview-1">Overview</h3><p>b</p>')
+        out = g._add_headerlinks(body)
+        # both repeats are numbered in document order, so each name is distinct
+        self.assertIn('href="#overview" aria-label="Permalink to Overview (1)">#</a>',
+                      out)
+        self.assertIn('href="#overview-1" aria-label="Permalink to Overview (2)">#</a>',
+                      out)
+        self.assertEqual(self._link_collisions(out), [])
+        self.assertEqual(self._label_in_name_bad(out), [])
+
     def test_headerlinks_in_full_build(self):
         # End-to-end: the built page exposes a "#" permalink on the table caption AND on
         # section headings, the Contents nav does NOT ingest the glyph (headerlinks are

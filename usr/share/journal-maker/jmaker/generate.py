@@ -2502,8 +2502,8 @@ def _linkify_cross_refs(body_html):
 # section/subsection/appendix heading -- so a reader can copy a direct fragment link.
 # HTML ONLY (md_to_pdf never calls this, like _linkify_cross_refs): the PDF gets no "#".
 # The glyph is ASCII "#" (no pilcrow). Each anchor carries a distinct aria-label (axe
-# identical-links-same-purpose); the "#" normalizes away for label-in-name. The href
-# reuses the element's existing id, so no new id is emitted.
+# identical-links-same-purpose -- see the per-title ordinal below); the "#" normalizes
+# away for label-in-name. The href reuses the element's existing id, so no new id.
 _HEADERLINK_TBL_RE = re.compile(r'(<p id="tbl-(\d+)">)(.*?)(</p>)', re.S)
 _HEADERLINK_H_RE = re.compile(
     r'(<h([23])\b[^>]*\bid="([^"]+)"[^>]*>)(.*?)(</h\2>)', re.I | re.S)
@@ -2524,12 +2524,29 @@ def _add_headerlinks(body_html):
                               link("tbl-%s" % mo.group(2), "Table %s" % mo.group(2)),
                               mo.group(4))
 
-    def heading(mo):
-        text = " ".join(_TAG_STRIP_RE.sub("", mo.group(4)).split())
-        return "%s%s %s%s" % (mo.group(1), mo.group(4),
-                              link(mo.group(3), text), mo.group(5))
-
     body_html = _HEADERLINK_TBL_RE.sub(tbl, body_html)
+
+    # Pandoc gives same-titled headings distinct ids but identical visible text, so a
+    # bare "Permalink to <title>" accessible name would collide under axe
+    # identical-links-same-purpose (WCAG 2.4.9). Carry a per-title occurrence ordinal on
+    # the repeats to keep each name unique, as the reference-backref and Sec-pill
+    # builders carry a unique key. Table labels ("Table N") are already unique.
+    def heading_text(mo):
+        return " ".join(_TAG_STRIP_RE.sub("", mo.group(4)).split())
+    counts: dict[str, int] = {}
+    for mo in _HEADERLINK_H_RE.finditer(body_html):
+        t = heading_text(mo)
+        counts[t] = counts.get(t, 0) + 1
+    seen: dict[str, int] = {}
+
+    def heading(mo):
+        text = heading_text(mo)
+        if counts[text] > 1:
+            seen[text] = seen.get(text, 0) + 1
+            text = "%s (%d)" % (text, seen[text])
+        return "%s%s %s%s" % (mo.group(1), mo.group(4), link(mo.group(3), text),
+                              mo.group(5))
+
     return _HEADERLINK_H_RE.sub(heading, body_html)
 
 
