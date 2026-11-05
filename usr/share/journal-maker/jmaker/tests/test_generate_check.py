@@ -1167,6 +1167,29 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn("activeId", js)
         self.assertIn("e.pointerId !== activeId", js)
 
+    def test_footnote_hovercard_shares_nav_and_drag(self):
+        from jmaker import templates
+        js = templates.SITE_JS
+        # Citation + footnote cards share ONE builder (no duplicated nav/drag block):
+        # defined once, called twice.
+        self.assertEqual(js.count("function makeHovercard("), 1)
+        self.assertEqual(js.count("makeHovercard({"), 2)
+        # Footnote card now has prev/next (RED before: the footnote IIFE had no nav).
+        self.assertIn('"Previous footnote"', js)
+        self.assertIn('"Next footnote"', js)
+        self.assertIn('"Previous reference"', js)
+        self.assertIn('"Next reference"', js)
+        # Footnote card stays a DECORATIVE preview: aria-hidden, and its nav buttons are
+        # kept out of tab order (tabindex=-1) so an aria-hidden card is never an a11y
+        # trap; its body links keep href stripped.
+        self.assertIn("decorative: true", js)
+        self.assertIn('card.setAttribute("aria-hidden"', js)
+        self.assertIn("cprev.tabIndex = -1; cnext.tabIndex = -1;", js)
+        self.assertIn('removeAttribute("href")', js)
+        # Citation card is the keyboard-reachable dialog (decorative: false).
+        self.assertIn("decorative: false", js)
+        self.assertIn('card.setAttribute("role", "dialog")', js)
+
     def test_hovercard_separator_css_escape(self):
         from jmaker import templates
         css = templates.STYLE_CSS

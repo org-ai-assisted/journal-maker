@@ -514,34 +514,46 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
   var pres = document.querySelectorAll("details.cite-this pre, article.body pre");
   for (var i = 0; i < pres.length; i++) { addCopy(pres[i]); }
 
-  // Citation hovercards: hover/focus a [n] to preview its reference, with prev/next
-  // stepping through the references in document order. The native title= is kept as a
-  // JS-off fallback. TT-safe: the card is built with DOM APIs + cloneNode only (no
-  // HTML-string sinks), so it survives a strict Content-Security-Policy.
-  // citeproc renders each in-text cite as <span class="citation"><a href="#ref-KEY">;
-  // a grouped cite holds several such anchors. The reference list uses .csl-entry,
-  // never .citation, so this selector matches in-text cites only.
-  var cites = [].slice.call(document.querySelectorAll("article.body .citation a[href^='#ref-']"));
-  var refOrder = [];            // ref ids in first-citation document order (deduped)
-  var seen = Object.create(null);
-  for (var j = 0; j < cites.length; j++) {
-    var href = cites[j].getAttribute("href");
-    if (!href || href.charAt(0) !== "#") { continue; }
-    var rid = href.slice(1);
-    var ref = document.getElementById(rid);
-    if (!ref) { continue; }
-    // Native tooltip = the reference text WITHOUT the inlined .csl-quote (the
-    // quote is shown in the hovercard; repeating it in the title is noise).
-    var titleSrc = ref.cloneNode(true);
-    var cq = titleSrc.querySelector(".csl-quote");
-    if (cq && cq.parentNode) { cq.parentNode.removeChild(cq); }
-    cites[j].setAttribute("title", titleSrc.textContent.replace(/\s+/g, " ").trim());
-    if (!seen[rid]) { seen[rid] = true; refOrder.push(rid); }
-  }
-  if (refOrder.length) {
+  // Shared hovercard machinery. Both the citation and footnote previews are a card
+  // that hover/focus opens, steps prev/next through its targets in document order (a
+  // "n / N" position counter in the nav bar), and is drag-moveable by that nav bar.
+  // The only genuine per-type differences come in via opts:
+  //   anchors    -- array of in-body anchors (cites or footnote markers).
+  //   decorative -- false: role=dialog, keyboard-reachable nav (citations). true:
+  //                 aria-hidden decorative preview with nav buttons kept OUT of tab
+  //                 order (tabindex=-1), so the card is never a focus/a11y trap
+  //                 (footnotes; the real note is reached by activating the marker).
+  //   prevLabel / nextLabel -- aria-labels for the step buttons.
+  //   contentFor(id) -- a DocumentFragment for the card body (may be empty).
+  //   titleFor(id)   -- native title= string for the marker (JS-off / touch fallback),
+  //                     or null to leave the marker's title untouched.
+  // TT-safe: the card is built with DOM APIs + cloneNode only (no HTML-string sinks),
+  // so it survives a strict Content-Security-Policy.
+  function makeHovercard(opts) {
+    var anchors = opts.anchors;
+    var order = [];               // target ids in first-reference document order (deduped)
+    var seen = Object.create(null);
+    for (var j = 0; j < anchors.length; j++) {
+      var href = anchors[j].getAttribute("href");
+      if (!href || href.charAt(0) !== "#") { continue; }
+      var tid = href.slice(1);
+      if (!document.getElementById(tid)) { continue; }   // skip markers with no target
+      if (opts.titleFor) {
+        var t = opts.titleFor(tid);
+        if (t) { anchors[j].setAttribute("title", t); }
+      }
+      if (!seen[tid]) { seen[tid] = true; order.push(tid); }
+    }
+    if (!order.length) { return; }
     var card = document.createElement("div");
     card.className = "hovercard";
-    card.setAttribute("role", "dialog");
+    if (opts.decorative) {
+      // decorative preview, not a dialog: aria-hidden keeps assistive tech from
+      // announcing an unreachable duplicate (the real target is reached via the marker).
+      card.setAttribute("aria-hidden", "true");
+    } else {
+      card.setAttribute("role", "dialog");
+    }
     card.hidden = true;
     var cbody = document.createElement("div");
     cbody.className = "hovercard-body";
@@ -549,42 +561,34 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     cnav.className = "hovercard-nav";
     var cprev = document.createElement("button");
     cprev.type = "button"; cprev.className = "hovercard-navbtn";
-    cprev.textContent = String.fromCharCode(0x25C0); cprev.setAttribute("aria-label", "Previous reference");
+    cprev.textContent = String.fromCharCode(0x25C0); cprev.setAttribute("aria-label", opts.prevLabel);
     var cpos = document.createElement("span");
     cpos.className = "hovercard-pos";
     var cnext = document.createElement("button");
     cnext.type = "button"; cnext.className = "hovercard-navbtn";
-    cnext.textContent = String.fromCharCode(0x25B6); cnext.setAttribute("aria-label", "Next reference");
+    cnext.textContent = String.fromCharCode(0x25B6); cnext.setAttribute("aria-label", opts.nextLabel);
+    if (opts.decorative) {
+      // A focusable control inside an aria-hidden card is itself an a11y trap
+      // (focusable but never tabbable). Keep the nav pointer-operable but out of tab
+      // order, so the decorative card stays fully untabbable.
+      cprev.tabIndex = -1; cnext.tabIndex = -1;
+    }
     cnav.appendChild(cprev); cnav.appendChild(cpos); cnav.appendChild(cnext);
-    // Nav on TOP: prev/next buttons appended before the reference body.
+    // Nav on TOP: prev/next buttons appended before the body.
     card.appendChild(cnav); card.appendChild(cbody);
     document.body.appendChild(card);
 
     var hideTimer = null, curIdx = -1, curAnchor = null, pinned = false, moved = false;
-    function refFragment(id) {
-      var frag = document.createDocumentFragment();
-      // id is "ref-<key>". Prefer the verbatim source-quote block inlined in the
-      // reference entry (.csl-quote) -- a single source of the quote, shared with
-      // the reference area (no duplicate hidden store); fall back to the whole
-      // reference entry when the key has no quote.
-      var ref = document.getElementById(id);
-      if (!ref) { return frag; }
-      var r = ref.querySelector(".csl-quote") || ref;
-      var kids = r.childNodes;
-      for (var i = 0; i < kids.length; i++) {
-        frag.appendChild(kids[i].cloneNode(true));
-      }
-      return frag;
-    }
     function populate(idx) {
-      if (idx < 0 || idx >= refOrder.length) { return; }
+      if (idx < 0 || idx >= order.length) { return; }
       curIdx = idx;
       while (cbody.firstChild) { cbody.removeChild(cbody.firstChild); }
-      cbody.appendChild(refFragment(refOrder[idx]));
-      cpos.textContent = (idx + 1) + " / " + refOrder.length;
-      cnav.hidden = refOrder.length < 2;
+      var frag = opts.contentFor(order[idx]);
+      if (frag) { cbody.appendChild(frag); }
+      cpos.textContent = (idx + 1) + " / " + order.length;
+      cnav.hidden = order.length < 2;
       cprev.disabled = idx === 0;
-      cnext.disabled = idx === refOrder.length - 1;
+      cnext.disabled = idx === order.length - 1;
     }
     function place(anchor) {
       var rect = anchor.getBoundingClientRect();
@@ -598,37 +602,37 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     function show(anchor, idx) {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
       pinned = false;            // a fresh hover/focus is transient again
-      moved = false;             // re-anchor to the citation (drag offset cleared)
+      moved = false;             // re-anchor to the marker (drag offset cleared)
       curAnchor = anchor;
       card.hidden = false;
       populate(idx);
       place(anchor);
     }
     // Pinned (the user clicked a nav button) overrides hover-to-hide, so stepping
-    // through refs never auto-closes when the card resizes under the pointer.
+    // through targets never auto-closes when the card resizes under the pointer.
     function hideSoon() { if (pinned) { return; } hideTimer = setTimeout(function () { card.hidden = true; }, 200); }
     function cancelHide() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }
     function dismiss() { card.hidden = true; pinned = false; cancelHide(); }
     function step(delta) {
       var ni = curIdx + delta;
-      if (ni < 0 || ni >= refOrder.length) { return; }
+      if (ni < 0 || ni >= order.length) { return; }
       cancelHide();
       pinned = true;
       populate(ni);
       // Keep a dragged card where the user put it; otherwise re-anchor on resize.
       if (curAnchor && !moved) { place(curAnchor); }
     }
-    for (var c = 0; c < cites.length; c++) {
+    for (var c = 0; c < anchors.length; c++) {
       (function (a) {
         var h = a.getAttribute("href");
         if (!h || h.charAt(0) !== "#") { return; }
-        var idx = refOrder.indexOf(h.slice(1));
+        var idx = order.indexOf(h.slice(1));
         if (idx < 0) { return; }
         a.addEventListener("mouseenter", function () { show(a, idx); });
         a.addEventListener("mouseleave", hideSoon);
         a.addEventListener("focus", function () { show(a, idx); });
         a.addEventListener("blur", hideSoon);
-      })(cites[c]);
+      })(anchors[c]);
     }
     card.addEventListener("mouseenter", cancelHide);
     card.addEventListener("mouseleave", hideSoon);
@@ -638,7 +642,7 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     cprev.addEventListener("click", function () { step(-1); });
     cnext.addEventListener("click", function () { step(1); });
     // Drag the card by its nav bar to reposition it (pointer); dragging pins it so
-    // it does not auto-hide, and sets `moved` so stepping refs keeps the new spot.
+    // it does not auto-hide, and sets `moved` so stepping targets keeps the new spot.
     (function () {
       var dragging = false, activeId = -1, sx = 0, sy = 0, sl = 0, st = 0;
       cnav.addEventListener("pointerdown", function (e) {
@@ -665,14 +669,14 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       cnav.addEventListener("pointercancel", endDrag);
     })();
     // Keyboard: Escape dismisses; Left/Right step prev/next while the card is
-    // open and either pinned or the focus is on a cite anchor / inside the card
-    // (so arrow keys are not hijacked from ordinary page scrolling).
+    // open and either pinned or the focus is on a marker / inside the card (so arrow
+    // keys are not hijacked from ordinary page scrolling).
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") { dismiss(); return; }
       if (card.hidden) { return; }
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") { return; }
       var ae = document.activeElement;
-      if (!(pinned || card.contains(ae) || cites.indexOf(ae) >= 0)) { return; }
+      if (!(pinned || card.contains(ae) || anchors.indexOf(ae) >= 0)) { return; }
       e.preventDefault();
       step(e.key === "ArrowLeft" ? -1 : 1);
     });
@@ -682,6 +686,48 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       if (pinned && !card.hidden && !card.contains(e.target)) { dismiss(); }
     });
   }
+
+  // Citation hovercards: hover/focus a [n] to preview its reference, stepping through
+  // the references in document order. The native title= is kept as a JS-off fallback.
+  // citeproc renders each in-text cite as <span class="citation"><a href="#ref-KEY">;
+  // a grouped cite holds several such anchors. The reference list uses .csl-entry,
+  // never .citation, so this selector matches in-text cites only.
+  (function () {
+    var cites = [].slice.call(document.querySelectorAll("article.body .citation a[href^='#ref-']"));
+    function refFragment(id) {
+      // Prefer the verbatim source-quote block inlined in the reference entry
+      // (.csl-quote) -- a single source of the quote, shared with the reference area
+      // (no duplicate hidden store); fall back to the whole reference entry when the
+      // key has no quote.
+      var frag = document.createDocumentFragment();
+      var ref = document.getElementById(id);
+      if (!ref) { return frag; }
+      var r = ref.querySelector(".csl-quote") || ref;
+      var kids = r.childNodes;
+      for (var i = 0; i < kids.length; i++) {
+        frag.appendChild(kids[i].cloneNode(true));
+      }
+      return frag;
+    }
+    function refTitle(id) {
+      // Native tooltip = the reference text WITHOUT the inlined .csl-quote (the quote
+      // is shown in the hovercard; repeating it in the title is noise).
+      var ref = document.getElementById(id);
+      if (!ref) { return null; }
+      var titleSrc = ref.cloneNode(true);
+      var cq = titleSrc.querySelector(".csl-quote");
+      if (cq && cq.parentNode) { cq.parentNode.removeChild(cq); }
+      return titleSrc.textContent.replace(/\s+/g, " ").trim();
+    }
+    makeHovercard({
+      anchors: cites,
+      decorative: false,
+      prevLabel: "Previous reference",
+      nextLabel: "Next reference",
+      contentFor: refFragment,
+      titleFor: refTitle
+    });
+  })();
 
   // Figure lightbox: click a body image to view enlarged; click or Escape closes.
   function lightbox(img) {
@@ -755,15 +801,16 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
   })();
 
   // Footnote hovercards: hover/focus a footnote marker to preview the note inline,
-  // mirroring the citation hovercard above. Progressive -- the marker stays a
-  // working <a href="#fnN"> with no JS (click still jumps to the note at the
-  // document end); this only adds a preview. The marker id namespace is pandoc's
-  // (#fnN), found by getElementById, so this is agnostic to whether pandoc wrapped
-  // the notes in <section> or <aside>. TT-safe: DOM APIs + cloneNode only.
+  // with the same prev/next stepping and drag-to-move as the citation card (shared
+  // makeHovercard). Progressive -- the marker stays a working <a href="#fnN"> with no
+  // JS (click still jumps to the note at the document end); this only adds a preview.
+  // The marker id namespace is pandoc's (#fnN), found by getElementById, so this is
+  // agnostic to whether pandoc wrapped the notes in <section> or <aside>. The card is
+  // decorative (aria-hidden, untabbable nav) so it is never an a11y trap. TT-safe:
+  // DOM APIs + cloneNode only.
   (function () {
     var marks = [].slice.call(
       document.querySelectorAll("article.body a.footnote-ref[href^='#fn']"));
-    if (!marks.length) { return; }
     function noteClone(id) {
       // A clone of the <li id="fnN"> note, minus the back-reference arrow(s)
       // (navigation chrome, noise in a preview); null if the note is missing.
@@ -774,76 +821,37 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       for (var i = 0; i < backs.length; i++) {
         if (backs[i].parentNode) { backs[i].parentNode.removeChild(backs[i]); }
       }
-      // The card is a DECORATIVE preview (aria-hidden, body-appended, not in tab
-      // order): a keyboard user reaches the note's real links by activating the
-      // marker (href="#fnN" -> the note at document end, where the links ARE in
-      // tab order). So drop href from the preview's own links -- a link that is
-      // focusable but can never be tabbed to is the a11y trap; without href it is
-      // inert citation text, no trap, and the live links stay one marker-activation
-      // away. The marker's title= carries the note text for assistive tech.
+      // The card is a DECORATIVE preview (aria-hidden, not in tab order): a keyboard
+      // user reaches the note's real links by activating the marker (href="#fnN" ->
+      // the note at document end, where the links ARE in tab order). So drop href from
+      // the preview's own links -- a link that is focusable but can never be tabbed to
+      // is the a11y trap; without href it is inert citation text, no trap, and the live
+      // links stay one marker-activation away. The marker's title= carries the note
+      // text for assistive tech.
       var links = clone.querySelectorAll("a[href]");
       for (var j = 0; j < links.length; j++) {
         links[j].removeAttribute("href");
       }
       return clone;
     }
-    var card = document.createElement("div");
-    card.className = "hovercard";
-    // decorative preview, not a dialog: aria-hidden keeps assistive tech from
-    // announcing an unreachable duplicate of the note (reached via the marker).
-    card.setAttribute("aria-hidden", "true");
-    card.hidden = true;
-    var body = document.createElement("div");
-    body.className = "hovercard-body";
-    card.appendChild(body);
-    document.body.appendChild(card);
-    var hideTimer = null, pinned = false;
-    function place(anchor) {
-      var rect = anchor.getBoundingClientRect();
-      var left = window.pageXOffset + rect.left;
-      var maxLeft = window.pageXOffset + document.documentElement.clientWidth - card.offsetWidth - 8;
-      if (left > maxLeft) { left = maxLeft; }
-      if (left < window.pageXOffset + 8) { left = window.pageXOffset + 8; }
-      card.style.left = left + "px";
-      card.style.top = (window.pageYOffset + rect.bottom + 6) + "px";
-    }
-    function show(anchor, id) {
-      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-      pinned = false;
+    function noteFragment(id) {
+      var frag = document.createDocumentFragment();
       var clone = noteClone(id);
-      if (!clone) { return; }
-      while (body.firstChild) { body.removeChild(body.firstChild); }
-      while (clone.firstChild) { body.appendChild(clone.firstChild); }
-      card.hidden = false;
-      place(anchor);
+      if (clone) { while (clone.firstChild) { frag.appendChild(clone.firstChild); } }
+      return frag;
     }
-    function hideSoon() { if (pinned) { return; } hideTimer = setTimeout(function () { card.hidden = true; }, 200); }
-    function cancelHide() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }
-    function dismiss() { card.hidden = true; pinned = false; cancelHide(); }
-    for (var m = 0; m < marks.length; m++) {
-      (function (a) {
-        var h = a.getAttribute("href");
-        if (!h || h.charAt(0) !== "#") { return; }
-        var id = h.slice(1);
-        var clone = noteClone(id);
-        if (clone) {
-          // Native tooltip as the JS-off-independent fallback (and for touch).
-          a.setAttribute("title", clone.textContent.replace(/\s+/g, " ").trim());
-        }
-        a.addEventListener("mouseenter", function () { show(a, id); });
-        a.addEventListener("mouseleave", hideSoon);
-        a.addEventListener("focus", function () { show(a, id); });
-        a.addEventListener("blur", hideSoon);
-      })(marks[m]);
+    function noteTitle(id) {
+      var clone = noteClone(id);
+      return clone ? clone.textContent.replace(/\s+/g, " ").trim() : null;
     }
-    card.addEventListener("mouseenter", cancelHide);
-    card.addEventListener("mouseleave", hideSoon);
-    // A pointer press inside the card pins it, so selecting text on touch (no
-    // hover there) is not cut short by the blur/hideSoon closing the card.
-    card.addEventListener("pointerdown", function () { pinned = true; cancelHide(); });
-    document.addEventListener("keydown", function (e) { if (e.key === "Escape") { dismiss(); } });
-    // A pinned card is dismissed by a click outside it.
-    document.addEventListener("click", function (e) { if (pinned && !card.hidden && !card.contains(e.target)) { dismiss(); } });
+    makeHovercard({
+      anchors: marks,
+      decorative: true,
+      prevLabel: "Previous footnote",
+      nextLabel: "Next footnote",
+      contentFor: noteFragment,
+      titleFor: noteTitle
+    });
   })();
 })();
 """
