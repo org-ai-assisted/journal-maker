@@ -3126,6 +3126,30 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # A focused no-JS control stays visible regardless of scroll (parity with the
         # JS focus-guard): visibility:hidden must not drop focus / its focus indicator.
         self.assertIn(':root:not(.js) .back-to-top:focus', css)
+        # Phased fade (JS path): the control fades in/out via an eased opacity
+        # transition (.btt-hidden toggled by the script), mirroring the production wiki
+        # back-to-top, instead of the old binary [hidden]/display snap. RED before the
+        # phased-fade rework (old code toggled btn.hidden = true/false).
+        self.assertNotIn('btn.hidden', js)
+        self.assertIn('classList.add("btt-hidden")', js)
+        self.assertIn(':root.js .back-to-top.btt-hidden { opacity: 0; visibility: hidden; '
+                      'pointer-events: none; }', css)
+        self.assertIn('transition: opacity 0.3s ease', css)
+        self.assertIn('.btt-anim.btt-hidden { transition: opacity 0.3s ease, '
+                      'visibility 0s linear 0.3s', css)
+        # Initial hide is committed under the base (no-opacity) transition via a forced
+        # reflow BEFORE .btt-anim enables the fade, so a deferred script shows no fade-out
+        # on load (a lone requestAnimationFrame batches both class adds into one style pass
+        # and would still play the 300ms fade -- so the reflow, not rAF, is load-bearing).
+        self.assertIn('void btn.offsetHeight', js)
+        self.assertIn('btn.classList.add("btt-anim")', js)
+        # a11y guards on the fade-out (visibility:hidden is delayed 0.3s so the fade is
+        # seen, which leaves the control hit-testable/tabbable mid-fade): pointer-events
+        # drops the click target at once, and a control focused mid-fade is held shown so
+        # the delayed visibility:hidden cannot drop its focus.
+        self.assertIn(':root.js .back-to-top.btt-hidden:focus', css)
+        # Reduced-motion users get an instant toggle, not the fade.
+        self.assertIn('@media (prefers-reduced-motion: reduce)', css)
 
     def test_footnote_hovercard_in_full_build(self):
         # A footnote marker gets a hovercard preview of the note, reusing the

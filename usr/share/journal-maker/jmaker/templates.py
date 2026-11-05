@@ -390,15 +390,35 @@ ul.browse li { padding: 0.35rem 0; border-bottom: 1px solid var(--rule); font-fa
 ul.previews { list-style: none; padding: 0; }
 ul.previews li { padding: 0.6rem 0; border-bottom: 1px solid var(--rule); font-size: 1.05rem; }
 ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--sans); margin-left: 0.5rem; }
-/* Back-to-top floating control: fixed bottom-right. With JS, SITE_JS drives [hidden]
-   for the exact 400px threshold + idle-hide. With no JS it falls to the @supports
-   floor below (reveal past 400px on modern browsers; always-visible on legacy ones).
-   The <a href="#top"> jumps to <body id="top"> with no JS regardless. */
-.back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--surface); text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); transition: opacity 0.15s ease, background 0.12s ease; }
+/* Back-to-top floating control: fixed bottom-right. With JS, SITE_JS shows/hides it
+   (400px threshold + 2s idle-hide) with an eased opacity fade mirroring the production
+   wiki control. With no JS it falls to the @supports floor below (reveal past 400px on
+   modern browsers; always-visible on legacy ones). The <a href="#top"> jumps to
+   <body id="top"> with no JS regardless. */
+.back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--surface); text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); transition: background 0.12s ease; }
 .back-to-top:hover, .back-to-top:focus-visible { background: var(--fg); color: var(--surface); }
-.back-to-top[hidden] { display: none; }
+/* JS path: the script toggles .btt-hidden to fade the control in/out (eased opacity,
+   matching the production wiki's phased 300ms fade) instead of a binary display snap.
+   visibility carries tab-order removal, delayed to the END of the fade-out (0.3s) so the
+   opacity fade is seen, and restored at once on fade-in. pointer-events:none drops the
+   click target the instant the fade-out starts (opacity near 0 alone stays hit-testable),
+   and the :focus rule keeps a control focused mid-fade from being hidden under its own
+   focus. The initial hide is committed under the no-opacity base transition (a forced
+   reflow in site.js) before .btt-anim enables the fade, so load shows no fade-out. */
+:root.js .back-to-top { opacity: 1; visibility: visible; }
+:root.js .back-to-top.btt-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+:root.js .back-to-top.btt-anim { transition: opacity 0.3s ease, visibility 0s linear 0s, background 0.12s ease; }
+:root.js .back-to-top.btt-anim.btt-hidden { transition: opacity 0.3s ease, visibility 0s linear 0.3s, background 0.12s ease; }
+/* A control that gains focus mid-fade-out (still `visibility: visible`, so still tabbable
+   for the 0.3s fade) must not then be hidden under that focus -- the delayed
+   visibility:hidden would drop focus to <body>. Hold it fully shown while focused, parity
+   with the no-JS :focus guard below. */
+:root.js .back-to-top.btt-hidden:focus { opacity: 1; visibility: visible; pointer-events: auto; }
+@media (prefers-reduced-motion: reduce) {
+  :root.js .back-to-top.btt-anim, :root.js .back-to-top.btt-anim.btt-hidden { transition: background 0.12s ease; }
+}
 /* No-JS reveal floor -- a pure progressive-enhancement fallback. SITE_JS adds the `js`
-   class to the root, so with JS this NEVER applies: the script then owns [hidden]
+   class to the root, so with JS this NEVER applies: the script then owns .btt-hidden
    entirely and its focus-guard / idle-hide can never be overridden by a competing CSS
    reveal. With no JS the control reveals once scrolled past the JS 400px threshold
    instead of sitting stuck visible at the top. A DISCRETE visibility flip (not an
@@ -676,14 +696,25 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
   }
 
   // Back-to-top: reveal past 400px of scroll, auto-hide 2s after scrolling stops,
-  // smooth-scroll on click. Progressive -- the <a href="#top"> works with no JS.
+  // smooth-scroll on click. Shown/hidden via an eased opacity fade (.btt-hidden)
+  // mirroring the production wiki control, not a binary display snap. Progressive --
+  // the <a href="#top"> works with no JS.
   (function () {
     var btn = document.querySelector(".back-to-top");
     if (!btn) { return; }
-    btn.hidden = true;
+    // Hide instantly on load, then enable the fade. Forcing a reflow between the two
+    // commits the hidden state under the base (no-opacity) transition, so opacity snaps
+    // to 0 with no fade; .btt-anim then enables the fade for later toggles only. (A lone
+    // requestAnimationFrame batches both class adds into one style pass, so with the
+    // deferred site.js the initial hide would still play as a 300ms fade-out on load.)
+    btn.classList.add("btt-hidden");
+    void btn.offsetHeight;
+    btn.classList.add("btt-anim");
+    function show() { btn.classList.remove("btt-hidden"); }
     // Never hide the control while it holds keyboard focus (a hide-timer or a
-    // scroll-to-top must not steal focus from a keyboard user mid-activation).
-    function hide() { if (document.activeElement !== btn) { btn.hidden = true; } }
+    // scroll-to-top must not steal focus from a keyboard user mid-activation, and
+    // the fade-out's visibility:hidden would drop focus).
+    function hide() { if (document.activeElement !== btn) { btn.classList.add("btt-hidden"); } }
     btn.addEventListener("click", function (e) {
       e.preventDefault();
       var reduce = window.matchMedia
@@ -694,12 +725,12 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     // Tabs AWAY near the top nothing re-hides it until the next scroll. Re-run the
     // threshold check on blur so it does not linger once focus leaves.
     btn.addEventListener("blur", function () {
-      if (window.scrollY < 400) { btn.hidden = true; }
+      if (window.scrollY < 400) { hide(); }
     });
     var idle = null;
     window.addEventListener("scroll", function () {
       if (window.scrollY < 400) { hide(); return; }
-      btn.hidden = false;
+      show();
       clearTimeout(idle);
       idle = setTimeout(hide, 2000);
     }, { passive: true });
