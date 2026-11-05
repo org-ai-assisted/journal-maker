@@ -3044,6 +3044,18 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertEqual(self._link_collisions(out2), [])
         self.assertEqual(self._label_in_name_bad(out2), [])
 
+    def test_linkify_table_anchor_ignores_data_id_lookalike(self):
+        # Existing-id detection must not treat a data-id value as a real element id: a
+        # heading with data-id="tbl-1" must NOT make existing_ids suppress anchoring of
+        # the real Table 1 caption. RED when _ID_ATTR_RE used \bid= (it matched the "id"
+        # inside data-id).
+        body = ('<h2 id="intro" data-id="tbl-1">1. Intro</h2>'
+                '<p>See Table 1.</p>'
+                '<p>Table 1. Caption.</p>')
+        out = g._linkify_cross_refs(body)
+        self.assertIn('<p id="tbl-1">Table 1. Caption.</p>', out)
+        self.assertIn('Table <a href="#tbl-1" aria-label="Table 1">1</a>', out)
+
     def test_headerlink_id_match_excludes_data_id(self):
         # The heading-id regex must match the real id attribute, not the "id" inside a
         # neighbouring data-id (a word boundary sits after the hyphen). With \bid= plus a

@@ -2304,7 +2304,10 @@ _APPENDIX_H2_RE = re.compile(
 # keyword+space, group 2 the letter (only the letter is wrapped, so the "A" in
 # "Appendix" is never linked).
 _APPENDIX_REF_RE = re.compile(r'\b(Append(?:ix|ices)\s+)([A-Z])\b(?!\.[A-Za-z0-9])')
-_ID_ATTR_RE = re.compile(r'\bid="([^"]+)"')
+# \sid= not \bid= (see _SECTION_H2_RE): otherwise findall over the body also collects a
+# data-id value, so a heading with data-id="tbl-1" would make existing_ids suppress the
+# real Table 1 caption's anchor. Every real id attribute is whitespace-preceded.
+_ID_ATTR_RE = re.compile(r'\sid="([^"]+)"')
 # A claim's `section` field names the paper section(s) a citation backs, e.g.
 # "Sec. 3", "Sec. 8, 12", "Secs. 5, 7", "Secs. 1, 2, and 3" (Oxford comma -> all
 # three), "Secs. 1 through 5" / "Sec. 1-3" / "Secs. 1 to 3" (a range -> every
