@@ -524,6 +524,9 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
   var pres = document.querySelectorAll("details.cite-this pre, article.body pre");
   for (var i = 0; i < pres.length; i++) { addCopy(pres[i]); }
 
+  // The card most recently shown / stepped / pressed; only IT responds to arrow keys,
+  // so one keypress never advances a second (pinned-but-inactive) card on the page.
+  var activeHovercard = null;
   // Shared hovercard machinery. Both the citation and footnote previews are a card
   // that hover/focus opens, steps prev/next through its targets in document order (a
   // "n / N" position counter in the nav bar), and is drag-moveable by that nav bar.
@@ -622,6 +625,7 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       pinned = false;            // a fresh hover/focus is transient again
       moved = false;             // re-anchor to the marker (drag offset cleared)
       curAnchor = anchor;
+      activeHovercard = card;    // this card now owns the arrow keys
       card.hidden = false;
       populate(idx);
       place(anchor);
@@ -656,7 +660,7 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     card.addEventListener("mouseleave", hideSoon);
     // A pointer press anywhere inside the card pins it, so selecting text on touch
     // (no hover there) is not cut short by the blur/hideSoon closing the card.
-    card.addEventListener("pointerdown", function () { pinned = true; cancelHide(); });
+    card.addEventListener("pointerdown", function () { pinned = true; activeHovercard = card; cancelHide(); });
     cprev.addEventListener("click", function () { step(-1); });
     cnext.addEventListener("click", function () { step(1); });
     // Drag the card by its nav bar to reposition it (pointer); dragging pins it so
@@ -686,19 +690,20 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       cnav.addEventListener("pointerup", endDrag);
       cnav.addEventListener("pointercancel", endDrag);
     })();
-    // Keyboard: Escape dismisses; a plain Left/Right steps prev/next while the card is
-    // open AND the focus is on one of this card's markers or inside the card itself.
-    // Scoped to focus (not merely `pinned`) so one arrow never advances a second,
-    // pinned-but-unfocused card elsewhere on the page; modified arrows are left to the
-    // browser (text selection, history, word jump); arrows are otherwise not hijacked
-    // from ordinary page scrolling.
+    // Keyboard: Escape dismisses; a plain Left/Right steps prev/next. Only the ACTIVE
+    // card responds, so one arrow never advances a second (pinned-but-inactive) card
+    // elsewhere on the page. Within the active card, step when it is pinned or the
+    // focus is on one of its markers / inside it -- the `pinned` term keeps stepping
+    // working after a pointer nav-click disables the focused button and the browser
+    // drops focus to <body>. Modified arrows are left to the browser (text selection,
+    // history, word jump); an unpinned hover-only card does not hijack page scrolling.
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") { dismiss(); return; }
-      if (card.hidden) { return; }
+      if (card.hidden || activeHovercard !== card) { return; }
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") { return; }
       if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) { return; }
       var ae = document.activeElement;
-      if (!(card.contains(ae) || anchors.indexOf(ae) >= 0)) { return; }
+      if (!(pinned || card.contains(ae) || anchors.indexOf(ae) >= 0)) { return; }
       e.preventDefault();
       step(e.key === "ArrowLeft" ? -1 : 1);
     });

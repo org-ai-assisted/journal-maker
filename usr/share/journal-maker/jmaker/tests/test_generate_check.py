@@ -1193,10 +1193,13 @@ class TestRefLinksAndMeta(unittest.TestCase):
     def test_hovercard_keyboard_and_drag_edge_cases(self):
         from jmaker import templates
         js = templates.SITE_JS
-        # Arrow stepping is scoped to the focused card, not a bare `pinned`, so one
-        # arrow never advances a second pinned-but-unfocused card on the page.
-        self.assertIn("card.contains(ae) || anchors.indexOf(ae) >= 0", js)
-        self.assertNotIn("pinned || card.contains(ae)", js)
+        # Only the ACTIVE card (last shown / stepped / pressed) responds to arrows, so
+        # one keypress never advances a second pinned-but-inactive card on the page.
+        self.assertIn("var activeHovercard", js)
+        self.assertIn("activeHovercard !== card", js)
+        # `pinned` is still honored WITHIN the active card, so arrow stepping survives a
+        # pointer nav-click that disables the focused button (focus drops to <body>).
+        self.assertIn("pinned || card.contains(ae) || anchors.indexOf(ae) >= 0", js)
         # Modified arrows (selection / history / word jump) are left to the browser.
         self.assertIn("e.altKey || e.ctrlKey || e.metaKey || e.shiftKey", js)
         # A single-target card keeps its nav bar as a drag grip (only the step controls
