@@ -2953,6 +2953,77 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('aria-label="Section 1">1</a>', appendix)
         self.assertIn('aria-label="Table 1">1</a>', appendix)
 
+    def test_headerlink_affordance(self):
+        # Each table caption and each section/subsection/appendix heading gets a trailing
+        # "#" permalink to its OWN id -- a separate child <a>, never a self-link of the
+        # label. The href reuses the existing id (no new id is emitted); the refs-div
+        # content is untouched; every permalink has a distinct aria-label (axe
+        # identical-links-same-purpose) and the "#" normalizes away for label-in-name.
+        # RED before the _add_headerlinks pass.
+        body = (
+            '<h2 id="intro">1. Introduction</h2>'
+            '<p>Table <a href="#tbl-1" aria-label="Table 1">1</a> summarizes.</p>'
+            '<p id="tbl-1">Table 1. Device attestation.</p>'
+            '<h3 id="limits">Limitations</h3>'
+            '<h2 id="app-a">Appendix A. Extra</h2>'
+            '<div id="refs"><div class="csl-entry" id="ref-k">Table 9. A quote.'
+            '</div></div>')
+        out = g._add_headerlinks(body)
+        # table caption: trailing permalink, leading label still plain (no self-link)
+        self.assertIn('<p id="tbl-1">Table 1. Device attestation. '
+                      '<a class="headerlink" href="#tbl-1" '
+                      'aria-label="Permalink to Table 1">#</a></p>', out)
+        # headings (h2, h3, appendix h2): trailing permalink before the closing tag
+        self.assertIn('<h2 id="intro">1. Introduction '
+                      '<a class="headerlink" href="#intro" '
+                      'aria-label="Permalink to 1. Introduction">#</a></h2>', out)
+        self.assertIn('<h3 id="limits">Limitations '
+                      '<a class="headerlink" href="#limits" '
+                      'aria-label="Permalink to Limitations">#</a></h3>', out)
+        self.assertIn('aria-label="Permalink to Appendix A. Extra">#</a></h2>', out)
+        # no new id introduced (the href reuses the existing id)
+        self.assertEqual(out.count('id="tbl-1"'), 1)
+        # refs-div content is untouched (no permalink inside it)
+        self.assertIn('<div id="refs"><div class="csl-entry" id="ref-k">'
+                      'Table 9. A quote.</div></div>', out)
+        # the pre-existing body-ref anchor is left intact
+        self.assertIn('<p>Table <a href="#tbl-1" aria-label="Table 1">1</a> '
+                      'summarizes.</p>', out)
+        self.assertEqual(self._link_collisions(out), [])
+        self.assertEqual(self._label_in_name_bad(out), [])
+
+    def test_headerlinks_in_full_build(self):
+        # End-to-end: the built page exposes a "#" permalink on the table caption AND on
+        # section headings, the Contents nav does NOT ingest the glyph (headerlinks are
+        # added AFTER the TOC is built), and the whole-page WCAG link helpers stay clean.
+        # RED before the _add_headerlinks wiring.
+        with tempfile.TemporaryDirectory() as d:
+            jt = self._site(d)
+            adir = os.path.join(d, "articles", "art")
+            with open(os.path.join(adir, "paper.md"), "w", encoding="utf-8") as fh:
+                fh.write(
+                    "# T\n\n## Abstract\n\nA sufficiently long abstract for the "
+                    "validation step here.\n\n"
+                    "## 1. Intro\n\nText and see Table 1.\n\n"
+                    "Table 1. A caption.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+                    "## 2. More\n\nMore.\n\n## 3. End\n\nEnd.\n")
+            out = os.path.join(d, "s")
+            g.build(os.path.join(d, "articles"), jt, out, skip_pdf=True)
+            with open(os.path.join(out, "art", "index.html"), encoding="utf-8") as fh:
+                page = fh.read()
+        # caption and heading permalinks present in the built page
+        self.assertIn('<a class="headerlink" href="#tbl-1" '
+                      'aria-label="Permalink to Table 1">#</a>', page)
+        self.assertIn('<a class="headerlink" href="#intro" '
+                      'aria-label="Permalink to 1. Intro">#</a>', page)
+        # the Contents nav did not ingest the "#" glyph
+        toc = page.split('<nav class="toc"', 1)[1].split('</nav>', 1)[0]
+        self.assertNotIn('class="headerlink"', toc)
+        self.assertNotIn(' #</a>', toc)
+        # whole-page WCAG link helpers stay clean with the new anchors
+        self.assertEqual(self._link_collisions(page), [])
+        self.assertEqual(self._label_in_name_bad(page), [])
+
     def test_linkify_table_caption_in_refs_not_targeted(self):
         # A source quote inside the citeproc refs container that begins "Table N."
         # must NOT be anchored as tbl-N, and a prose "Table N" with no REAL table must

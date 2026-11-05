@@ -1712,16 +1712,19 @@ def _page(lang, head_title, description, canonical, extra_head, body,
     )
 
 
+# Strip all tags from an HTML fragment to recover its plain text (headings, captions).
+_TAG_STRIP_RE = re.compile(r'<[^>]+>')
+
+
 def _build_toc(body_html):
     """Table of contents from the body's H2 headings (pandoc-assigned ids)."""
     items = re.findall(r'<h2[^>]*\bid="([^"]+)"[^>]*>(.*?)</h2>', body_html,
                        re.I | re.S)
     if len(items) < 3:
         return ""
-    strip = re.compile(r'<[^>]+>')
     lis = []
     for hid, inner in items:
-        text = re.sub(r'\s+', " ", strip.sub("", inner)).strip()
+        text = re.sub(r'\s+', " ", _TAG_STRIP_RE.sub("", inner)).strip()
         lis.append('<li><a href="#%s">%s</a></li>'
                    % (html.escape(hid, quote=True), html.escape(text)))
     return ('<nav class="toc" aria-label="Contents">'
@@ -2495,6 +2498,41 @@ def _linkify_cross_refs(body_html):
     return _linkify_region(pre, *args) + refs + _linkify_region(post, *args)
 
 
+# Trailing permalink affordance on every anchored block -- a table caption or a
+# section/subsection/appendix heading -- so a reader can copy a direct fragment link.
+# HTML ONLY (md_to_pdf never calls this, like _linkify_cross_refs): the PDF gets no "#".
+# The glyph is ASCII "#" (no pilcrow). Each anchor carries a distinct aria-label (axe
+# identical-links-same-purpose); the "#" normalizes away for label-in-name. The href
+# reuses the element's existing id, so no new id is emitted.
+_HEADERLINK_TBL_RE = re.compile(r'(<p id="tbl-(\d+)">)(.*?)(</p>)', re.S)
+_HEADERLINK_H_RE = re.compile(
+    r'(<h([23])\b[^>]*\bid="([^"]+)"[^>]*>)(.*?)(</h\2>)', re.I | re.S)
+
+
+def _add_headerlinks(body_html):
+    """Append a "#" permalink anchor to each table caption and heading. Runs AFTER
+    _build_toc (which strips tags but keeps text), so the Contents nav never ingests the
+    glyph. body_html is already ASCII-entity-encoded, so a heading label needs only a
+    literal double-quote made attribute-safe; running html.escape over it would
+    double-encode an existing entity (&amp; -> &amp;amp;)."""
+    def link(target, label):
+        return ('<a class="headerlink" href="#%s" aria-label="Permalink to %s">#</a>'
+                % (target, label.replace('"', "&quot;")))
+
+    def tbl(mo):
+        return "%s%s %s%s" % (mo.group(1), mo.group(3),
+                              link("tbl-%s" % mo.group(2), "Table %s" % mo.group(2)),
+                              mo.group(4))
+
+    def heading(mo):
+        text = " ".join(_TAG_STRIP_RE.sub("", mo.group(4)).split())
+        return "%s%s %s%s" % (mo.group(1), mo.group(4),
+                              link(mo.group(3), text), mo.group(5))
+
+    body_html = _HEADERLINK_TBL_RE.sub(tbl, body_html)
+    return _HEADERLINK_H_RE.sub(heading, body_html)
+
+
 def _latex_menu(tex_formats, href_of):
     r"""One no-JS <details> pop-over bundling every LaTeX source variant.
 
@@ -2595,6 +2633,8 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
                     % (m["_dir"], k, n, k, n, k, n))
     abstract_html = md_to_html_fragment(m["abstract"])
     toc = _build_toc(body_html)
+    # After the TOC is built (it keeps heading text), add the "#" permalink affordance.
+    body_html = _add_headerlinks(body_html)
 
     authors_line = _authors_html(m)
     _, affils = normalized_authors(m)

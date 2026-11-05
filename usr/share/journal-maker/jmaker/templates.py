@@ -139,6 +139,16 @@ h1.title { font-size: 2.1rem; font-weight: 700; letter-spacing: -0.01em; margin:
 @media (min-width: 55rem) { h1.title { font-size: 2.5rem; } }
 article.body h2 { font-size: 1.5rem; font-weight: 650; margin: 2rem 0 0.5rem; }
 article.body h3 { font-size: 1.2rem; font-weight: 650; margin: 1.4rem 0 0.4rem; }
+/* Permalink glyph ("#") on headings and table captions: hidden until the block is
+   hovered, the link is keyboard-focused, or the block is the current :target. opacity
+   (not display:none) keeps it in the tab order. */
+a.headerlink {
+  margin-left: 0.3rem; color: var(--muted); font-weight: 400; text-decoration: none;
+  opacity: 0; transition: opacity 0.12s ease;
+}
+*:hover > a.headerlink, a.headerlink:focus-visible, :target > a.headerlink { opacity: 1; }
+a.headerlink:hover, a.headerlink:focus-visible { color: var(--accent); }
+@media print { a.headerlink { display: none; } }
 p.authors { font-family: var(--sans); font-size: 1.05rem; margin: 0.2rem 0; }
 p.affil { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); margin: 0.1rem 0; }
 p.venue { font-family: var(--sans); font-size: 0.9rem; color: var(--muted); margin: 0.2rem 0; }
