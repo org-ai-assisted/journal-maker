@@ -3151,6 +3151,15 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn(':root.js .back-to-top.btt-hidden:focus', css)
         # Reduced-motion users get an instant toggle, not the fade.
         self.assertIn('@media (prefers-reduced-motion: reduce)', css)
+        # Look: a translucent dark chip (production parity), inverted to a translucent LIGHT
+        # chip in dark mode so a white chevron stays visible on a dark page.
+        self.assertIn('.back-to-top { position: fixed;', css)
+        self.assertIn('background: rgba(0, 0, 0, 0.35); color: #fff;', css)
+        self.assertIn(':root[data-theme="dark"] .back-to-top { background: rgba(255, 255, 255, 0.32)', css)
+        # Click: force an instant jump for reduced-motion ("auto" would honor a CSS smooth
+        # scroll), then release focus so the control does not linger at the top catching clicks.
+        self.assertIn('behavior: reduce ? "instant" : "smooth"', js)
+        self.assertIn('btn.blur();', js)
 
     def test_footnote_hovercard_in_full_build(self):
         # A footnote marker gets a hovercard preview of the note, reusing the

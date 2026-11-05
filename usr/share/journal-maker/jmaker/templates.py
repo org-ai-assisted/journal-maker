@@ -395,8 +395,16 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
    wiki control. With no JS it falls to the @supports floor below (reveal past 400px on
    modern browsers; always-visible on legacy ones). The <a href="#top"> jumps to
    <body id="top"> with no JS regardless. */
-.back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: var(--accent); color: var(--surface); text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); transition: background 0.12s ease; }
-.back-to-top:hover, .back-to-top:focus-visible { background: var(--fg); color: var(--surface); }
+.back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); color: #fff; text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); transition: background 0.12s ease; }
+.back-to-top:hover, .back-to-top:focus-visible { background: rgba(0, 0, 0, 0.55); color: #fff; }
+/* A translucent dark chip (production parity), INVERTED to a translucent light chip in dark
+   mode so a white chevron stays visible on a dark page (a dark-on-dark chip would vanish). */
+:root[data-theme="dark"] .back-to-top { background: rgba(255, 255, 255, 0.32); color: #fff; }
+:root[data-theme="dark"] .back-to-top:hover, :root[data-theme="dark"] .back-to-top:focus-visible { background: rgba(255, 255, 255, 0.48); color: #fff; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .back-to-top { background: rgba(255, 255, 255, 0.32); color: #fff; }
+  :root:not([data-theme="light"]) .back-to-top:hover, :root:not([data-theme="light"]) .back-to-top:focus-visible { background: rgba(255, 255, 255, 0.48); color: #fff; }
+}
 /* JS path: the script toggles .btt-hidden to fade the control in/out (eased opacity,
    matching the production wiki's phased 300ms fade) instead of a binary display snap.
    visibility carries tab-order removal, delayed to the END of the fade-out (0.3s) so the
@@ -715,19 +723,25 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     // scroll-to-top must not steal focus from a keyboard user mid-activation, and
     // the fade-out's visibility:hidden would drop focus).
     function hide() { if (document.activeElement !== btn) { btn.classList.add("btt-hidden"); } }
+    var idle = null;
     btn.addEventListener("click", function (e) {
       e.preventDefault();
+      // "instant" forces the jump a reduced-motion user asked for ("auto" would honor a CSS
+      // scroll-behavior:smooth if one were ever set). Then release focus so the scroll-to-top's
+      // own hide() is not suppressed by the focus-guard, which would otherwise leave the control
+      // at the top catching clicks over the content; moving focus on activation is WCAG-fine.
       var reduce = window.matchMedia
         && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+      window.scrollTo({ top: 0, behavior: reduce ? "instant" : "smooth" });
+      btn.blur();
     });
-    // hide() is skipped while the control holds focus, so after a keyboard user
-    // Tabs AWAY near the top nothing re-hides it until the next scroll. Re-run the
-    // threshold check on blur so it does not linger once focus leaves.
+    // On blur, re-check the threshold: hide at once near the top, else resume the idle-hide (a
+    // focused control's idle timer no-ops, so without this it would linger once focus leaves).
     btn.addEventListener("blur", function () {
-      if (window.scrollY < 400) { hide(); }
+      if (window.scrollY < 400) { hide(); return; }
+      clearTimeout(idle);
+      idle = setTimeout(hide, 2000);
     });
-    var idle = null;
     window.addEventListener("scroll", function () {
       if (window.scrollY < 400) { hide(); return; }
       show();
