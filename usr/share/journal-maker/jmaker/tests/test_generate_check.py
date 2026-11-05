@@ -1190,6 +1190,24 @@ class TestRefLinksAndMeta(unittest.TestCase):
         self.assertIn("decorative: false", js)
         self.assertIn('card.setAttribute("role", "dialog")', js)
 
+    def test_hovercard_keyboard_and_drag_edge_cases(self):
+        from jmaker import templates
+        js = templates.SITE_JS
+        # Arrow stepping is scoped to the focused card, not a bare `pinned`, so one
+        # arrow never advances a second pinned-but-unfocused card on the page.
+        self.assertIn("card.contains(ae) || anchors.indexOf(ae) >= 0", js)
+        self.assertNotIn("pinned || card.contains(ae)", js)
+        # Modified arrows (selection / history / word jump) are left to the browser.
+        self.assertIn("e.altKey || e.ctrlKey || e.metaKey || e.shiftKey", js)
+        # A single-target card keeps its nav bar as a drag grip (only the step controls
+        # hide); the whole nav is never hidden, so a lone card stays draggable.
+        self.assertIn("cprev.hidden = single", js)
+        self.assertNotIn("cnav.hidden", js)
+        # A decorative card's nav buttons never take focus (focus must not land inside
+        # an aria-hidden subtree, and a disabled focused button would drop focus to body).
+        self.assertIn('cprev.addEventListener("mousedown"', js)
+        self.assertIn('cnext.addEventListener("mousedown"', js)
+
     def test_hovercard_separator_css_escape(self):
         from jmaker import templates
         css = templates.STYLE_CSS

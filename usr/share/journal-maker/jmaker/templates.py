@@ -569,9 +569,13 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
     cnext.textContent = String.fromCharCode(0x25B6); cnext.setAttribute("aria-label", opts.nextLabel);
     if (opts.decorative) {
       // A focusable control inside an aria-hidden card is itself an a11y trap
-      // (focusable but never tabbable). Keep the nav pointer-operable but out of tab
-      // order, so the decorative card stays fully untabbable.
+      // (focusable but never tabbable, and focus must never land inside aria-hidden).
+      // Keep the nav pointer-operable but out of tab order, and preventDefault its
+      // mousedown so a click never moves focus INTO the card (which would also drop
+      // focus to <body> when step() then disables the button at an end).
       cprev.tabIndex = -1; cnext.tabIndex = -1;
+      cprev.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      cnext.addEventListener("mousedown", function (e) { e.preventDefault(); });
     }
     cnav.appendChild(cprev); cnav.appendChild(cpos); cnav.appendChild(cnext);
     // Nav on TOP: prev/next buttons appended before the body.
@@ -586,7 +590,11 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       var frag = opts.contentFor(order[idx]);
       if (frag) { cbody.appendChild(frag); }
       cpos.textContent = (idx + 1) + " / " + order.length;
-      cnav.hidden = order.length < 2;
+      // A single-target card has no prev/next to show, but the nav bar is also the
+      // drag grip -- keep it (and its grip) visible, hiding only the step controls, so
+      // a lone-target card stays drag-moveable.
+      var single = order.length < 2;
+      cprev.hidden = single; cnext.hidden = single; cpos.hidden = single;
       cprev.disabled = idx === 0;
       cnext.disabled = idx === order.length - 1;
     }
@@ -668,15 +676,19 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       cnav.addEventListener("pointerup", endDrag);
       cnav.addEventListener("pointercancel", endDrag);
     })();
-    // Keyboard: Escape dismisses; Left/Right step prev/next while the card is
-    // open and either pinned or the focus is on a marker / inside the card (so arrow
-    // keys are not hijacked from ordinary page scrolling).
+    // Keyboard: Escape dismisses; a plain Left/Right steps prev/next while the card is
+    // open AND the focus is on one of this card's markers or inside the card itself.
+    // Scoped to focus (not merely `pinned`) so one arrow never advances a second,
+    // pinned-but-unfocused card elsewhere on the page; modified arrows are left to the
+    // browser (text selection, history, word jump); arrows are otherwise not hijacked
+    // from ordinary page scrolling.
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") { dismiss(); return; }
       if (card.hidden) { return; }
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") { return; }
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) { return; }
       var ae = document.activeElement;
-      if (!(pinned || card.contains(ae) || anchors.indexOf(ae) >= 0)) { return; }
+      if (!(card.contains(ae) || anchors.indexOf(ae) >= 0)) { return; }
       e.preventDefault();
       step(e.key === "ArrowLeft" ? -1 : 1);
     });
