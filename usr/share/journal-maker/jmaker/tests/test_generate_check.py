@@ -3159,7 +3159,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # Click: force an instant jump for reduced-motion ("auto" would honor a CSS smooth
         # scroll), then release focus so the control does not linger at the top catching clicks.
         self.assertIn('behavior: reduce ? "instant" : "smooth"', js)
-        self.assertIn('btn.blur();', js)
+        self.assertIn('if (e.detail > 0) { btn.blur(); }', js)
 
     def test_footnote_hovercard_in_full_build(self):
         # A footnote marker gets a hovercard preview of the note, reusing the

@@ -395,7 +395,7 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
    wiki control. With no JS it falls to the @supports floor below (reveal past 400px on
    modern browsers; always-visible on legacy ones). The <a href="#top"> jumps to
    <body id="top"> with no JS regardless. */
-.back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); color: #fff; text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); transition: background 0.12s ease; }
+.back-to-top { position: fixed; right: 20px; bottom: 20px; z-index: 40; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); color: #fff; text-decoration: none; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); text-shadow: 0 0 3px rgba(0, 0, 0, 0.7), 0 1px 2px rgba(0, 0, 0, 0.5); transition: background 0.12s ease; }
 .back-to-top:hover, .back-to-top:focus-visible { background: rgba(0, 0, 0, 0.55); color: #fff; }
 /* A translucent dark chip (production parity), INVERTED to a translucent light chip in dark
    mode so a white chevron stays visible on a dark page (a dark-on-dark chip would vanish). */
@@ -733,7 +733,11 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
       var reduce = window.matchMedia
         && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       window.scrollTo({ top: 0, behavior: reduce ? "instant" : "smooth" });
-      btn.blur();
+      // Release focus only on a POINTER click (detail > 0; keyboard-activated clicks report 0),
+      // so the scroll-to-top's own hide() is not suppressed by the focus-guard, leaving the
+      // control at the top catching clicks. A keyboard user keeps focus (blurring would discard
+      // their place rather than move it somewhere sensible).
+      if (e.detail > 0) { btn.blur(); }
     });
     // On blur, re-check the threshold: hide at once near the top, else resume the idle-hide (a
     // focused control's idle timer no-ops, so without this it would linger once focus leaves).
