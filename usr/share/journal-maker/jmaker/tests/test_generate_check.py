@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import tomllib
 import unittest
+import email.message
 import urllib.error
 import urllib.request
 
@@ -4072,7 +4073,8 @@ class TestArchiveTool(unittest.TestCase):
 
     def test_availability_transient_failure_is_sentinel(self):
         _no_sleep(self)
-        err = urllib.error.HTTPError("https://archive.org/x", 429, "rl", {}, None)
+        err = urllib.error.HTTPError("https://archive.org/x", 429, "rl",
+                                     email.message.Message(), None)
         self.assertIs(
             a._availability("https://a.example/x", opener=_FakeOpener([err, err, err, err]),
                             base_delay=0, log=lambda _m: None),
@@ -4155,7 +4157,7 @@ class TestArchiveTool(unittest.TestCase):
         c = a.fetch(d, cache_path=cache_path, **kw)
         self.assertEqual(c["alpha"], {"memento": _GOOD_MEM})
 
-        def _boom(_u, **_k):                                          # reuse: must not re-query
+        def _boom(*_a, **_k):                                         # reuse: must not re-query
             raise AssertionError("availability called despite a valid cached memento")
         a._availability = _boom
         c = a.fetch(d, cache_path=cache_path, **kw)
