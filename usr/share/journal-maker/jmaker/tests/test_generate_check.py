@@ -3123,6 +3123,9 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # either fully hidden or fully shown, matching the JS path's instant toggle.
         self.assertIn('visibility: hidden; animation: back-to-top-reveal', css)
         self.assertNotIn('opacity: 0; visibility: hidden; animation', css)
+        # A focused no-JS control stays visible regardless of scroll (parity with the
+        # JS focus-guard): visibility:hidden must not drop focus / its focus indicator.
+        self.assertIn(':root:not(.js) .back-to-top:focus', css)
 
     def test_footnote_hovercard_in_full_build(self):
         # A footnote marker gets a hovercard preview of the note, reusing the

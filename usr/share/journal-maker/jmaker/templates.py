@@ -414,6 +414,11 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
    to the always-visible base. */
 @supports (animation-timeline: scroll()) {
   :root:not(.js) .back-to-top { visibility: hidden; animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 400px 440px; }
+  /* Keep a focused control visible regardless of scroll -- parity with the JS
+     focus-guard: a keyboard user who tabs to it (while shown) then scrolls back
+     above 400px must keep its focus indicator, and focus must not be dropped by
+     a visibility:hidden mid-focus. */
+  :root:not(.js) .back-to-top:focus { animation: none; visibility: visible; }
   @keyframes back-to-top-reveal { from { visibility: hidden; } to { visibility: visible; } }
 }
 @media print {
