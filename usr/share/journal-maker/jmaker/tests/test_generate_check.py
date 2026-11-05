@@ -2979,14 +2979,17 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('<p id="tbl-1">Table 1. Device attestation. '
                       '<a class="headerlink" href="#tbl-1" '
                       'aria-label="Permalink to Table 1">#</a></p>', out)
-        # headings (h2, h3, appendix h2): trailing permalink before the closing tag
+        # headings (h2, h3, appendix h2): trailing permalink carrying the unique id
         self.assertIn('<h2 id="intro">1. Introduction '
                       '<a class="headerlink" href="#intro" '
-                      'aria-label="Permalink to 1. Introduction">#</a></h2>', out)
+                      'aria-label="Permalink to 1. Introduction (section intro)">#</a>'
+                      '</h2>', out)
         self.assertIn('<h3 id="limits">Limitations '
                       '<a class="headerlink" href="#limits" '
-                      'aria-label="Permalink to Limitations">#</a></h3>', out)
-        self.assertIn('aria-label="Permalink to Appendix A. Extra">#</a></h2>', out)
+                      'aria-label="Permalink to Limitations (section limits)">#</a>'
+                      '</h3>', out)
+        self.assertIn('aria-label="Permalink to Appendix A. Extra (section app-a)">#</a>'
+                      '</h2>', out)
         # no new id introduced (the href reuses the existing id)
         self.assertEqual(out.count('id="tbl-1"'), 1)
         # refs-div content is untouched (no permalink inside it)
@@ -3001,18 +3004,35 @@ class TestCheckSiteDiscovery(unittest.TestCase):
     def test_headerlink_duplicate_titled_headings_distinct_labels(self):
         # Pandoc gives same-titled headings distinct ids (overview, overview-1) but the
         # SAME visible text, so a bare "Permalink to <title>" accessible name would
-        # collide under axe identical-links-same-purpose (WCAG 2.4.9). A per-title
-        # occurrence ordinal keeps each permalink's name unique. RED before the ordinal.
+        # collide under axe identical-links-same-purpose (WCAG 2.4.9). Carrying the
+        # unique id in the name keeps each distinct. RED before the id-carrying label.
         body = ('<h3 id="overview">Overview</h3><p>a</p>'
                 '<h3 id="overview-1">Overview</h3><p>b</p>')
         out = g._add_headerlinks(body)
-        # both repeats are numbered in document order, so each name is distinct
-        self.assertIn('href="#overview" aria-label="Permalink to Overview (1)">#</a>',
-                      out)
-        self.assertIn('href="#overview-1" aria-label="Permalink to Overview (2)">#</a>',
+        self.assertIn('href="#overview" '
+                      'aria-label="Permalink to Overview (section overview)">#</a>', out)
+        self.assertIn('href="#overview-1" '
+                      'aria-label="Permalink to Overview (section overview-1)">#</a>',
                       out)
         self.assertEqual(self._link_collisions(out), [])
         self.assertEqual(self._label_in_name_bad(out), [])
+
+    def test_headerlink_ordinal_forging_title_does_not_collide(self):
+        # An occurrence-ordinal scheme would collide here: a third heading literally
+        # titled "Overview (1)" would match the ordinal given to the first repeat. The
+        # id-carrying name avoids it because the pandoc id is unique per document. This
+        # is the exact input the reviewers flagged against the ordinal approach.
+        body = ('<h3 id="a">Overview</h3><h3 id="b">Overview</h3>'
+                '<h3 id="c">Overview (1)</h3>')
+        out = g._add_headerlinks(body)
+        self.assertEqual(self._link_collisions(out), [])
+        self.assertEqual(self._label_in_name_bad(out), [])
+        # a title differing only by an HTML entity that the accessible-name check
+        # normalizes away is still distinguished by its id, not grouped on raw text
+        body2 = ('<h2 id="x">A &amp; B</h2><h2 id="y">A &amp; B</h2>')
+        out2 = g._add_headerlinks(body2)
+        self.assertEqual(self._link_collisions(out2), [])
+        self.assertEqual(self._label_in_name_bad(out2), [])
 
     def test_headerlinks_in_full_build(self):
         # End-to-end: the built page exposes a "#" permalink on the table caption AND on
@@ -3037,7 +3057,7 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('<a class="headerlink" href="#tbl-1" '
                       'aria-label="Permalink to Table 1">#</a>', page)
         self.assertIn('<a class="headerlink" href="#intro" '
-                      'aria-label="Permalink to 1. Intro">#</a>', page)
+                      'aria-label="Permalink to 1. Intro (section intro)">#</a>', page)
         # the Contents nav did not ingest the "#" glyph
         toc = page.split('<nav class="toc"', 1)[1].split('</nav>', 1)[0]
         self.assertNotIn('class="headerlink"', toc)
