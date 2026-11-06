@@ -24,10 +24,14 @@ from jmaker import generate
 
 def _cmd_build(args):
     try:
+        if args.verify_sha and not args.pdf_only:
+            print("build error: --verify-sha requires --pdf-only", file=sys.stderr)
+            return 1
         count, out = generate.build(args.articles, args.journal, args.out,
                                     skip_pdf=args.skip_pdf,
                                     publish=args.publish,
-                                    pdf_only=args.pdf_only)
+                                    pdf_only=args.pdf_only,
+                                    verify_sha=args.verify_sha)
     except generate.BuildError as exc:
         print("build error: %s" % exc, file=sys.stderr)
         return 1
@@ -110,6 +114,12 @@ def build_parser():
                              "noindex meta). DEFAULT is non-indexable (robots "
                              "Disallow + noindex) so a draft or interim host is "
                              "never crawled; opt in only for the canonical host.")
+    pbuild.add_argument("--verify-sha", action="store_true",
+                        help="with --pdf-only: assert each rebuilt binary matches "
+                             "its COMMITTED .sha512 (bit-for-bit reproducibility "
+                             "gate) instead of writing the sidecar; fail on a "
+                             "missing sidecar or mismatch. For the deploy, which "
+                             "rebuilds in the same pinned toolchain.")
     pbuild.set_defaults(func=_cmd_build)
 
     pcheck = sub.add_parser("check", help="gate a built site")

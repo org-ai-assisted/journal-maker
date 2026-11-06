@@ -99,6 +99,62 @@ class TestGenerateHelpers(unittest.TestCase):
                       'content="CSR-2026-001"', meta)
 
 
+class TestVerifySha(unittest.TestCase):
+    """The deploy-time bit-for-bit reproducibility gate: --pdf-only --verify-sha
+    asserts a rebuilt binary matches its COMMITTED .sha512 instead of writing it."""
+
+    def _bin(self, data=b"PDFBYTES"):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "x.pdf")
+        with open(p, "wb") as fh:
+            fh.write(data)
+        return p
+
+    def test_write_then_verify_roundtrip(self):
+        p = self._bin()
+        g._write_sha512(p)
+        # a matching sidecar verifies clean (no raise)
+        g._verify_sha512(p)
+
+    def test_verify_detects_mismatch(self):
+        p = self._bin(b"ORIGINAL")
+        g._write_sha512(p)
+        with open(p, "wb") as fh:          # tamper after the sidecar was written
+            fh.write(b"TAMPERED")
+        with self.assertRaises(g.BuildError) as ctx:
+            g._verify_sha512(p)
+        self.assertIn("reproducibility check FAILED", str(ctx.exception))
+
+    def test_verify_missing_sidecar_errors(self):
+        p = self._bin()
+        with self.assertRaises(g.BuildError) as ctx:
+            g._verify_sha512(p)
+        self.assertIn("missing committed checksum", str(ctx.exception))
+
+    def test_verify_sha_requires_pdf_only(self):
+        with self.assertRaises(g.BuildError):
+            g.build("articles", "site.toml", "_site", verify_sha=True,
+                    pdf_only=False)
+
+
+class TestVerifyShaCanary(unittest.TestCase):
+    """Canary: the OLD --pdf-only path overwrote the sidecar, so a tampered binary
+    would get a FRESH matching sidecar and never be caught. Prove the gate: the
+    overwrite behavior (write, not verify) cannot detect a mismatch."""
+
+    def test_overwrite_hides_tampering(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "x.pdf")
+        with open(p, "wb") as fh:
+            fh.write(b"ORIGINAL")
+        g._write_sha512(p)
+        with open(p, "wb") as fh:
+            fh.write(b"TAMPERED")
+        g._write_sha512(p)                 # old behavior: re-stamp, hides the change
+        # the re-stamped sidecar now matches the tampered bytes -> no detection
+        g._verify_sha512(p)
+
+
 class TestChecker(unittest.TestCase):
     def test_collect_meta(self):
         page = ('<meta name="citation_title" content="T">'

@@ -3239,19 +3239,48 @@ def _reject_symlinked_bib(m):
         raise BuildError("refs.bib must not be a symlink: %s" % bib)
 
 
-def _write_sha512(path):
-    """Write the sha512sum sidecar for a rendered binary artifact (PDF, docx)."""
+def _sha512_hex(path):
+    """sha512 hex digest of a file's bytes."""
     h = hashlib.sha512()
     with open(path, "rb") as pf:
         for chunk in iter(lambda: pf.read(65536), b""):
             h.update(chunk)
+    return h.hexdigest()
+
+
+def _write_sha512(path):
+    """Write the sha512sum sidecar for a rendered binary artifact (PDF, docx)."""
     with open(path + ".sha512", "w", encoding="utf-8") as sf:
         # sha512sum format; the name column is the artifact's basename.
-        sf.write("%s  %s\n" % (h.hexdigest(), os.path.basename(path)))
+        sf.write("%s  %s\n" % (_sha512_hex(path), os.path.basename(path)))
+
+
+def _verify_sha512(path):
+    """Assert a rebuilt binary matches its COMMITTED .sha512 sidecar -- the
+    bit-for-bit reproducibility gate the deploy runs. The local build commits the
+    sidecar; the deploy rebuilds the binary in the SAME pinned toolchain and must
+    reproduce it exactly. Raise BuildError on a missing sidecar or a mismatch, so a
+    toolchain drift or tampering fails the deploy instead of shipping silently."""
+    sidecar = path + ".sha512"
+    if not os.path.isfile(sidecar):
+        raise BuildError("reproducibility: missing committed checksum %r -- cannot "
+                         "verify the rebuilt binary (commit the .sha512 from the "
+                         "local build)" % sidecar)
+    # sha512sum format: the first whitespace-delimited field is the hex digest.
+    with open(sidecar, encoding="utf-8") as sf:
+        fields = sf.readline().split()
+    want = fields[0] if fields else ""
+    got = _sha512_hex(path)
+    if got != want:
+        raise BuildError("reproducibility check FAILED for %s: rebuilt sha512 %s does "
+                         "not match committed %s (toolchain drift or tampering)"
+                         % (os.path.basename(path), got, want))
 
 
 def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
-          pdf_only=False):
+          pdf_only=False, verify_sha=False):
+    if verify_sha and not pdf_only:
+        raise BuildError("verify_sha is only valid with pdf_only")
     journal = load_journal(journal_toml)
     # Non-indexable by DEFAULT: a draft or interim host must never be crawled.
     # Indexability is an explicit, trust-bearing opt-in (--publish) for the
@@ -3325,7 +3354,12 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
                 if os.path.islink(out) or os.path.islink(out + ".sha512"):
                     raise BuildError("refusing to write through a symlink: %s" % out)
                 fmt.emit(m, journal, out)
-                _write_sha512(out)
+                # Deploy (verify_sha): assert the rebuild matches the COMMITTED
+                # sidecar, never overwrite it. Local build: write the sidecar.
+                if verify_sha:
+                    _verify_sha512(out)
+                else:
+                    _write_sha512(out)
         return len(articles), out_dir
 
     if os.path.isdir(out_dir):
