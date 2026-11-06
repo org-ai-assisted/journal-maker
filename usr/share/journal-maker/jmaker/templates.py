@@ -3,7 +3,7 @@
 
 ASCII only. Pages are composed in generate.py; this module holds the shared
 chrome (stylesheet, site header/footer). Visual spec follows common scholarly
-venues (eLife/Nature/Distill/JOSS): serif body + system-sans headings, a ~38rem
+venues (eLife/Nature/Distill/JOSS): serif body + system-sans headings, a ~40rem
 measure, one blue accent, off-black on off-white, booktabs tables, hanging-indent
 references, light + dark via prefers-color-scheme.
 """
@@ -67,7 +67,10 @@ STYLE_CSS = """\
   --visited: #6b3fa0;
   --rule: #d9d9d4;
   --introbg: #eeeeec;
-  --measure: 38rem;
+  /* Reading measure: holds line length ~77 chars at the 19px body (Charter
+     ~0.436em/char), under the WCAG 1.4.8 <=80 ceiling. Width tracks font size,
+     not line length -- widen via font size, not this token. */
+  --measure: 40rem;
   --warn-bg: #fdf2d0; --warn-fg: #6b4e00; --warn-rule: #e0b84d;
   --ok-bg: #e4f3e6; --ok-fg: #1d5a2a; --ok-rule: #88c096;
 }
@@ -108,12 +111,12 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--serif);
-  font-size: 1.125rem;
-  line-height: 1.65;
+  font-size: 1.1875rem;
+  line-height: 1.6;
   text-rendering: optimizeLegibility;
   padding: 0 1rem;
 }
-@media (max-width: 40rem) { body { font-size: 1.0625rem; } }
+@media (max-width: 40rem) { body { font-size: 1.125rem; } }
 a { color: var(--accent); text-decoration-thickness: 0.06em; text-underline-offset: 0.15em; }
 a:visited { color: var(--visited); }
 a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
