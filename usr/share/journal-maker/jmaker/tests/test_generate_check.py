@@ -131,6 +131,17 @@ class TestVerifySha(unittest.TestCase):
             g._verify_sha512(p)
         self.assertIn("missing committed checksum", str(ctx.exception))
 
+    def test_verify_accepts_uppercase_sidecar(self):
+        # sha512sum hex is case-insensitive; an uppercase committed sidecar must
+        # still verify against the (lowercase) rebuilt digest.
+        p = self._bin()
+        g._write_sha512(p)
+        with open(p + ".sha512", encoding="utf-8") as fh:
+            line = fh.read()
+        with open(p + ".sha512", "w", encoding="utf-8") as fh:
+            fh.write(line.upper())
+        g._verify_sha512(p)          # no raise
+
     def test_verify_sha_requires_pdf_only(self):
         with self.assertRaises(g.BuildError):
             g.build("articles", "site.toml", "_site", verify_sha=True,

@@ -3256,7 +3256,7 @@ def _write_sha512(path):
 
 
 def _verify_sha512(path):
-    """Assert a rebuilt binary matches its COMMITTED .sha512 sidecar -- the
+    """Assert the binary at `path` matches the COMMITTED .sha512 sidecar -- the
     bit-for-bit reproducibility gate the deploy runs. The local build commits the
     sidecar; the deploy rebuilds the binary in the SAME pinned toolchain and must
     reproduce it exactly. Raise BuildError on a missing sidecar or a mismatch, so a
@@ -3267,9 +3267,10 @@ def _verify_sha512(path):
                          "verify the rebuilt binary (commit the .sha512 from the "
                          "local build)" % sidecar)
     # sha512sum format: the first whitespace-delimited field is the hex digest.
+    # Hex is case-insensitive (sha512sum accepts either), so compare lowercased.
     with open(sidecar, encoding="utf-8") as sf:
         fields = sf.readline().split()
-    want = fields[0] if fields else ""
+    want = (fields[0] if fields else "").lower()
     got = _sha512_hex(path)
     if got != want:
         raise BuildError("reproducibility check FAILED for %s: rebuilt sha512 %s does "
@@ -3353,12 +3354,18 @@ def build(articles_dir, journal_toml, out_dir, skip_pdf=False, publish=False,
                 # output or its sidecar would be followed (arbitrary-file overwrite).
                 if os.path.islink(out) or os.path.islink(out + ".sha512"):
                     raise BuildError("refusing to write through a symlink: %s" % out)
+                # Render AT the final path (not a temp): the PDF embeds its own
+                # output filename, so a different name changes the bytes and would
+                # break the bit-for-bit verify against the committed sidecar.
                 fmt.emit(m, journal, out)
-                # Deploy (verify_sha): assert the rebuild matches the COMMITTED
-                # sidecar, never overwrite it. Local build: write the sidecar.
                 if verify_sha:
+                    # Deploy: assert the rebuild matches the COMMITTED sidecar,
+                    # never overwrite it. A mismatch raises; the rebuilt bytes
+                    # remain at `out` but the deploy aborts and ships nothing (the
+                    # workspace is ephemeral and the binary is gitignored).
                     _verify_sha512(out)
                 else:
+                    # Local build: write the sidecar.
                     _write_sha512(out)
         return len(articles), out_dir
 
