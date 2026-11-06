@@ -311,8 +311,16 @@ def fetch(article_dir, *, save, tor, base_delay, cache_path, log):
         log("%s: %s" % (key, url))
         avail = _availability(url, opener=opener, base_delay=base_delay, log=log)
         if avail is _LOOKUP_FAILED:
-            log("  availability lookup failed (transient); leaving unresolved for a re-run")
-            continue   # never record no_memento for a failed lookup -- a re-run retries
+            # A transient Availability failure (429/5xx/network) normally leaves the key for a
+            # re-run. But AUTHENTICATED SPN2 is a SEPARATE endpoint, not subject to the
+            # Availability rate limit, so when it is configured still try to capture rather
+            # than let the throttle block the one path that could succeed. Anonymous ia-save
+            # shares the throttle, so for it (or without --save) keep skipping for a re-run.
+            if not (save and ia_access and ia_secret):
+                log("  availability lookup failed (transient); leaving unresolved for a re-run")
+                continue   # never record no_memento for a failed lookup -- a re-run retries
+            log("  availability lookup failed (transient); trying authenticated SPN2 anyway")
+            avail = None   # fall through to the SPN2 capture path below
         mem = avail if (avail and _memento_matches(avail, url)) else None
         if not mem:
             if avail:

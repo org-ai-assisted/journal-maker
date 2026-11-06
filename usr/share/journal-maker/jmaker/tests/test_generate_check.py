@@ -4359,6 +4359,56 @@ class TestArchiveTool(unittest.TestCase):
         c = a.fetch(d, cache_path=cache_path, **kw)
         self.assertEqual(c["alpha"], {"memento": _GOOD_MEM})
 
+    def test_fetch_transient_availability_falls_through_to_auth_spn(self):
+        # Regression: a rate-limited Availability lookup must NOT block AUTHENTICATED SPN2
+        # (a separate, un-throttled endpoint) -- else the IP throttle silently denies the one
+        # capture path that could succeed. Anonymous ia-save shares the throttle, so without
+        # keys a transient still leaves the key for a re-run.
+        import shutil as _sh
+        _no_sleep(self)
+        orig_csl = g._csl_entries
+        g._csl_entries = lambda _bib: {"alpha": {"URL": "https://a.example/x"}}
+        self.addCleanup(lambda: setattr(g, "_csl_entries", orig_csl))
+        orig_av = a._availability
+        self.addCleanup(lambda: setattr(a, "_availability", orig_av))
+        orig_auth = a._save_page_now_auth
+        self.addCleanup(lambda: setattr(a, "_save_page_now_auth", orig_auth))
+        for _k in ("IA_S3_ACCESS_KEY", "IA_S3_SECRET_KEY"):
+            self.addCleanup(lambda k=_k: os.environ.pop(k, None))
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: _sh.rmtree(d))
+        with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+            fh.write("unused -- _csl_entries is patched")
+        cache_path = os.path.join(d, "cache.json")
+        a._availability = lambda _u, **_k: a._LOOKUP_FAILED           # rate-limited / transient
+
+        # WITHOUT keys: anonymous SPN shares the throttle -> leave unresolved, no SPN call.
+        os.environ.pop("IA_S3_ACCESS_KEY", None)
+        os.environ.pop("IA_S3_SECRET_KEY", None)
+
+        def _no_auth(*_a, **_k):
+            raise AssertionError("auth SPN2 must not run without keys")
+        a._save_page_now_auth = _no_auth
+        c = a.fetch(d, save=True, tor=False, base_delay=0, cache_path=cache_path,
+                    log=lambda _m: None)
+        self.assertNotIn("alpha", c)                                  # left for a re-run
+
+        # WITH keys: authenticated SPN2 is NOT rate-limited, so capture despite the 429.
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+        os.environ["IA_S3_ACCESS_KEY"] = "AK"
+        os.environ["IA_S3_SECRET_KEY"] = "SK"
+        calls = []
+
+        def _fake_auth(url, acc, sec, **_k):
+            calls.append((url, acc, sec))
+            return _GOOD_MEM
+        a._save_page_now_auth = _fake_auth
+        c = a.fetch(d, save=True, tor=False, base_delay=0, cache_path=cache_path,
+                    log=lambda _m: None)
+        self.assertEqual(c["alpha"], {"memento": _GOOD_MEM})          # captured despite throttle
+        self.assertEqual(calls, [("https://a.example/x", "AK", "SK")])
+
     def test_archive_toml_line(self):
         self.assertEqual(a._archive_toml_line({"memento": _GOOD_MEM}),
                          'archive = { memento = "%s" }\n' % _GOOD_MEM)
