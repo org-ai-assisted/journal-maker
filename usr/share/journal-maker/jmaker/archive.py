@@ -310,7 +310,8 @@ def fetch(article_dir, *, save, tor, base_delay, cache_path, log):
             continue   # already resolved for the CURRENT url (re-query if the url changed)
         log("%s: %s" % (key, url))
         avail = _availability(url, opener=opener, base_delay=base_delay, log=log)
-        if avail is _LOOKUP_FAILED:
+        avail_transient = avail is _LOOKUP_FAILED
+        if avail_transient:
             # A transient Availability failure (429/5xx/network) normally leaves the key for a
             # re-run. But AUTHENTICATED SPN2 is a SEPARATE endpoint, not subject to the
             # Availability rate limit, so when it is configured still try to capture rather
@@ -338,6 +339,13 @@ def fetch(article_dir, *, save, tor, base_delay, cache_path, log):
         if mem:
             cache[key] = {"memento": mem}
             log("  -> %s" % mem)
+        elif avail_transient:
+            # Availability was transient AND SPN2 did not return a matching memento (SPN2 can
+            # fail transiently too: submit 429/5xx, still pending, network error). The miss is
+            # UNCONFIRMED, so leave the key unresolved -- never a false no_memento that a
+            # --save apply would then write OVER a real memento. A re-run retries both paths.
+            log("  availability transient and SPN2 did not capture; leaving unresolved for a re-run")
+            continue
         else:
             cache[key] = {"no_memento": "no Wayback snapshot available"}
             log("  -> no snapshot")

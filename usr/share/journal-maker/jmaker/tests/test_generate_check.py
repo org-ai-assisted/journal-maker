@@ -4373,8 +4373,8 @@ class TestArchiveTool(unittest.TestCase):
         self.addCleanup(lambda: setattr(a, "_availability", orig_av))
         orig_auth = a._save_page_now_auth
         self.addCleanup(lambda: setattr(a, "_save_page_now_auth", orig_auth))
-        for _k in ("IA_S3_ACCESS_KEY", "IA_S3_SECRET_KEY"):
-            self.addCleanup(lambda k=_k: os.environ.pop(k, None))
+        self.addCleanup(os.environ.pop, "IA_S3_ACCESS_KEY", None)
+        self.addCleanup(os.environ.pop, "IA_S3_SECRET_KEY", None)
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: _sh.rmtree(d))
         with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
@@ -4403,11 +4403,22 @@ class TestArchiveTool(unittest.TestCase):
         def _fake_auth(url, acc, sec, **_k):
             calls.append((url, acc, sec))
             return _GOOD_MEM
-        a._save_page_now_auth = _fake_auth
+        a._save_page_now_auth = _fake_auth   # type: ignore[assignment]
         c = a.fetch(d, save=True, tor=False, base_delay=0, cache_path=cache_path,
                     log=lambda _m: None)
         self.assertEqual(c["alpha"], {"memento": _GOOD_MEM})          # captured despite throttle
         self.assertEqual(calls, [("https://a.example/x", "AK", "SK")])
+
+        # Regression (ai-review): transient Availability + an SPN2 that ALSO fails (returns
+        # None: submit 5xx, still pending, network error, or already-archived) must leave the
+        # key UNRESOLVED -- never a false no_memento, which a --save apply would then write
+        # OVER a real memento. A re-run retries both paths.
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+        a._save_page_now_auth = lambda *_a, **_k: None    # SPN2 transient failure
+        c = a.fetch(d, save=True, tor=False, base_delay=0, cache_path=cache_path,
+                    log=lambda _m: None)
+        self.assertNotIn("alpha", c)                                  # NOT a false no_memento
 
     def test_archive_toml_line(self):
         self.assertEqual(a._archive_toml_line({"memento": _GOOD_MEM}),
