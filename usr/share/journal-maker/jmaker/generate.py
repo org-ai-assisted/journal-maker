@@ -2020,8 +2020,10 @@ def _cite_box(m, journal, landing_url, year):
         '<div class="cite-fmt"><span class="cite-label">%s</span>'
         "<pre>%s</pre></div>\n" % (label, html.escape(text))
         for label, text in fmts)
-    return ('<details class="cite-this"><summary>Cite this</summary>\n%s'
-            "</details>\n" % rows)
+    box = ('<details class="cite-this"><summary>Cite this</summary>\n%s'
+           "</details>\n" % rows)
+    # Same overflow-x:auto <pre> as code blocks -> same focusability fix (_focusable_pre).
+    return _focusable_pre(box)
 
 
 def _order_key(m):

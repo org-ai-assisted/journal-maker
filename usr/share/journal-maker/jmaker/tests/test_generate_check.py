@@ -1444,6 +1444,14 @@ class TestIdentityAndCite(unittest.TestCase):
         # every format carries a retrieval URL
         self.assertEqual(box.count("https://e.example/x/"), 4)
 
+    def test_cite_box_pre_focusable(self):
+        # axe scrollable-region-focusable: citation <pre> are overflow-x:auto,
+        # so each must be keyboard-focusable like the code <pre>.
+        box = g._cite_box(self._M, {"title": "J", "publisher": "J"},
+                          "https://e.example/x/", "2026")
+        self.assertNotIn("<pre>", box)
+        self.assertEqual(box.count('<pre tabindex="0">'), 4)
+
     def test_article_number_in_cites(self):
         m = dict(self._M)
         m["article_number"] = "CSR-2026-001"
