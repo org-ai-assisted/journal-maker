@@ -788,6 +788,20 @@ def _sanitize_html(frag):
     return _TAG_RE.sub(lambda m: _strip_tag_attrs(m.group(0)), frag)
 
 
+# axe `scrollable-region-focusable`: the site CSS gives code blocks `overflow-x:auto`,
+# so a wide <pre> becomes a scrollable region a keyboard user must be able to reach.
+# pandoc emits <pre> with no tabindex, so add tabindex="0" (the region itself focusable
+# is the standard code-block fix). The lookahead keeps it idempotent; a role/aria-label
+# is deliberately NOT added -- an unlabeled role="region" reads worse than a plain
+# focusable <pre>, and tabindex alone satisfies the rule. Pandoc escapes '<' in text, so
+# this matches only real <pre> tags, never a displayed HTML sample inside a code block.
+_PRE_OPEN_RE = re.compile(r"<pre(?![^>]*\btabindex=)([^>]*)>", re.IGNORECASE)
+
+
+def _focusable_pre(frag):
+    return _PRE_OPEN_RE.sub(r'<pre\1 tabindex="0">', frag)
+
+
 # Source stays ASCII " -- "; output renders a spaced en dash (idiomatic typeset
 # prose, not a plaintext double hyphen). Skip code so a " -- " argument separator
 # in a sample survives. Pandoc's smart stays OFF so quotes are left straight.
@@ -866,7 +880,7 @@ def md_to_html_fragment(md_text, bib_path=None):
     r = _run(cmd, input=md_text)
     _check_citeproc(r.stderr)
     html = _NOCASE_RE.sub("", r.stdout)
-    return _ascii_entities_html(_endash_html(_sanitize_html(html)))
+    return _ascii_entities_html(_endash_html(_focusable_pre(_sanitize_html(html))))
 
 
 def _yaml_dq(s):

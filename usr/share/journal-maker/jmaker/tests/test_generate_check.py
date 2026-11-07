@@ -1178,6 +1178,27 @@ class TestEnDash(unittest.TestCase):
         self.assertIn("x -- y", out)            # fenced: untouched
         self.assertIn("a " + chr(0x2013) + " b", out)
 
+    def test_pre_focusable(self):
+        # axe scrollable-region-focusable: a scrollable <pre> must be keyboard-focusable.
+        self.assertEqual(g._focusable_pre('<pre class="x"><code>a</code></pre>'),
+                         '<pre class="x" tabindex="0"><code>a</code></pre>')
+        self.assertEqual(g._focusable_pre("<pre>b</pre>"), '<pre tabindex="0">b</pre>')
+
+    def test_pre_focusable_idempotent(self):
+        once = g._focusable_pre('<pre class="sourceCode"><code>x</code></pre>')
+        self.assertEqual(g._focusable_pre(once), once)
+        self.assertEqual(once.count("tabindex"), 1)
+
+    def test_pre_focusable_skips_escaped_sample(self):
+        # pandoc escapes '<' in displayed samples, so a shown <pre> must NOT get tabindex.
+        sample = "&lt;pre&gt;shown&lt;/pre&gt;"
+        self.assertEqual(g._focusable_pre(sample), sample)
+
+    def test_md_code_block_is_focusable(self):
+        # End-to-end: a fenced code block renders a keyboard-focusable <pre>.
+        html = g.md_to_html_fragment("```\ncode here\n```\n")
+        self.assertRegex(html, r'<pre[^>]*\btabindex="0"')
+
     def test_md_inline_code_preserved(self):
         self.assertEqual(g._endash_md("run `foo -- bar` now -- then"),
                          "run `foo -- bar` now " + chr(0x2013) + " then")
