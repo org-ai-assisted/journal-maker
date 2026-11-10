@@ -445,14 +445,17 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
    instead of sitting stuck visible at the top. Hidden via a COMPOSITED transform
    (scale(0)), not visibility: transform runs on the compositor, so the scroll-linked
    reveal is a composited animation (Lighthouse "avoid non-composited animations" --
-   visibility and opacity are not compositable). scale(0) keeps the same discrete,
-   non-interactive-while-hidden guarantee visibility gave -- a zero-area control is not
-   a corner click target and has no faint-but-focusable state (the opacity-only a11y
-   trap) -- while staying in the a11y tree. Revealed past the 400px start. On a short
-   page the scroll timeline is inactive and the animation drops out to the scaled-to-0
-   base. The @supports guard is REQUIRED: without scroll timelines the animation binds
-   to the time timeline and would stick the control scaled to 0 -- so unsupported
-   browsers fall through to the always-visible base. */
+   visibility and opacity are not compositable; the whole point of this floor). TRADE-OFF
+   vs the old visibility:hidden: scale(0) collapses the control to zero area (no mouse hit
+   target, no faint/partial state) but, unlike visibility:hidden, it does NOT remove the
+   control from sequential focus order -- so a keyboard user can Tab to the hidden "back to
+   top" and the :focus rule reveals it (the visible-on-focus pattern; WCAG focus-visible,
+   harmless to reach early). Removing it from the tab order too would need visibility/display,
+   which cannot be composited. It stays in the a11y tree. Revealed past the 400px start; on a
+   short page the scroll timeline is inactive and it drops out to the scaled-to-0 base. The
+   @supports guard is REQUIRED: without scroll timelines the animation binds to the time
+   timeline and would stick the control scaled to 0 -- so unsupported browsers fall through to
+   the always-visible base. */
 @supports (animation-timeline: scroll()) {
   :root:not(.js) .back-to-top { transform: scale(0); animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 400px 440px; }
   /* Keep a focused control visible regardless of scroll -- parity with the JS
@@ -461,9 +464,10 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
      a scaled-to-0 control mid-focus. */
   :root:not(.js) .back-to-top:focus { animation: none; transform: none; }
   @keyframes back-to-top-reveal { from { transform: scale(0); } to { transform: scale(1); } }
-  /* Reduced motion: flip in discretely at the threshold rather than scaling up. */
+  /* Reduced motion: reveal instantly at the range START (collapsed range), no scale-up
+     motion, at the SAME threshold as the animated path (not the range end). */
   @media (prefers-reduced-motion: reduce) {
-    :root:not(.js) .back-to-top { animation-timing-function: steps(1, jump-end); }
+    :root:not(.js) .back-to-top { animation-range: 400px 400px; }
   }
 }
 @media print {
