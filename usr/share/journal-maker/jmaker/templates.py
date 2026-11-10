@@ -442,25 +442,29 @@ ul.previews .date { color: var(--muted); font-size: 0.85rem; font-family: var(--
    class to the root, so with JS this NEVER applies: the script then owns .btt-hidden
    entirely and its focus-guard / idle-hide can never be overridden by a competing CSS
    reveal. With no JS the control reveals once scrolled past the JS 400px threshold
-   instead of sitting stuck visible at the top. A DISCRETE visibility flip (not an
-   opacity fade): visibility carries the whole state, so the control is either fully
-   hidden -- out of the tab order, no click target, no faint focus stop -- or fully
-   shown, mirroring the JS path's instant toggle and never interactive-while-faint
-   (an opacity fade is `visible` throughout, so it would be clickable at ~0 opacity).
-   visibility flips to `visible` for any scroll progress past the range start, so the
-   400px start IS the reveal point (the 440px end is nominal). On a short page the scroll
-   timeline is inactive and the animation drops out to the visibility:hidden base. The
-   @supports guard is REQUIRED: without scroll timelines the animation binds to the time
-   timeline and would stick the control hidden -- so unsupported browsers fall through
-   to the always-visible base. */
+   instead of sitting stuck visible at the top. Hidden via a COMPOSITED transform
+   (scale(0)), not visibility: transform runs on the compositor, so the scroll-linked
+   reveal is a composited animation (Lighthouse "avoid non-composited animations" --
+   visibility and opacity are not compositable). scale(0) keeps the same discrete,
+   non-interactive-while-hidden guarantee visibility gave -- a zero-area control is not
+   a corner click target and has no faint-but-focusable state (the opacity-only a11y
+   trap) -- while staying in the a11y tree. Revealed past the 400px start. On a short
+   page the scroll timeline is inactive and the animation drops out to the scaled-to-0
+   base. The @supports guard is REQUIRED: without scroll timelines the animation binds
+   to the time timeline and would stick the control scaled to 0 -- so unsupported
+   browsers fall through to the always-visible base. */
 @supports (animation-timeline: scroll()) {
-  :root:not(.js) .back-to-top { visibility: hidden; animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 400px 440px; }
+  :root:not(.js) .back-to-top { transform: scale(0); animation: back-to-top-reveal linear both; animation-timeline: scroll(root); animation-range: 400px 440px; }
   /* Keep a focused control visible regardless of scroll -- parity with the JS
      focus-guard: a keyboard user who tabs to it (while shown) then scrolls back
      above 400px must keep its focus indicator, and focus must not be dropped by
-     a visibility:hidden mid-focus. */
-  :root:not(.js) .back-to-top:focus { animation: none; visibility: visible; }
-  @keyframes back-to-top-reveal { from { visibility: hidden; } to { visibility: visible; } }
+     a scaled-to-0 control mid-focus. */
+  :root:not(.js) .back-to-top:focus { animation: none; transform: none; }
+  @keyframes back-to-top-reveal { from { transform: scale(0); } to { transform: scale(1); } }
+  /* Reduced motion: flip in discretely at the threshold rather than scaling up. */
+  @media (prefers-reduced-motion: reduce) {
+    :root:not(.js) .back-to-top { animation-timing-function: steps(1, jump-end); }
+  }
 }
 @media print {
   :root { --bg: #ffffff; --fg: #000000; }
@@ -800,14 +804,17 @@ SITE_JS = r"""// Site interactive enhancements. Trusted-Types-safe; progressive.
   (function () {
     var btn = document.querySelector(".back-to-top");
     if (!btn) { return; }
-    // Hide instantly on load, then enable the fade. Forcing a reflow between the two
-    // commits the hidden state under the base (no-opacity) transition, so opacity snaps
-    // to 0 with no fade; .btt-anim then enables the fade for later toggles only. (A lone
-    // requestAnimationFrame batches both class adds into one style pass, so with the
-    // deferred site.js the initial hide would still play as a 300ms fade-out on load.)
+    // Hide instantly on load, then enable the fade only AFTER the hidden state has painted,
+    // so opacity:0 is committed under the base (no-transition) style -- no load-time fade --
+    // WITHOUT a synchronous forced reflow (reading offsetHeight to flush the hidden state is
+    // the main-thread reflow Lighthouse flags). A lone rAF batches both class adds into one
+    // pre-paint style pass and still fades out on load, so the SECOND rAF runs a frame after
+    // btt-hidden has painted -- adding .btt-anim then changes nothing to animate, only arming
+    // the fade for later show()/hide().
     btn.classList.add("btt-hidden");
-    void btn.offsetHeight;
-    btn.classList.add("btt-anim");
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { btn.classList.add("btt-anim"); });
+    });
     function show() { btn.classList.remove("btt-hidden"); }
     // Never hide the control while it holds keyboard focus (a hide-timer or a
     // scroll-to-top must not steal focus from a keyboard user mid-activation, and
