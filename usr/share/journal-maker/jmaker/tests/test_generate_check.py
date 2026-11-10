@@ -3402,11 +3402,14 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         # fights the JS focus-guard; SITE_JS marks the document js-capable to disable it.
         self.assertIn(':root:not(.js) .back-to-top', css)
         self.assertIn('classList.add("js")', js)
-        # Discrete visibility flip (no opacity fade) keeps the hidden control out of the
-        # tab order / non-clickable, and never interactive-while-faint: the control is
-        # either fully hidden or fully shown, matching the JS path's instant toggle.
-        self.assertIn('visibility: hidden; animation: back-to-top-reveal', css)
-        self.assertNotIn('opacity: 0; visibility: hidden; animation', css)
+        # Composited transform (scale(0)) carries the hide, not visibility/opacity:
+        # visibility is not compositable (Lighthouse "avoid non-composited animations"),
+        # opacity-only is an a11y trap (clickable at ~0 opacity). scale(0) is zero-area --
+        # non-interactive, discrete, still in the a11y tree.
+        self.assertIn('transform: scale(0); animation: back-to-top-reveal', css)
+        self.assertIn('from { transform: scale(0); } to { transform: scale(1); }', css)
+        # The no-JS reveal keyframe must NOT animate visibility (the non-composited bug).
+        self.assertNotIn('@keyframes back-to-top-reveal { from { visibility', css)
         # A focused no-JS control stays visible regardless of scroll (parity with the
         # JS focus-guard): visibility:hidden must not drop focus / its focus indicator.
         self.assertIn(':root:not(.js) .back-to-top:focus', css)
@@ -3421,12 +3424,14 @@ class TestCheckSiteDiscovery(unittest.TestCase):
         self.assertIn('transition: opacity 0.3s ease', css)
         self.assertIn('.btt-anim.btt-hidden { transition: opacity 0.3s ease, '
                       'visibility 0s linear 0.3s', css)
-        # Initial hide is committed under the base (no-opacity) transition via a forced
-        # reflow BEFORE .btt-anim enables the fade, so a deferred script shows no fade-out
-        # on load (a lone requestAnimationFrame batches both class adds into one style pass
-        # and would still play the 300ms fade -- so the reflow, not rAF, is load-bearing).
-        self.assertIn('void btn.offsetHeight', js)
+        # Initial hide is committed under the base (no-transition) style before .btt-anim
+        # arms the fade, via a DOUBLE requestAnimationFrame (btt-anim added a frame after
+        # btt-hidden paints) -- NOT a synchronous `void btn.offsetHeight` read, which forces
+        # a main-thread reflow (Lighthouse "Forced reflow").
+        self.assertNotIn('void btn.offsetHeight', js)
         self.assertIn('btn.classList.add("btt-anim")', js)
+        btt_seg = js[js.index('classList.add("btt-hidden")'):js.index('classList.add("btt-anim")')]
+        self.assertGreaterEqual(btt_seg.count('requestAnimationFrame'), 2)
         # a11y guards on the fade-out (visibility:hidden is delayed 0.3s so the fade is
         # seen, which leaves the control hit-testable/tabbable mid-fade): pointer-events
         # drops the click target at once, and a control focused mid-fade is held shown so
