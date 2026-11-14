@@ -22,6 +22,7 @@ PDF and HTML both derive from meta.toml + paper.md, so citation_title always
 matches the visible title and the abstract is always both visible and in meta.
 """
 
+import base64
 import datetime
 import hashlib
 import html
@@ -1584,29 +1585,48 @@ def citation_meta(m, journal, landing_url, pdf_url):
 # same-origin stylesheet (style-src 'self') and figure images (img-src 'self').
 # Trusted Types are enforced AND no policy may be created (trusted-types 'none').
 
+# Speculation Rules (Chromium): declarative same-origin prefetch, byte-identical to the block
+# mw-static-generator emits on the wikis and to dist-ai's webcheck.webplatform canonical rule --
+# the website-tests gate (check_csr_csp / check_speculation_rules) pins these exact bytes AND the
+# sha256. moderate eagerness = hover/pointerdown (bandwidth-friendly); href_matches "/*" is
+# same-origin only; the `not selector_matches [data-no-instant]` clause excludes heavy same-origin
+# download links (the article PDF/Word). The block is INLINE, so under the <meta> CSP its sha256
+# must be listed in script-src -- Chromium does not honor 'inline-speculation-rules' for a
+# statically-parsed inline block under meta CSP, and a static host cannot mint per-response nonces.
+SPECULATION_RULES_JSON = (
+    '{"prefetch":[{"where":{"and":[{"href_matches":"/*"},'
+    '{"not":{"selector_matches":"[data-no-instant]"}}]},"eagerness":"moderate"}]}'
+)
+_SPECULATION_RULES_SCRIPT = (
+    '<script type="speculationrules">%s</script>' % SPECULATION_RULES_JSON)
+_SPEC_RULES_CSP_SOURCE = "'sha256-%s'" % base64.b64encode(
+    hashlib.sha256(SPECULATION_RULES_JSON.encode("utf-8")).digest()).decode("ascii")
+
+
 def _csp_header():
     """Full policy for a header-capable host (carries frame-ancestors).
 
     script-src 'self': ONE self-hosted bundle (assets/site.js), no CDN, no
-    'unsafe-inline', no eval. Trusted Types stay enforced AND no policy may be
-    created (trusted-types 'none') -- the bundle is written TT-safe (textContent
-    / setAttribute / addEventListener only, never a TT sink), so it needs none.
+    'unsafe-inline', no eval; PLUS the single frozen speculationrules hash (an inline
+    data block, not executable code, pinned by exact bytes). Trusted Types stay enforced
+    AND no policy may be created (trusted-types 'none') -- the bundle is written TT-safe
+    (textContent / setAttribute / addEventListener only, never a TT sink), so it needs none.
     """
     return (
-        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "default-src 'none'; script-src 'self' %s; style-src 'self'; "
         "img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; "
         "frame-ancestors 'none'; object-src 'none'; "
-        "require-trusted-types-for 'script'; trusted-types 'none'")
+        "require-trusted-types-for 'script'; trusted-types 'none'") % _SPEC_RULES_CSP_SOURCE
 
 
 def _csp_meta():
     """The <meta http-equiv> policy: the header minus frame-ancestors, which a
     meta tag cannot set."""
     return (
-        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "default-src 'none'; script-src 'self' %s; style-src 'self'; "
         "img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; "
         "object-src 'none'; require-trusted-types-for 'script'; "
-        "trusted-types 'none'")
+        "trusted-types 'none'") % _SPEC_RULES_CSP_SOURCE
 
 
 # A directly-opened SVG document enforces the response CSP on itself; style-src
@@ -1714,7 +1734,11 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         '<script src="%sassets/site.js" defer></script>\n'
         '</head>\n<body id="top">\n'
         '<a class="skip-link" href="#main">Skip to content</a>\n'
-        "%s\n%s\n%s\n%s\n</body>\n</html>\n"
+        # Speculation Rules (Chromium same-origin prefetch) emitted on EVERY page, byte-identical
+        # so one script-src hash covers the whole site. Pure progressive enhancement; Firefox/Tor
+        # Browser ignore it. Passed as a %s arg (never interpolated into) so the JSON's braces
+        # cannot collide with %-formatting.
+        "%s\n%s\n%s\n%s\n%s\n</body>\n</html>\n"
     ) % (
         html.escape(lang), _csp_meta(), robots, html.escape(head_title),
         html.escape(description),
@@ -1723,6 +1747,7 @@ def _page(lang, head_title, description, canonical, extra_head, body,
         extra_head, _icon_links(root_rel), root_rel, root_rel,
         site_header(journal["title"], _site_root(journal)), body,
         site_footer(journal, _site_root(journal)), BACK_TO_TOP_HTML,
+        _SPECULATION_RULES_SCRIPT,
     )
 
 
@@ -2716,7 +2741,12 @@ def render_article(m, journal, neighbors=None, skip_pdf=False, sidecar_keys=None
         if fmt.binary:
             if skip_pdf:
                 continue
-            action_links.append('<a href="%s">Download %s</a>' % (name, fmt.label))
+            # data-no-instant: exclude this same-origin binary artifact (the article PDF/Word)
+            # from the Speculation Rules prefetch -- the file IS the navigation target, so a
+            # moderate-eagerness hover would fetch the whole binary. Matches the rule's
+            # not-selector_matches [data-no-instant] clause.
+            action_links.append('<a href="%s" data-no-instant>Download %s</a>'
+                                 % (name, fmt.label))
             # Icon-only integrity link (a lock-with-key glyph): the SHA-512 sidecar.
             # The glyph carries no text, so aria-label is the accessible name, made
             # distinct per format (PDF + Word) to avoid identical-links-same-purpose.

@@ -103,6 +103,13 @@ STYLE_CSS = """\
   --ok-bg: #16301c; --ok-fg: #9fd9ab; --ok-rule: #2f5d39;
 }
 * { box-sizing: border-box; }
+/* Cross-document View Transitions: a smooth cross-fade between same-origin page loads. Pure CSS
+   (no JS, no CSP change); browsers without support (Firefox/Tor Browser) do a normal instant
+   navigation. Opted in ONLY inside this motion-welcome block, so reduced-motion users (and the
+   reduced default) get the instant swap. Byte-shape matches the wikis + the family sites. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+}
 html { -webkit-text-size-adjust: 100%; }
 .skip-link { position: absolute; left: -9999px; top: 0; background: var(--accent); color: var(--on-accent); padding: 0.5rem 0.9rem; border-radius: 0 0 4px 0; font-family: var(--sans); z-index: 10; }
 .skip-link:focus { left: 0; }
